@@ -1,0 +1,139 @@
+@font-face {
+  font-family: 'Instrument Serif';
+  src: url('/fonts/instrument-serif-regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Instrument Serif';
+  src: url('/fonts/instrument-serif-italic.ttf') format('truetype');
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Noto Serif SC';
+  src: url('/fonts/noto-serif-sc.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  src: url('/fonts/noto-sans-sc.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-body: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+    --font-display: 'Instrument Serif', serif;
+    --font-editorial: 'Noto Serif SC', 'Source Han Serif SC', serif;
+
+    --bg: 0 0% 4%;
+    --surface: 0 0% 8%;
+    --text: 0 0% 96%;
+    --muted: 0 0% 63%;
+    --accent: 0 0% 96%;
+    --stroke: 0 0% 12%;
+    --accent-gradient: linear-gradient(90deg, #89AACC 0%, #4E85BF 100%);
+
+    --background: 0 0% 4%;
+    --foreground: 0 0% 96%;
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 96%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 0 0% 96%;
+    --primary-foreground: 0 0% 4%;
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 96%;
+    --muted-foreground: 0 0% 63%;
+    --accent-foreground: 0 0% 96%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 96%;
+    --border: 0 0% 12%;
+    --input: 0 0% 12%;
+    --ring: 210 30% 70%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    font-family: var(--font-body);
+    scroll-behavior: smooth;
+    scroll-padding-top: 104px;
+    font-synthesis: none;
+  }
+  body {
+    @apply bg-bg text-text-primary;
+  }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid #89AACC;
+    outline-offset: 5px;
+  }
+  summary::-webkit-details-marker { display: none; }
+}
+
+.font-editorial { font-family: var(--font-editorial); font-weight: 500; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  /* Activity indicators supply their own reduced-motion presentation. */
+  *:not([data-motion="activity"]),
+  *:not([data-motion="activity"])::before,
+  *:not([data-motion="activity"])::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; }
+}
+
+/* Accent gradient utility */
+.accent-gradient {
+  background: linear-gradient(90deg, #89AACC 0%, #4E85BF 100%);
+}
+
+.accent-gradient-reverse {
+  background: linear-gradient(90deg, #4E85BF 0%, #89AACC 100%);
+}
+
+/* Scroll animation */
+@keyframes scroll-down {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(200%); }
+}
+.animate-scroll-down {
+  animation: scroll-down 1.5s ease-in-out infinite;
+}
+
+/* Fade in for role cycling */
+@keyframes role-fade-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.animate-role-fade-in {
+  animation: role-fade-in 0.4s ease-out forwards;
+}
+
+/* Animated gradient border */
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.animated-gradient-border {
+  background-size: 300% 300%;
+  animation: gradient-shift 6s ease infinite;
+}

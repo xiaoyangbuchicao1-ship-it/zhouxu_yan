@@ -1,0 +1,28 @@
+[Unit]
+Description=Zhouxu native OpenSearch (no Docker)
+Documentation=https://opensearch.org/docs/latest/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
+WorkingDirectory=__OPENSEARCH_HOME__
+Environment=OPENSEARCH_PATH_CONF=__OPENSEARCH_CONF__
+Environment="OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g"
+Environment="OPENSEARCH_JAVA_HOME=__OPENSEARCH_HOME__/jdk"
+Environment="LD_LIBRARY_PATH=__OPENSEARCH_HOME__/plugins/opensearch-knn/lib"
+ExecStart=__OPENSEARCH_HOME__/bin/opensearch
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+TimeoutStopSec=90
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+TasksMax=4096
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

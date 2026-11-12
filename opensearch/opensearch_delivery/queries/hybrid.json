@@ -1,0 +1,22 @@
+{
+  "execution": "application_side_two_searches_then_rrf",
+  "not_opensearch_dsl": true,
+  "index": "maritime_law_chunks_read",
+  "candidate_count_per_channel": 50,
+  "rrf_k": 60,
+  "return_size": 10,
+  "weights": {
+    "bm25": 1,
+    "vector": 1
+  },
+  "bm25_fields": [
+    "chunk_text^5",
+    "document_name^3",
+    "section_path^2",
+    "article_no^4"
+  ],
+  "filter_placement": "BM25 bool.filter; vector knn.vector.filter",
+  "version_policy": "Caller chooses current/history. superseded_by -> inspect current candidate; amends -> re-search target document.",
+  "neural_reranker": null,
+  "knn_search_k": 200
+}

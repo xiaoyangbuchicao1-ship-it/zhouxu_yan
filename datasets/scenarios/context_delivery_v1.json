@@ -1,0 +1,18 @@
+{
+  "version": "context-delivery-v1",
+  "description": "Context visibility, necessary acquisition, semantic scope and native protocol. Evaluation-only; expectations never enter model messages.",
+  "source_corpus": "core_v1.json",
+  "core_cases": ["O02", "G03", "G04", "D01", "M01", "M02", "M03", "M04", "M05", "M06", "M07", "M08", "T01", "R03"],
+  "professional": [
+    {"id": "P10", "text": "前十题", "expected_count": 10},
+    {"id": "P97", "text": "全部题目", "expected_count": 97}
+  ],
+  "pressure": {"id": "C64", "text": "提取附件记录的船名和实收件数，只给结果。", "fixture": "short", "deployment_tokens": 64000, "history_repeats": 2500},
+  "quality_rules": [
+    "Acquiring no information is not success if required facts were missed.",
+    "Source coverage, task completion and professional correctness are independent.",
+    "Full parsed text excludes missing extraction and uninspected images.",
+    "Duplicate-read flags identify review candidates, not mandatory tool bans.",
+    "Previous successful production Run 29d5f5673b394ebc928afb4ce7ee6bbc remains a positive reference, not an input answer."
+  ]
+}

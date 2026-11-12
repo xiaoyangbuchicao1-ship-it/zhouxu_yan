@@ -1,0 +1,35 @@
+.ws-activity-indicator {
+  display: inline-flex;
+  width: var(--activity-size);
+  height: var(--activity-size);
+  flex: none;
+  border: 2px solid #344758;
+  border-top-color: currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ws-activity-rotate 1.1s linear infinite;
+}
+.ws-activity-dot { display: none; }
+@keyframes ws-activity-rotate { to { transform: rotate(360deg); } }
+@keyframes ws-activity-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .ws-activity-indicator {
+    width: max(var(--activity-size), 18px);
+    align-items: center;
+    gap: 3px;
+    border: 0;
+    border-radius: 0;
+    animation: none;
+  }
+  .ws-activity-dot {
+    display: block;
+    width: 4px;
+    height: 4px;
+    flex: none;
+    border-radius: 50%;
+    background: currentColor;
+    animation: ws-activity-pulse 1.8s ease-in-out infinite both;
+  }
+  .ws-activity-dot:nth-child(2) { animation-delay: .3s; }
+  .ws-activity-dot:nth-child(3) { animation-delay: .6s; }
+}

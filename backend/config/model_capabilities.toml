@@ -1,0 +1,29 @@
+# DeepSeek rechecked 2026-11-03. Exact model IDs only; aliases must be rechecked after changes.
+[models."deepseek-flash"]
+provider = "deepseek"
+model_id = "deepseek-flash"
+version_or_alias = "DeepSeek-V4.1-Flash-1017 (mutable API alias)"
+raw_context_tokens = 1000000
+max_generation_tokens = 393216
+generation_includes_thinking = true
+image_transport = "chat_user_data_url"
+image_token_upper_bound = 1024
+max_request_bytes = 50331648
+max_images = 600
+counting_method = "utf8_upper_bound_estimate"
+source = ["https://api-docs.deepseek.com/quick_start/pricing/", "https://api-docs.deepseek.com/api/create-chat-completion/", "https://api-docs.deepseek.com/guides/vision/", "https://api-docs.deepseek.com/quick_start/token_usage/"]
+checked_on = "2026-11-03"
+notes = "Official 1M is not given as an exact integer: use decimal 1,000,000 conservatively, not 1,048,576. 384K is explicitly 393216 in API docs. No separate input ceiling documented. Local tokenizer not installed; UTF-8 byte upper-bound estimate plus protocol padding and 5% margin, not exact provider tokenization."
+
+[models."gpt-6.1-sol"]
+provider = "relay"
+model_id = "gpt-6.1-sol"
+version_or_alias = "gpt-6.1-sol (relay config alias; upstream snapshot unconfirmed)"
+generation_includes_thinking = true
+image_transport = "none"
+counting_method = "utf8_upper_bound_estimate"
+conservative_context_tokens = 32768
+conservative_generation_tokens = 8192
+source = ["Local selected relay configuration: model field only; no verified capacity document available"]
+checked_on = "2026-11-02"
+notes = "Raw context, independent input and maximum generation remain UNKNOWN, intentionally unset. 32768/8192 are conservative operating assumptions, not supplier facts or verified gateway guarantees. Image capability disabled until both upstream and relay transmission/counting are verified. Model alias changes fail closed."

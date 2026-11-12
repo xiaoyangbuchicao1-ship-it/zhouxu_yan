@@ -1,0 +1,21 @@
+{
+  "version": "professional-v1",
+  "purpose": "真实用户题库补充组；用户答案只作为给定参考答案，不冒充当前法律权威。",
+  "fixtures": {
+    "questions": {"format": "docx", "file": "fixtures/maritime_questions.docx"}
+  },
+  "cases": [
+    {
+      "id": "P01", "family": "professional", "tier": "challenge",
+      "risks": ["historical_context", "professional_reasoning", "option_alignment", "scope", "citation"],
+      "materials": ["questions"],
+      "turns": [
+        {
+          "text": "前十题，每题给答案和一句简短理由。",
+          "expected": {"status": "completed", "judgment_key": ["错", "错", "对", "C", "B", "对", "对", "错", "对", "错"], "max_calls": 4},
+          "rubric": "按文档出现顺序处理前十题；部分题没有显式编号，不能遗漏或重排。答案与所附用户参考答案逐项比较，并另审理由。保留题目中的合同法等历史语境；检索具体法条不得凭记忆猜号，现行库内容不自动替代旧题语境。不得把正确选项但错误理由评为专业通过。允许必要检索，不强迫所有题逐一检索。"
+        }
+      ]
+    }
+  ]
+}

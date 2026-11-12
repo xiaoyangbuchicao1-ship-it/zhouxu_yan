@@ -1,0 +1,42 @@
+{
+  "model": "BAAI/bge-m3",
+  "pooling": "cls(last_hidden_state[:, 0])",
+  "normalization": "L2",
+  "device": "cpu",
+  "max_length": 2048,
+  "queries": [
+    {
+      "name": "q1_declaration",
+      "text": "无船承运业务需要备案吗"
+    },
+    {
+      "name": "q2_pollution",
+      "text": "船舶污染事故发生后如何组织清除和应急处置"
+    },
+    {
+      "name": "q3_bill_of_lading",
+      "text": "承运人签发提单后承担什么责任"
+    },
+    {
+      "name": "q4_hearing",
+      "text": "海事调查中当事人是否有权要求听证"
+    },
+    {
+      "name": "q5_current_declaration",
+      "text": "现行有效的无船承运业务备案规定"
+    },
+    {
+      "name": "q6_source_convention",
+      "text": "1974年国际海上人命安全公约设备记录和证书要求"
+    }
+  ],
+  "shape": [
+    6,
+    1024
+  ],
+  "norm_min": 0.9999999403953552,
+  "norm_max": 1.0000001192092896,
+  "vectors_file": "opensearch_delivery/queries/demo_vectors.npy",
+  "vectors_sha256": "dc467d5f2bbea68f5a5734342b9fb90314930d3af83d61dc80ad3be89a0a3bdd",
+  "purpose": "Six fixed BGE-M3 query vectors for reproducible deployment acceptance, not arbitrary questions"
+}

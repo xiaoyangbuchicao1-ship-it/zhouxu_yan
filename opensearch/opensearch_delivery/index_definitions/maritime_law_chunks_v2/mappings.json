@@ -1,0 +1,146 @@
+{
+  "dynamic": "strict",
+  "_meta": {
+    "schema_version": "1.1",
+    "embedding_model": "BAAI/bge-m3",
+    "embedding_dimension": 1024,
+    "corpus_root": "opensearch",
+    "retrieval_contract": "BM25 + dense HNSW; application RRF(k=60)"
+  },
+  "properties": {
+    "chunk_id": {
+      "type": "keyword"
+    },
+    "kind": {
+      "type": "keyword"
+    },
+    "document_id": {
+      "type": "keyword"
+    },
+    "parent_id": {
+      "type": "keyword"
+    },
+    "document_name": {
+      "type": "text",
+      "analyzer": "law_cjk",
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 512
+        }
+      }
+    },
+    "document_type": {
+      "type": "keyword"
+    },
+    "legal_status": {
+      "type": "keyword"
+    },
+    "document_role": {
+      "type": "keyword"
+    },
+    "version_date": {
+      "type": "date",
+      "format": "yyyy-MM-dd"
+    },
+    "law_family_id": {
+      "type": "keyword"
+    },
+    "is_current": {
+      "type": "boolean"
+    },
+    "article_no": {
+      "type": "text",
+      "analyzer": "law_cjk",
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 128
+        }
+      }
+    },
+    "section_path": {
+      "type": "text",
+      "analyzer": "law_cjk",
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 512
+        }
+      }
+    },
+    "chunk_type": {
+      "type": "keyword"
+    },
+    "language": {
+      "type": "keyword"
+    },
+    "chunk_text": {
+      "type": "text",
+      "analyzer": "law_cjk"
+    },
+    "embed_text": {
+      "type": "text",
+      "index": false
+    },
+    "chunk_index": {
+      "type": "integer"
+    },
+    "chunk_count": {
+      "type": "integer"
+    },
+    "canonical_text_path": {
+      "type": "keyword"
+    },
+    "pdf_relative_paths": {
+      "type": "keyword"
+    },
+    "embedding_file": {
+      "type": "keyword"
+    },
+    "embedding_row_index": {
+      "type": "integer"
+    },
+    "classification": {
+      "properties": {
+        "document_type": {
+          "type": "keyword"
+        },
+        "legal_status": {
+          "type": "keyword"
+        },
+        "research_topic": {
+          "type": "keyword"
+        },
+        "supporting_categories": {
+          "type": "keyword"
+        },
+        "cross_tags": {
+          "type": "keyword"
+        }
+      }
+    },
+    "vector": {
+      "type": "knn_vector",
+      "dimension": 1024,
+      "method": {
+        "name": "hnsw",
+        "engine": "lucene",
+        "space_type": "cosinesimil",
+        "parameters": {
+          "m": 16,
+          "ef_construction": 128
+        }
+      }
+    },
+    "version_target_document_id": {
+      "type": "keyword"
+    },
+    "version_target_parent_id": {
+      "type": "keyword"
+    },
+    "version_relation": {
+      "type": "keyword"
+    }
+  }
+}

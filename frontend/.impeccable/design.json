@@ -1,0 +1,432 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T09:44:44.097Z",
+  "title": "Design System: 舟序 Zhouxu",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Pale Action",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "primary-ink": {
+        "role": "neutral",
+        "displayName": "Action Ink",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "primary-hover": {
+        "role": "primary",
+        "displayName": "Pale Hover",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Gray-blue Focus",
+        "tonalRamp": [
+          "oklch(0.15 .045 250)",
+          "oklch(0.26 .045 250)",
+          "oklch(0.37 .045 250)",
+          "oklch(0.48 .045 250)",
+          "oklch(0.59 .045 250)",
+          "oklch(0.7 .045 250)",
+          "oklch(0.82 .045 250)",
+          "oklch(0.95 .045 250)"
+        ]
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Deep Canvas",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar Charcoal",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Quiet Surface",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "raised": {
+        "role": "neutral",
+        "displayName": "Raised Charcoal",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Reading Text",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Quiet Text",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Quiet Line",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "secondary": {
+        "role": "neutral",
+        "displayName": "Charcoal Action",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      },
+      "secondary-ink": {
+        "role": "neutral",
+        "displayName": "Secondary Reading Text",
+        "tonalRamp": [
+          "oklch(0.15 .018 250)",
+          "oklch(0.26 .018 250)",
+          "oklch(0.37 .018 250)",
+          "oklch(0.48 .018 250)",
+          "oklch(0.59 .018 250)",
+          "oklch(0.7 .018 250)",
+          "oklch(0.82 .018 250)",
+          "oklch(0.95 .018 250)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Brand Identity",
+        "purpose": "Instrument Serif italic；工作台字标32px、回答标记24px；不统一落地页字号。"
+      },
+      "headline": {
+        "displayName": "Editorial Welcome",
+        "purpose": "工作台欢迎语，移动端24px/1.7；不覆盖认证标题。"
+      },
+      "title": {
+        "displayName": "Workspace Title",
+        "purpose": "24px资料库标题；20px用于弹层标题与正文二级标题。"
+      },
+      "body": {
+        "displayName": "Research Prose",
+        "purpose": "16px/1.85、最大720px阅读列。"
+      },
+      "label": {
+        "displayName": "Working Labels",
+        "purpose": "14px导航、状态与材料元数据。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "dialog",
+        "value": "0 24px 72px #0007",
+        "purpose": "模态框"
+      },
+      {
+        "name": "menu",
+        "value": "0 10px 32px #0007",
+        "purpose": "菜单"
+      },
+      {
+        "name": "notice",
+        "value": "0 10px 32px #0006",
+        "purpose": "固定反馈"
+      },
+      {
+        "name": "latest",
+        "value": "0 6px 16px #0004",
+        "purpose": "回到最新内容"
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-workspace",
+        "value": "cubic-bezier(0.23,1,0.32,1)",
+        "purpose": "CSS按钮、输入区与弹层的主要缓动"
+      },
+      {
+        "name": "interactive-color",
+        "value": "160ms",
+        "purpose": "按钮背景、文字、边框"
+      },
+      {
+        "name": "interactive-press",
+        "value": "140ms; scale(0.975)",
+        "purpose": "按压反馈；减少动态效果时取消变换"
+      },
+      {
+        "name": "composer-border",
+        "value": "200ms",
+        "purpose": "输入区外框焦点变化"
+      },
+      {
+        "name": "welcome",
+        "value": "enter 280ms; exit 120ms",
+        "purpose": "空态欢迎进入退出"
+      },
+      {
+        "name": "thread",
+        "value": "180ms",
+        "purpose": "对话内容切换"
+      },
+      {
+        "name": "sidebar-width",
+        "value": "240ms cubic-bezier(0.23,1,0.32,1); reduced-motion 0ms",
+        "purpose": "248px与76px之间连续转换"
+      },
+      {
+        "name": "materials-width",
+        "value": "240ms cubic-bezier(0.32,0.72,0,1)",
+        "purpose": "资料面板展开收回"
+      },
+      {
+        "name": "composer-layout",
+        "value": "spring stiffness 400 damping 40",
+        "purpose": "输入区位置转换"
+      },
+      {
+        "name": "active-history",
+        "value": "spring stiffness 500 damping 40",
+        "purpose": "选中历史连续背景"
+      },
+      {
+        "name": "materials-tab",
+        "value": "spring stiffness 450 damping 36",
+        "purpose": "当前对话与资料库标签的连续背景"
+      },
+      {
+        "name": "menu",
+        "value": "enter 160ms; exit 110ms",
+        "purpose": "触发点菜单"
+      },
+      {
+        "name": "dialog",
+        "value": "enter 220ms; exit 140ms",
+        "purpose": "模态框和移动抽屉"
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion: reduce; global duration 0.01ms; MotionConfig reducedMotion=user",
+        "purpose": "保持反馈语义，减少位移、关闭CSS弹层动画并取消平滑自动滚动"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "materials-sheet",
+        "value": "1100px"
+      },
+      {
+        "name": "mobile-navigation",
+        "value": "760px"
+      },
+      {
+        "name": "short-viewport-height",
+        "value": "600px"
+      }
+    ],
+    "specimenNotes": "工作台颜色自定义属性只定义在 workspace/dialog/menu 作用域，不在 :root；样例使用实际字面颜色以支持独立 shadow DOM。字体继承项目已加载的自托管字体，并保留回退。静态组件展示真实视觉和CSS状态，不模拟React、Radix或接口功能。tonalRamp 是仅供色板预览的合成 OKLCH 八阶，不是新增生产色 token。"
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "工作台主要文字操作；浅色实心而非饱和蓝。",
+      "html": "<button class=\"ds-primary\">上传资料</button>",
+      "css": ".ds-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:8px;padding:10px 16px;font:500 14px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif;min-height:42px;white-space:nowrap;cursor:pointer;transition:background-color 160ms cubic-bezier(0.23,1,0.32,1),color 160ms cubic-bezier(0.23,1,0.32,1),transform 140ms cubic-bezier(0.23,1,0.32,1)}.ds-primary:active:not(:disabled){transform:scale(.975)}.ds-primary:disabled{opacity:.45;cursor:not-allowed}.ds-primary:focus-visible{outline:2px solid #89aacc;outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-primary{transition:none;animation:none}.ds-primary:active{transform:none}}.ds-primary{background:#dce7f3;color:#111c29}.ds-primary:hover:not(:disabled){background:#f0f5fa}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "与主操作并列时的次操作。",
+      "html": "<button class=\"ds-secondary\">取消</button>",
+      "css": ".ds-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:8px;padding:10px 16px;font:500 14px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif;min-height:42px;white-space:nowrap;cursor:pointer;transition:background-color 160ms cubic-bezier(0.23,1,0.32,1),color 160ms cubic-bezier(0.23,1,0.32,1),transform 140ms cubic-bezier(0.23,1,0.32,1)}.ds-secondary:active:not(:disabled){transform:scale(.975)}.ds-secondary:disabled{opacity:.45;cursor:not-allowed}.ds-secondary:focus-visible{outline:2px solid #89aacc;outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-secondary{transition:none;animation:none}.ds-secondary:active{transform:none}}.ds-secondary{background:#242f3d;color:#d7e1ed}.ds-secondary:hover:not(:disabled){background:#34475d}"
+    },
+    {
+      "name": "Icon Button",
+      "kind": "button",
+      "refersTo": "button-icon",
+      "description": "Lucide 描边体系的关闭按钮；显式可访问名称。",
+      "html": "<button class=\"ds-icon\" aria-label=\"关闭\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m18 6-12 12M6 6l12 12\"/></svg></button>",
+      "css": ".ds-icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:8px;background:transparent;color:#9da9b8;cursor:pointer;transition:background-color 160ms cubic-bezier(0.23,1,0.32,1),color 160ms cubic-bezier(0.23,1,0.32,1),transform 140ms cubic-bezier(0.23,1,0.32,1)}.ds-icon:hover{background:#1d2937;color:#d4e0ee}.ds-icon:active{transform:scale(.975)}.ds-icon:focus-visible{outline:2px solid #89aacc;outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-icon{transition:none;animation:none}.ds-icon:active{transform:none}}"
+    },
+    {
+      "name": "Named Field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "项目命名等弹层字段；不是认证页输入框的替代。",
+      "html": "<label class=\"ds-field-label\" for=\"ds-project-name\">项目名称</label><input class=\"ds-field\" id=\"ds-project-name\" placeholder=\"输入项目名称\">",
+      "css": ".ds-field-label{display:block;font:400 14px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif;color:#b9c7d8;margin-bottom:10px}.ds-field{width:calc(100% - 26px);border:1px solid #53657a;background:#0e151e;border-radius:8px;padding:11px 12px;font:400 16px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif;color:#e3edf8}.ds-field::placeholder{color:#9baac0}.ds-field:focus-visible{outline:2px solid #89aacc;outline-offset:3px}"
+    },
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "description": "新对话浅色入口与当前资料库状态，44px 行高。",
+      "html": "<nav class=\"ds-nav\" aria-label=\"工作导航\"><a class=\"ds-new-chat\" href=\"#new\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"/></svg><span>新对话</span></a><a class=\"ds-nav-link\" href=\"#library\" aria-current=\"page\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 6v14M8 6v14M12 6v14M16 6l4 14\"/></svg><span>资料库</span></a></nav>",
+      "css": ".ds-nav{display:flex;flex-direction:column;gap:8px;width:216px;padding:16px;background:#0d1117}.ds-new-chat,.ds-nav-link{display:flex;align-items:center;gap:12px;height:44px;padding:0 12px;border-radius:8px;text-decoration:none;white-space:nowrap;font:400 14px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif;transition:background-color 160ms cubic-bezier(0.23,1,0.32,1),color 160ms cubic-bezier(0.23,1,0.32,1),transform 140ms cubic-bezier(0.23,1,0.32,1)}.ds-new-chat{color:#131922;background:#d9e2ec;font-weight:500}.ds-nav-link{color:#b4bfcc}.ds-nav-link[aria-current]{background:#1b2937;color:#bdd3eb}.ds-new-chat:hover{background:#f0f5fa}.ds-nav-link:hover{background:#192430;color:#c6daef}.ds-new-chat:active,.ds-nav-link:active{transform:scale(.975)}.ds-new-chat:focus-visible{outline:2px solid #89aacc;outline-offset:3px}.ds-nav-link:focus-visible{outline:2px solid #89aacc;outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-new-chat,.ds-nav-link{transition:none;animation:none}.ds-new-chat,.ds-nav-link:active{transform:none}}"
+    },
+    {
+      "name": "Attachment Container",
+      "kind": "chip",
+      "refersTo": "attachment",
+      "description": "输入区待发送文件；保留材料状态和独立移除操作。",
+      "html": "<div class=\"ds-attachment\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z\"/><path d=\"M14 2v6h6M8 13h8M8 17h8\"/></svg><div class=\"ds-attachment-info\"><strong>海事争议材料.pdf</strong><span>待发送附件</span></div><button class=\"ds-remove\" aria-label=\"移除 海事争议材料.pdf\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m18 6-12 12M6 6l12 12\"/></svg></button></div>",
+      "css": ".ds-attachment{display:flex;align-items:center;gap:9px;background:#202c39;color:#e6e9ee;padding:9px 10px;border-radius:8px;max-width:100%;font:400 14px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif}.ds-attachment>svg{flex:none;color:#afc9e4}.ds-attachment-info{flex:1;min-width:0}.ds-attachment strong{display:block;font-size:14px;font-weight:500;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-attachment-info>span{display:block;color:#b5c1cf}.ds-remove{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:8px;color:#9da9b8;background:transparent;cursor:pointer;transition:background-color 160ms cubic-bezier(0.23,1,0.32,1),transform 140ms cubic-bezier(0.23,1,0.32,1)}.ds-remove:hover{background:#1d2937;color:#d4e0ee}.ds-remove:active{transform:scale(.975)}.ds-remove:focus-visible{outline:2px solid #89aacc;outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-remove{transition:none;animation:none}.ds-remove:active{transform:none}}"
+    },
+    {
+      "name": "Composer",
+      "kind": "card",
+      "refersTo": "composer",
+      "description": "真实复合输入容器的视觉标本；提交逻辑不在静态标本中模拟。",
+      "html": "<div class=\"ds-composer\"><textarea class=\"ds-compose-text\" aria-label=\"向舟序提问\" placeholder=\"提出问题，或添加材料开始研究…\"></textarea><div class=\"ds-compose-toolbar\"><button class=\"ds-attach\" aria-label=\"添加附件\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l10.6-10.6a4 4 0 0 1 5.66 5.66L9.41 17.42a2 2 0 0 1-2.83-2.83l9.2-9.19\"/></svg></button><button class=\"ds-send\" aria-label=\"发送问题\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m5 12 7-7 7 7M12 19V5\"/></svg></button></div></div>",
+      "css": ".ds-composer{max-width:760px;background:#141b24;border:1px solid #354252;border-radius:16px;padding:18px 18px 12px;transition:border-color 200ms cubic-bezier(0.23,1,0.32,1)}.ds-composer:focus-within{border-color:#7594b5}.ds-compose-text{display:block;width:calc(100% - 6px);min-height:62px;max-height:168px;resize:none;outline:none;border:0;background:none;font:400 16px/1.8 'Noto Sans SC','Microsoft YaHei',sans-serif;color:#edf1f6;padding:0 3px}.ds-compose-text::placeholder{color:#9ba9ba}.ds-compose-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}.ds-attach,.ds-send{display:inline-flex;align-items:center;justify-content:center;flex:none;border:0;cursor:pointer;transition:background-color 160ms cubic-bezier(0.23,1,0.32,1),transform 140ms cubic-bezier(0.23,1,0.32,1)}.ds-attach{width:32px;height:32px;border-radius:8px;background:transparent;color:#9da9b8}.ds-send{width:36px;height:36px;border-radius:9px;background:#e0e9f3;color:#111923}.ds-attach:hover{background:#1d2937;color:#d4e0ee}.ds-send:hover:not(:disabled){background:#f0f5fa}.ds-send:disabled{color:#8999ad;background:#2b3949;cursor:not-allowed}.ds-attach:active,.ds-send:active:not(:disabled){transform:scale(.975)}.ds-attach:focus-visible{outline:2px solid #89aacc;outline-offset:3px}.ds-send:focus-visible{outline:2px solid #89aacc;outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-attach,.ds-send,.ds-composer{transition:none;animation:none}.ds-attach,.ds-send,.ds-composer:active{transform:none}}"
+    },
+    {
+      "name": "Selected Resource",
+      "kind": "custom",
+      "description": "资料选择状态不冒充引用状态；点击处理由产品逻辑负责。",
+      "html": "<div class=\"ds-resource-context\"><p>可供本对话使用，实际引用以回答中的来源为准。</p><button class=\"ds-resource\" aria-pressed=\"true\"><span class=\"ds-checkbox\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m20 6-11 11-5-5\"/></svg></span><span><strong>研究资料.pdf</strong><small>已选资料</small></span></button></div>",
+      "css": ".ds-resource-context{font:400 14px/1.8 'Noto Sans SC','Microsoft YaHei',sans-serif;background:#0e141c;padding:24px;color:#9da9b8}.ds-resource-context p{margin:0 0 18px}.ds-resource{display:flex;gap:12px;padding:10px 6px;width:100%;text-align:left;border:0;border-radius:8px;background:transparent;color:#e6e9ee;font:400 14px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif;cursor:pointer;transition:background-color 160ms cubic-bezier(0.23,1,0.32,1),transform 140ms cubic-bezier(0.23,1,0.32,1)}.ds-checkbox{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border:1px solid #b6cde7;border-radius:4px;flex:none;margin-top:3px;background:#b6cde7;color:#111c28}.ds-resource strong{display:block;font-size:14px;font-weight:400;overflow-wrap:anywhere}.ds-resource small{display:block;color:#9da9b8;font-size:14px;line-height:1.7;margin-top:4px}.ds-resource:hover{background:#182432}.ds-resource:active{transform:scale(.975)}.ds-resource:focus-visible{outline:2px solid #89aacc;outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-resource{transition:none;animation:none}.ds-resource:active{transform:none}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Conversation-first Maritime Research Desk",
+    "overview": "舟序以近黑底、分层炭灰和灰蓝焦点建立安静、专业的研究环境。工作界面让中文问题、长篇分析和材料来源先于界面装饰被看见；帆形标识与斜体 Zhouxu 字标衔接既有品牌，而不是另立身份。\n\n本文记录已实现代码。共同身份来自自托管 Noto Sans SC、Noto Serif SC、Instrument Serif 与既有标识；下方尺寸、形状、密度及组件 token 默认仅约束工作台、其门户菜单与弹层。已认可的落地页保留大字标、海面视频、胶囊 CTA 与较长入场动画；认证页保留自己的背景、表单与胶囊提交按钮，不能套用工作台尺寸重新设计。工作台方向已获用户批准，标识为 USER-PINNED-ZHOUXU-WORKSPACE-20261021，不是随机风格种子。",
+    "keyCharacteristics": [
+      "对话与阅读优先，材料和历史作为可收放的工作支撑。",
+      "近黑分层、灰蓝状态、浅色实心主操作。",
+      "中文工作字体清晰，衬线欢迎语与斜体字标各司其职。",
+      "常态保留连续、可打断的动效；系统减少动态效果时提供回退。"
+    ],
+    "rules": [
+      {
+        "name": "The Pale Action Rule",
+        "body": "工作台主操作使用浅色实心，灰蓝主要承担焦点和选择状态；不将主操作改成铺满屏幕的饱和蓝。",
+        "section": "colors"
+      },
+      {
+        "name": "The Working Type Rule",
+        "body": "工作台保留 14 / 16 / 20 / 24 / 32 的清楚层级；长篇分析使用正文角色，品牌斜体与欢迎衬线不侵入连续阅读。",
+        "section": "typography"
+      },
+      {
+        "name": "The Reading Lane Rule",
+        "body": "历史和材料可以收放，但正文阅读列与输入区始终是主工作路径；不以虚构统计卡填充留白。",
+        "section": "layout"
+      },
+      {
+        "name": "The Tonal Desk Rule",
+        "body": "工作台常驻平面靠色阶组织，阴影留给浮动反馈与菜单、弹层；不把此规则推广成对原落地页或认证背景的禁令。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do 延续自托管三字体、帆形标识与斜体 Zhouxu 字标。",
+      "Do 将本文件的工作台 token 限定于工作台、相关门户菜单和弹层。",
+      "Do 保留常态连续动效及减少动态效果回退。",
+      "Do 让焦点、选中、禁用、处理中与失败状态同时具有真实语义和可见表达。",
+      "Do 清楚区分已选资料、对话附件与回答引用。"
+    ],
+    "donts": [
+      "Don't 用虚构统计、仪表盘卡片或未实现能力填满研究工作台。",
+      "Don't 将工作台字号、圆角或动效时长强制覆盖已认可的落地页和认证页。",
+      "Don't 在工作台新增全屏动态背景或替换既有品牌素材。",
+      "Don't 用图标字形、装饰性英文眉题或系统展示字体充当新组件语言。",
+      "Don't 把资料选择高亮或上传成功显示成“已被引用”。"
+    ]
+  }
+}

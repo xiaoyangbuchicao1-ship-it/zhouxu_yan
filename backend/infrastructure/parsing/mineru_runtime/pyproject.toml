@@ -1,0 +1,8 @@
+[project]
+name = "zhouxu-local-mineru"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = ["mineru==4.1.4", "docvortex==0.6.11"]
+
+[tool.uv]
+package = false

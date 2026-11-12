@@ -1,0 +1,4 @@
+[memory]
+max_recall_p95_ms = 100.0
+max_batch_write_ms = 1000.0
+max_concurrent_recall_ms = 500.0

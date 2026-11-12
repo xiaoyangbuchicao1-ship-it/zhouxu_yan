@@ -1,0 +1,43 @@
+{
+  "size": 100,
+  "_source": {
+    "excludes": [
+      "vector",
+      "embed_text"
+    ]
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "document_id": "e6df57a197e6"
+          }
+        },
+        {
+          "term": {
+            "parent_id": "b56b1a10f518be90"
+          }
+        },
+        {
+          "term": {
+            "kind": "article"
+          }
+        },
+        {
+          "term": {
+            "is_current": true
+          }
+        }
+      ]
+    }
+  },
+  "sort": [
+    {
+      "chunk_index": "asc"
+    },
+    {
+      "chunk_id": "asc"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+.ws-progress { margin: 0 0 18px; }
+.ws-progress-current { display: flex; align-items: center; gap: 10px; min-height: 24px; color: #b6c5d4; font-size: 14px; }
+.ws-progress-label { background: linear-gradient(100deg, #95a7ba 15%, #edf5fb 40%, #95a7ba 65%); background-size: 230% 100%; background-clip: text; -webkit-background-clip: text; color: transparent; animation: ws-status-shine 2.8s ease-in-out infinite; }
+@keyframes ws-status-shine { from { background-position: 140% 0; } to { background-position: -90% 0; } }
+.ws-progress .ws-activities { margin: 7px 0 0 24px; font-size: 12px; }
+.ws-progress .ws-activities summary { opacity: .7; }
+.ws-progress .ws-activities ol { padding-left: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .ws-progress-label { animation: none; background: none; color: #b6c5d4; }
+}

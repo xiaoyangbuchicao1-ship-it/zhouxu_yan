@@ -1,0 +1,22 @@
+[
+  {"id":"MAT-01","format":"image","question":"请把这张提单照片里的船名、提单号、装货港、日期读出来，无法辨认的标为不确定。","expected_status":"partial","expected_rag":false},
+  {"id":"MAT-02","format":"image","question":"请先转写这张污染事故报告图片，再按指定版本法规核对应急处置记录。","expected_status":"partial","expected_rag":true},
+  {"id":"MAT-03","format":"pdf","question":"请按页码提取装卸交接记录每页的日期、数量和备注，保留表格顺序。","expected_status":"partial","expected_rag":false},
+  {"id":"MAT-04","format":"pdf","question":"这份事故报告 PDF 第2页是扫描件且底部被裁切，请说明已读内容和缺失部分。","expected_status":"partial","expected_rag":false},
+  {"id":"MAT-05","format":"pdf","question":"请对照附件中的两个版本文本，说明指定条文差异并指出库内现行版本。","expected_status":"partial","expected_rag":true},
+  {"id":"MAT-06","format":"pdf","question":"尝试读取这个加密 PDF 的目录，若打不开请明确说明，不要猜内容。","expected_status":"partial","expected_rag":false},
+  {"id":"MAT-07","format":"docx","question":"请从会议纪要提取待办事项，按负责人、截止日、事项三列输出。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-08","format":"docx","question":"请核对租船合同第8条关于延迟交付是否与海商法一致。","expected_status":"available","expected_rag":true},
+  {"id":"MAT-09","format":"docx","question":"请只读取已接受修订的正文，不要把批注当正文。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-10","format":"xlsx","question":"请读取运费台账，按月份汇总到港费和异常备注，保留空单元格。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-11","format":"xlsx","question":"根据船舶污染费用表，核对费用承担及开航前缴清或担保要求。","expected_status":"available","expected_rag":true},
+  {"id":"MAT-12","format":"csv","question":"读取货物清单，找出数量为空或列数不一致的行，能读的先给结果。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-13","format":"txt","question":"请把事故时间线按时间排序，并指出同一事件的两处矛盾，只基于文件。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-14","format":"md","question":"请把航次说明整理成三层提纲，保留原链接文本，不核实法律观点。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-15","format":"json","question":"读取运单事件 JSON，输出 carrier、ports、events，时间字段原样保留。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-16","format":"json","question":"附件 JSON 声称无需备案，请用库内现行条例逐项核查并标证据。","expected_status":"available","expected_rag":true},
+  {"id":"MAT-17","format":"web","question":"读取这个网页快照，列出标题、发布日期和正文三个要点，只用页面内容。","expected_status":"available","expected_rag":false},
+  {"id":"MAT-18","format":"web","question":"打开交通主管部门公告，核对附件所写备案截止日是否一致。","expected_status":"available","expected_rag":true},
+  {"id":"MAT-19","format":"web","question":"打开这个链接并摘录正文，如果超时或返回404请直接告诉我。","expected_status":"failed","expected_rag":false},
+  {"id":"MAT-20","format":"mixed","question":"结合提单照片、运费表和部分损坏的事故 PDF，整理可确认事实，再核对法规要求。","expected_status":"partial","expected_rag":true}
+]

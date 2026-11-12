@@ -1,0 +1,32 @@
+{
+  "description": "Clarified control for a question whose original wording did not establish international carriage. Original fixture and scores remain unchanged.",
+  "warm_latency_target_seconds": 30,
+  "cases": [
+    {
+      "id": "explicit_international_registration",
+      "text": "我们是在中国境内依法设立的企业法人，经营国际海上货物运输：不买船，以自己的名义承接客户货物、签发自己的提单、收运费并承担承运人责任，再委托船公司实际运输。现在刚开张，请按库内标记现行的《国际海运条例》说明开业备案应向哪一级部门、报什么信息、最晚什么时候办。不问具体省份的办事窗口或其他备案事项。",
+      "retrieval": "required",
+      "expected_statuses": ["completed"],
+      "gold_groups": [{"documents": ["e6df57a197e6"], "contains": ["15日内", "企业名称、注册地、联系方式", "依法设立企业法人"]}],
+      "review_points": ["事实和问题范围已明确，应检索而非重复索要已有事实", "仅回答开业备案，不扩展运价等旁支"]
+    },
+    {
+      "id":"registration_lifecycle",
+      "text":"请按库内现行《国际海运条例》说明无船承运业务开业备案、终止经营备案各自期限和主管机关，以及被责令补办备案后仍不办理的后果。",
+      "modes":["mixed"],
+      "retrieval":"required",
+      "expected_statuses":["completed"],
+      "gold_groups":[{"documents":["e6df57a197e6"],"contains":["自开业之日起15日内"]},{"documents":["e6df57a197e6"],"contains":["自终止经营之日起15日内"]},{"documents":["e6df57a197e6"],"contains":["逾期不补办","1万元以上5万元以下"]}],
+      "review_points":["与原始同题比较，仅主模型使用中转，证据检查仍为DeepSeek"]
+    },
+    {
+      "id":"version_hearing",
+      "text":"对照2023年7月20日版本和库内标记现行的《中华人民共和国国际海运条例》，调查机关采取禁止性、限制性措施前的听证权分别在哪一条？能否直接沿用旧条号引用现行规定？",
+      "modes":["mixed"],
+      "retrieval":"required",
+      "expected_statuses":["completed"],
+      "gold_groups":[{"documents":["0018a4637c09"],"contains":["第三十一条","听证"]},{"documents":["e6df57a197e6"],"contains":["第三十二条","听证"]}],
+      "review_points":["与原始同题比较，仅主模型使用中转，证据检查仍为DeepSeek"]
+    }
+  ]
+}

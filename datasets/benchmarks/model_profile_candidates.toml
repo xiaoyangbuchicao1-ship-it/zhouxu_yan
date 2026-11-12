@@ -1,0 +1,20 @@
+# Four candidates for evaluation; this is not the production selection table.
+[deepseek]
+main_provider = "deepseek"
+review_provider = "deepseek"
+
+[gpt_low]
+main_provider = "relay"
+main_effort = "low"
+review_provider = "relay"
+review_effort = "low"
+
+[mixed_high]
+main_provider = "relay"
+main_effort = "high"
+review_provider = "deepseek"
+
+[mixed_low]
+main_provider = "relay"
+main_effort = "low"
+review_provider = "deepseek"

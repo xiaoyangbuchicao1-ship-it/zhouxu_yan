@@ -1,0 +1,35 @@
+{
+  "size": 10,
+  "_source": {
+    "excludes": [
+      "vector",
+      "embed_text"
+    ]
+  },
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "multi_match": {
+            "query": "无船承运业务需要备案吗",
+            "fields": [
+              "chunk_text^5",
+              "document_name^3",
+              "section_path^2",
+              "article_no^4"
+            ],
+            "type": "best_fields",
+            "operator": "or"
+          }
+        }
+      ],
+      "filter": [
+        {
+          "term": {
+            "is_current": true
+          }
+        }
+      ]
+    }
+  }
+}

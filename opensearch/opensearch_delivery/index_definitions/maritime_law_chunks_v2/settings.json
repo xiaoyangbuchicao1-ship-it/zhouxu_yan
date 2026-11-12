@@ -1,0 +1,21 @@
+{
+  "index": {
+    "knn": true,
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s"
+  },
+  "analysis": {
+    "analyzer": {
+      "law_cjk": {
+        "type": "custom",
+        "tokenizer": "standard",
+        "filter": [
+          "cjk_width",
+          "lowercase",
+          "cjk_bigram"
+        ]
+      }
+    }
+  }
+}
