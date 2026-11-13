@@ -1,0 +1,296 @@
+舟序 v1 交接说明（小白版）
+================================
+
+这份文件写给第一次接触舟序的人。请先按“第一次启动”操作，不要一开始修改代码。
+
+一、舟序是什么
+--------------
+
+舟序是一个“海事研究与文档工作台”。它可以：
+
+1. 让用户登录并创建连续对话；
+2. 阅读用户上传的合同、提单、往来材料等文件；
+3. 使用法规和案例资料进行检索；
+4. 通过海事 Skill 给模型提供专业工作方法；
+5. 在需要时生成 Word、PDF 和其他工作文件；
+6. 保存任务状态，等待用户补充后继续处理；
+7. 把回答保存到案件中，作为文书草稿继续协作。
+
+当前真正的基准版本是：
+
+    Git 标签：v1
+    查看基准提交：git rev-parse v1^{commit}
+    远端主分支：origin/main
+
+如果代码被改坏，可以重新从远端获取 v1：
+
+    git fetch origin
+    git checkout v1
+
+二、先理解整体结构
+------------------
+
+舟序不是很多个互相独立的程序，而是一个前后端分离的模块化单体：
+
+    浏览器中的工作台
+          ↓
+    FastAPI 后端
+          ↓
+    Harness（任务循环、工具调用、检查点和恢复）
+          ↓
+    模型、检索工具、案件工具、文件执行工具
+          ↓
+    回答、来源、文件和任务状态
+
+Skill 是“做事的方法说明”，例如如何做法规研究；它不是执行器。
+模型需要方法时调用只读工具 read_skill，读取方法后，再调用真实的检索、案件或文件工具。
+
+工作模式决定工具权限：
+
+    chat：普通聊天，只能使用不修改文件的能力；
+    work：允许在受控工作区中执行文件操作。
+
+切换到 work 不会自动启动 Docker。只有模型真正调用文件执行工具时，才会准备执行环境。
+
+三、重要目录
+------------
+
+    frontend/                         React 前端和工作台页面
+    backend/                          FastAPI 后端、Harness 和业务模块
+    backend/skills/                   已注册的 Skill 方法正文
+    backend/bootstrap.py              后端组装入口
+    backend/contracts/                公共接口和数据合同
+    backend/harness/                  任务循环、排队、停止、恢复和压缩
+    backend/infrastructure/           模型、数据库、检索、文件和执行适配器
+    data/                             本机账户、材料、生成文件等运行数据
+    opensearch/                       OpenSearch 部署文件和本机语料数据
+    deploy/task-runtime/              Docker 任务运行时镜像源码
+    datasets/                         测试集、原始材料和参考答案
+    docs/                             架构、部署和接口说明
+    README.md                         项目总说明
+
+data/、OpenSearch 数据、模型文件、数据库和密钥不属于 Git 源码。换电脑时要单独决定是否迁移，不能把它们当作代码依赖。
+
+四、第一次在新电脑上启动（推荐 Ubuntu）
+----------------------------------------
+
+推荐 Ubuntu 24.04 LTS。Windows 也可以开发，推荐使用 WSL2 的 Ubuntu。
+
+必须准备：
+
+    Git
+    Python 3.11（不是 3.12 或 3.13）
+    uv
+    Node.js 20.19+ 或 22.12+
+    npm
+
+Docker 不是启动聊天页面的必需品。只有需要让模型执行文件和命令时，才需要 Docker 或 Native 执行环境。
+
+1. 获取代码
+
+    git clone https://github.com/xiaoyangbuchicao1-ship-it/zhouxu_yan.git
+    cd zhouxu_yan
+    git checkout v1
+
+如果代码已经在电脑上，只需要进入项目根目录：
+
+    cd 真正的舟序
+
+2. 安装 Python 依赖
+
+    uv sync --project backend --extra rag --extra materials --locked
+
+这个命令会根据 backend/uv.lock 创建当前电脑自己的 Python 环境。
+不要从 Windows 复制 backend/.venv 到 Linux，也不要从一台电脑复制到另一台电脑。
+
+3. 安装前端依赖
+
+    npm --prefix frontend ci
+
+这个命令根据 frontend/package-lock.json 安装前端依赖。
+不要复制旧的 frontend/node_modules。
+
+4. 准备模型凭证
+
+后端需要模型服务凭证才能真正回答问题。凭证放在本机的 backend/.env 中，不能提交到 Git，也不能写进前端的 VITE_ 配置。
+
+默认配置会读取以下名称中的一个：
+
+    DEEPSEEK_API_KEY
+    DEEPSEEK_KEY
+    OPENAI_API_KEY
+    API_KEY
+
+至少准备项目实际使用的 DeepSeek 凭证。不要把密钥粘贴到聊天、代码、截图或日志中。
+
+5. 启动前后端
+
+在项目根目录运行：
+
+    npm --prefix frontend run dev:all
+
+启动成功后：
+
+    前端工作台：http://127.0.0.1:4173
+    后端地址：http://127.0.0.1:8010
+    健康检查：http://127.0.0.1:8010/healthz
+
+健康检查返回下面内容就表示后端已启动：
+
+    {"status":"ok"}
+
+打开前端地址，在登录页注册或登录，然后进入 /workspace 工作台。
+退出启动命令时，前端脚本会回收本次启动的后端进程。
+
+五、第一次启动失败怎么办
+------------------------
+
+1. 提示找不到 uv
+
+说明 uv 没有安装，或安装后终端还没有刷新。重新打开终端，再执行 uv --version。
+
+2. 提示 Python 版本不符合
+
+项目要求 Python 3.11。Ubuntu 24.04 默认可能是 Python 3.12，需要另外安装 3.11，再重新执行 uv sync。
+
+3. npm ci 失败
+
+检查 Node.js 版本：
+
+    node --version
+    npm --version
+
+Node.js 太旧时，安装 20.19+ 或 22.12+，然后重新执行 npm --prefix frontend ci。
+
+4. 4173 或 8010 端口被占用
+
+先关闭之前启动的舟序进程。也可以临时换端口：
+
+    $env:ZHOUXU_WEB_PORT="4174"
+    $env:ZHOUXU_API_PORT="8011"
+    npm --prefix frontend run dev:all
+
+Linux/macOS 的写法是：
+
+    ZHOUXU_WEB_PORT=4174 ZHOUXU_API_PORT=8011 npm --prefix frontend run dev:all
+
+5. 页面能打开但模型不回答
+
+先访问 /healthz 确认后端在线，再检查 backend/.env 中的模型凭证。修改凭证后必须重启后端。
+
+6. 海事检索没有结果
+
+这通常不是页面故障，而是新电脑还没有准备法规语料、案例快照、BGE-M3 模型或 OpenSearch。没有真实语料时，系统会如实返回无结果，不会伪造来源。
+
+六、Docker、Native 和云服务器
+-----------------------------
+
+任务执行环境有两个可替换 Provider：
+
+1. Docker Provider
+
+适合有 Docker 权限的服务器。构建任务镜像：
+
+    docker build -t zhouxu-task-runtime:0.2 deploy/task-runtime
+
+Docker 镜像只负责任务中的文件和命令执行，不是整个舟序应用。前端、FastAPI、OpenSearch 仍按各自方式运行。
+
+2. Native Provider
+
+如果云服务器不允许 Docker，可以使用 Linux Native。它适合专用、受控的服务器，但它不是和 Docker 完全等价的操作系统沙箱，不适合直接向大量互不信任的用户开放任意代码执行。
+
+Ubuntu 上准备常用文档工具：
+
+    sudo apt-get update
+    sudo apt-get install -y bash libreoffice-writer libreoffice-calc poppler-utils fonts-noto-cjk
+
+选择 Native：
+
+    export ZHOUXU_EXECUTION_PROVIDER=native
+
+Windows PowerShell 的写法：
+
+    $env:ZHOUXU_EXECUTION_PROVIDER="native"
+
+如果只是聊天、研究和案件协作，不调用文件执行工具，可以先不准备 Docker 或 Native。
+
+七、正式云端部署的大致方式
+--------------------------
+
+正式部署推荐 Ubuntu 专用云服务器，并使用单个 FastAPI worker。
+
+1. 后端启动命令：
+
+    uv run --project backend --extra rag --extra materials --locked uvicorn backend.interfaces.api.app:create_app --factory --host 127.0.0.1 --port 8010 --workers 1
+
+当前 SQLiteRunStore 使用文件锁，暂不支持多个 Uvicorn worker 或多个应用实例共享同一个运行库。
+
+2. 构建前端：
+
+    npm --prefix frontend run build
+
+构建结果在 frontend/dist/。生产环境用 Nginx 等 Web 服务器托管它，并配置：
+
+    /workspace 等前端路由回退到 index.html；
+    /api/ 请求转发到 http://127.0.0.1:8010/；
+    事件流关闭代理缓冲，并设置足够长的读取超时；
+    使用 HTTPS。
+
+3. 持久化数据
+
+至少要为下面内容准备持久磁盘和备份：
+
+    data/relational/       账户和业务 SQLite
+    data/files/            用户材料和生成文件
+    backend/.runtime/      RunStore、检查点和公开事件
+    OpenSearch 语料、索引和向量
+
+不要把生产密钥提交到 Git。不要直接热复制 OpenSearch 数据目录，跨机器迁移应使用输入重建或 snapshot/restore。
+
+八、维护时先看什么
+------------------
+
+第一次修改代码前，按下面顺序阅读：
+
+    README.md
+    docs/architecture.md
+    docs/deployment.md
+    docs/module-contracts.md
+    backend/README.md
+    frontend/README.md
+
+新增后端能力优先放在现有 contracts、application、harness、modules 或 infrastructure 中，并在 backend/bootstrap.py 统一组装。
+不要复制旧版 Workspace、旧版 Harness 或旧版 bootstrap 形成第二套系统。
+
+新增 Skill 时要记住：
+
+    Skill 是声明式、只读的方法资源；
+    Skill 由 SkillRegistry 管理；
+    模型通过 read_skill 读取 Skill；
+    Skill 本身不能直接访问数据库、文件系统、模型或 Docker；
+    真实事实必须通过受控的检索或业务工具获取。
+
+九、当前版本边界
+----------------
+
+当前已经有：账户、连续会话、聊天/工作模式、Skill 工坊、海事检索、来源查看、案件协作、成员权限、版本冲突、审计、工作包、文件交付、上下文压缩和任务恢复。
+
+当前还没有承诺：跨机器任务调度、多进程共享 RunStore、外部副作用 exactly-once、法律结论正确率保证，以及面向不受信任用户的完整操作系统级沙箱。
+
+数据、模型和 Runtime 没准备好时，相关功能会明确显示缺失或无结果，这是正常边界，不要用假数据替代真实来源。
+
+十、交接完成检查清单
+--------------------
+
+    [ ] 能运行 uv sync
+    [ ] 能运行 npm --prefix frontend ci
+    [ ] /healthz 返回 {"status":"ok"}
+    [ ] 浏览器能打开 http://127.0.0.1:4173
+    [ ] 能注册/登录并进入 /workspace
+    [ ] 已配置模型凭证（不把密钥提交到 Git）
+    [ ] 如需检索，已准备 OpenSearch、法规语料、案例和 BGE-M3
+    [ ] 如需文件执行，已选择 Docker 或 Native
+    [ ] 生产部署保持单个 Uvicorn worker
+    [ ] data、backend/.runtime、语料和索引已配置备份
+
+本机清理说明：源码仓库已经移除临时工作区、1.txt、本机虚拟环境、node_modules、构建产物、缓存、旧测试代码和历史评估结果。换电脑时按本文重新安装，不要复制这些本机目录。

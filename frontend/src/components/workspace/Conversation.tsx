@@ -418,13 +418,19 @@ function Answer({
         </div>
       )}
       <div className="ws-answer-tools">
-        {message.recovery?.can_continue && <button className="ws-text-button" onClick={onContinue}>继续处理</button>}
-        {message.recovery?.can_retry && <button className="ws-text-button" onClick={onRetry}>重新做</button>}
-        <button className="ws-text-button" onClick={() => void copy()}>
-          {copied ? <Check size={15} /> : <Copy size={15} />}
-          {copied ? "已复制" : "复制回答"}
-        </button>
-        <SaveAnswer message={message} onNotice={onNotice} />
+        {(message.recovery?.can_continue || message.recovery?.can_retry) && (
+          <div className="ws-answer-action-group" aria-label="恢复操作">
+            {message.recovery?.can_continue && <button className="ws-text-button" onClick={onContinue}>继续处理</button>}
+            {message.recovery?.can_retry && <button className="ws-text-button" onClick={onRetry}>重新做</button>}
+          </div>
+        )}
+        <div className="ws-answer-action-group ws-answer-action-group-secondary" aria-label="回答操作">
+          <button className="ws-text-button" onClick={() => void copy()}>
+            {copied ? <Check size={15} /> : <Copy size={15} />}
+            {copied ? "已复制" : "复制回答"}
+          </button>
+          <SaveAnswer message={message} onNotice={onNotice} />
+        </div>
       </div>
     </article>
   );

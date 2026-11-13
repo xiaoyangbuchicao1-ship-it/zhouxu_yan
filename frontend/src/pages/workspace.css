@@ -952,7 +952,21 @@
 }
 .ws-answer-tools {
   display: flex;
-  margin-top: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid #2a3542;
+}
+.ws-answer-action-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.ws-answer-action-group-secondary {
+  margin-left: 0;
 }
 .ws-source-section {
   margin-top: 24px;
@@ -2399,6 +2413,9 @@
   }
   .ws-answer {
     margin-bottom: 32px;
+  }
+  .ws-answer-action-group-secondary {
+    margin-left: 0;
   }
   .ws-disclaimer {
     margin-top: 10px;
