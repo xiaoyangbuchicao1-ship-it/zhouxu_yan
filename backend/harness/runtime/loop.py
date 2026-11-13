@@ -123,6 +123,29 @@ class Harness:
         source_refs: list[dict] = list(saved.source_refs)
         recovery_mode = saved.recovery_mode
         compaction_requested = saved.compaction_requested
+        active_skills: list[dict[str, str]] = [
+            item
+            for item in saved.active_skills
+            if isinstance(item, dict)
+            and isinstance(item.get("skill_id"), str)
+            and isinstance(item.get("version"), str)
+        ]
+        # Older checkpoints did not have an explicit active_skills field.  A
+        # read_skill receipt is sufficient to rebuild the small projection;
+        # this never replays the tool itself.
+        for raw in retained_results:
+            if not isinstance(raw, dict) or raw.get("tool_name") != "read_skill":
+                continue
+            value = raw.get("result")
+            if not isinstance(value, dict):
+                continue
+            skill_id = value.get("skill_id")
+            version = value.get("version")
+            if isinstance(skill_id, str) and isinstance(version, str):
+                active_skills = [
+                    item for item in active_skills if item.get("skill_id") != skill_id
+                ]
+                active_skills.append({"skill_id": skill_id, "version": version})
         continuation = self.model_context if isinstance(self.model_context, ModelContinuationPort) else None
 
         def delivered_prefix():
@@ -190,6 +213,7 @@ class Harness:
                 recovery_attempts=saved.recovery_attempts,
                 compaction_requested=compaction_requested,
                 source_refs=source_refs,
+                active_skills=active_skills,
                 model_continuation=continuation.export_run_state(run_id) if continuation else {},
             ).model_dump(mode="json")
 
@@ -633,6 +657,21 @@ class Harness:
                               "instruction": self.settings.prompts["continue_visible"]},
                     ))
                     loop_required.append("task-continuation-state")
+                if active_skills:
+                    loop_candidates.append(
+                        ContextItem(
+                            id="active-skill-state",
+                            type="message",
+                            source="harness",
+                            role="user",
+                            kind="skill.activation",
+                            body={
+                                "skills": active_skills,
+                                "instruction": "已加载的 Skill 版本记录；需要完整方法正文时使用 read_skill 重新读取。",
+                            },
+                        )
+                    )
+                    loop_required.append("active-skill-state")
                 for attempt in range(self.settings.context_policy.max_compactions + 2):
                     perceived = await invoke(
                         "perception",
@@ -903,6 +942,19 @@ class Harness:
                         if self.material_catalog:
                             if result.outcome != "error":
                                 self.material_catalog.bind_result(result, run_id=run_id)
+                        if result.tool_name == "read_skill" and result.outcome == "ok":
+                            payload = result.result if isinstance(result.result, dict) else {}
+                            skill_id = payload.get("skill_id")
+                            version = payload.get("version")
+                            if isinstance(skill_id, str) and isinstance(version, str):
+                                active_skills = [
+                                    item
+                                    for item in active_skills
+                                    if item.get("skill_id") != skill_id
+                                ]
+                                active_skills.append(
+                                    {"skill_id": skill_id, "version": version}
+                                )
                         retained_results.append(result.model_dump(mode="json"))
                         for ref in source_refs_from_action(result):
                             if ref["source_id"] not in {item.get("source_id") for item in source_refs}:

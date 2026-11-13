@@ -30,6 +30,11 @@ class ExecutionState(Contract):
     # Human-readable source cards. Internal retrieval identities remain inside
     # tool receipts and are never copied into this public projection.
     source_refs: list[dict[str, Any]] = Field(default_factory=list)
+    # The currently activated declarative Skills are lightweight metadata only;
+    # the full method body remains reloadable through read_skill. Keeping the
+    # ID and version in the checkpoint lets compaction/recovery preserve which
+    # method was in use without pinning a large document into every request.
+    active_skills: list[dict[str, str]] = Field(default_factory=list)
     # Internal artifact metadata is projected into authorized download cards.
     # It deliberately keeps the storage path out of public API contracts.
     artifacts: list[dict[str, Any]] = Field(default_factory=list)

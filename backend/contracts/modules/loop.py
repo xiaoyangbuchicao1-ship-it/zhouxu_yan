@@ -167,6 +167,11 @@ class ToolSpec(Contract):
     name: str
     description: str
     parameters: dict[str, Any]
+    # Management classification only; all model-callable capabilities still
+    # use the same ActionRequest/ActionResult protocol.  ``skill_activation``
+    # is used by read_skill, while business and execution tools retain their
+    # existing behavior.
+    kind: Literal["business", "skill_activation", "control", "execution"] = "business"
     # Conservative default: unknown executors may have external side effects.
     read_only: bool = False
     # Opt in only for tools whose identical observations can be reused within

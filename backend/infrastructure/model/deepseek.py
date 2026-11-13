@@ -15,6 +15,7 @@ from backend.contracts.modules.loop import (
     DecisionProposal,
     PerceivedContext,
     ReasoningInput,
+    ToolSpec,
 )
 from backend.contracts.modules.perception import ContextAssembly
 from backend.contracts.ports import EventSink
@@ -376,9 +377,69 @@ class DeepSeekModel:
         # exchanges remain protocol-complete before appended attributed images.
         return messages + image_messages + inventory_messages + user_responses + continuation_messages
 
+    def _control_tools(self, purpose: str) -> list[ToolSpec]:
+        if purpose != "main" and not self._explicit(purpose):
+            return []
+        cfg = self.settings.model
+        tools = [
+            ToolSpec(
+                name=cfg.clarification_tool,
+                description=cfg.clarification_description,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                        }
+                    },
+                    "required": ["questions"],
+                },
+                kind="control",
+                read_only=True,
+                reuse_identical_results=False,
+            )
+        ]
+        if self._explicit(purpose):
+            if not cfg.delivery_tool:
+                raise PortError(self.settings.error("model_profile_invalid"))
+            tools.append(
+                ToolSpec(
+                    name=cfg.delivery_tool,
+                    description=cfg.delivery_description,
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["completed", "continuing", "blocked"],
+                                "description": self.settings.prompts.get(
+                                    "delivery_status_description", ""
+                                ),
+                            },
+                            "remaining_work": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": self.settings.prompts.get(
+                                    "delivery_remaining_description", ""
+                                ),
+                            },
+                        },
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                    kind="control",
+                )
+            )
+        return tools
+
     def _tools(self, value: ReasoningInput):
         if value.purpose != "main" and not self._explicit(value.purpose):
             return []
+        specs = list(value.tools if value.purpose == "main" else [])
+        specs.extend(self._control_tools(value.purpose))
         definitions = [
             {
                 "type": "function",
@@ -388,39 +449,12 @@ class DeepSeekModel:
                     "parameters": tool.parameters,
                 },
             }
-            for tool in (value.tools if value.purpose == "main" else [])
+            for tool in specs
         ]
-        definitions.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": self.settings.model.clarification_tool,
-                    "description": self.settings.model.clarification_description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "questions": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "minItems": 1,
-                            }
-                        },
-                        "required": ["questions"],
-                    },
-                },
-            }
-        )
         if self._explicit(value.purpose):
             cfg = self.settings.model
-            if not cfg.delivery_tool or cfg.delivery_tool in {t["function"]["name"] for t in definitions}:
+            if cfg.delivery_tool in {tool.name for tool in value.tools}:
                 raise PortError(self.settings.error("model_profile_invalid"))
-            definitions.append({"type": "function", "function": {
-                "name": cfg.delivery_tool, "description": cfg.delivery_description,
-                "parameters": {"type": "object", "properties": {"text": {"type": "string"},
-                               "status": {"type": "string", "enum": ["completed", "continuing", "blocked"], "description": self.settings.prompts.get("delivery_status_description", "")},
-                               "remaining_work": {"type": "array", "items": {"type": "string"}, "description": self.settings.prompts.get("delivery_remaining_description", "")}},
-                               "required": ["text"], "additionalProperties": False},
-            }})
         return definitions
 
     def _payload(self, request: ModuleRequest[ReasoningInput]) -> dict:

@@ -67,6 +67,40 @@ flowchart TD
 
 `read_skill` 只能读取显式注册表中的方法文档；实时资料仍由受控工具取得，Skill 不绕过权限、预算或来源校验。
 
+### 逻辑能力流
+
+Skill、工具和工作模式不是三套平行运行时，而是同一条 Run 内的不同决策对象：Skill 提供方法，模型决定是否激活；工具提供可验证的观察或动作，Harness 负责调度、记账和恢复；模式只决定哪些工具可以被调用。
+
+```mermaid
+flowchart LR
+    U[用户目标与材料] --> W[Workspace 会话]
+    W --> A[API 解析账户、模式、案件与材料范围]
+    A --> R[Run / Scheduler]
+    R --> P[感知与上下文预算]
+    P --> M[模型推理]
+    M --> S[read_skill
+    SkillActivation]
+    S --> M
+    M --> D[业务与资料工具
+    search / read / calculate / case]
+    M --> E[执行工具
+    read / write / edit / bash]
+    M --> C[控制工具
+    request_user_input / checkpoint / resume]
+    D --> M
+    E --> X[ExecutionProvider
+    Docker / Native / Remote]
+    X --> O[Artifact 与工作包]
+    C --> R
+    M --> F[回答、来源、状态]
+    O --> F
+    F --> W
+```
+
+ToolSpec 的 `kind` 只做管理与展示分类，不改变统一的 ActionRequest/ActionResult 协议：`skill_activation` 仅加载声明式 Skill，`business` 读取或改变业务对象，`execution` 进入会话工作区，`control` 保存或恢复 Run。`read_only` 和 `reuse_identical_results` 由可信注册端声明，模型不能自行修改。普通聊天只暴露只读工具；只有 work Run 才允许执行工具，且真正调用执行工具时才创建 Runtime。
+
+海事办公区是当前 Workspace 的增量入口：`/workspace/skills` 对应 SkillRegistry 与账户技能版本，`/workspace/research` 对应 MaritimeCorpus 与来源快照，`/workspace/cases` 对应 MaritimeOffice 的成员、事项、版本和 audit；对话回答中的工作包和文件则通过当前 Run 的 artifact 投影回到 Conversation。它们共享账户、会话、Harness 和 ExecutionProvider，不创建第二个 Workspace 或 Harness。
+
 ## 执行环境与文件
 
 `execution/workspace.py` 统一 read / write / edit / bash、账户与会话目录、版本冲突、产物、预览和回收。`docker.py/native.py` 实现 `CommandRuntime` 进程边界。文件内容与编辑补丁经标准输入传输。

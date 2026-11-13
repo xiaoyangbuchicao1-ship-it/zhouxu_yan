@@ -68,17 +68,38 @@ def build_harness(
         material_search_tool.spec,
         material_search_tool,
     )
-    # Skills are read-only process contracts. Keep them available to both
-    # conversation modes so domain answers and work deliverables use the same
-    # explicit workflow; executable file tools remain work-only by their specs.
-    if rag is not None or any(name in registered for name in ("search_cases", "read_case")) or execution_tools is not None:
-        from backend.infrastructure.tools.skills import SkillReadTool
-        from backend.skills.registry import default_skill_registry
+    # Maritime research is an additive set of read-only business tools.  The
+    # corpus adapter is shared by search and later citation projection, while
+    # the existing Harness remains the sole dispatcher.
+    from backend.application.maritime.work_packages import (
+        WorkPackageTool,
+        configured_store,
+    )
+    from backend.infrastructure.search.maritime_corpus import MaritimeCorpus
+    from backend.infrastructure.tools.maritime import ClaimTool, CorpusTool
 
-        skill_tool = SkillReadTool(default_skill_registry(), settings)
-        if skill_tool.spec.name in registered:
+    maritime_corpus = MaritimeCorpus()
+    for maritime_tool in (
+        CorpusTool(maritime_corpus),
+        ClaimTool(),
+        WorkPackageTool(configured_store(settings), maritime_corpus),
+    ):
+        if maritime_tool.spec.name in registered:
             raise ValueError("duplicate_tool_registration")
-        registered[skill_tool.spec.name] = (skill_tool.spec, skill_tool)
+        registered[maritime_tool.spec.name] = (
+            maritime_tool.spec,
+            maritime_tool,
+        )
+    # Skills are read-only method packages.  The model-facing read_skill tool
+    # is registered independently of RAG, case retrieval, or execution so the
+    # Skill catalog remains usable in ordinary chat and work conversations.
+    from backend.infrastructure.tools.skills import SkillReadTool
+    from backend.skills.registry import default_skill_registry
+
+    skill_tool = SkillReadTool(default_skill_registry(), settings)
+    if skill_tool.spec.name in registered:
+        raise ValueError("duplicate_tool_registration")
+    registered[skill_tool.spec.name] = (skill_tool.spec, skill_tool)
     for name, (spec, _) in registered.items():
         if name != spec.name or name == settings.model.clarification_tool:
             raise ValueError("invalid_tool_registration")

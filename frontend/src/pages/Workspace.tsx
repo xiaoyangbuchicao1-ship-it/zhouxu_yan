@@ -15,11 +15,14 @@ import {
   Folder,
   ArrowLeft,
   Plus,
+  BriefcaseBusiness,
+  LoaderCircle,
+  MessageCircle,
 } from "lucide-react";
 import { useAuthSession, saveSession, getSignedOutNotice } from "@/lib/auth-session";
 import { revokeSession, type AuthSession } from "@/lib/auth";
 import { useWorkspace } from "@/hooks/use-workspace";
-import type { Conversation as Chat, Resource } from "@/lib/workbench-api";
+import type { Conversation as Chat, ConversationMode, Resource } from "@/lib/workbench-api";
 import Sidebar, { type SidebarProps } from "@/components/workspace/Sidebar";
 import Conversation from "@/components/workspace/Conversation";
 import ConversationModeSwitch from "@/components/workspace/ConversationModeSwitch";
@@ -29,6 +32,7 @@ import {
   ResourcePreview,
 } from "@/components/workspace/Resources";
 import { Modal, IconButton } from "@/components/workspace/Primitives";
+import MaritimeDesk, { type OfficePage } from "@/components/workspace/MaritimeDesk";
 import "./workspace.css";
 
 interface Confirmation {
@@ -42,9 +46,14 @@ function Desk({ session }: { session: AuthSession }) {
   const navigate = useNavigate();
   const location = useLocation();
   const library = location.pathname === "/workspace/library";
+  const officePage = location.pathname.match(/^\/workspace\/(skills|research|cases)\/?$/)?.[1] as OfficePage | undefined;
   const match = location.pathname.match(/^\/workspace\/chat\/([^/]+)\/?$/);
   const id = match?.[1];
-  const ws = useWorkspace(session, id);
+  const params = new URLSearchParams(location.search);
+  const ws = useWorkspace(session, id, {
+    skillId: params.get("skill") || undefined,
+    caseId: params.get("case") || undefined,
+  });
   const reduced = useReducedMotion();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
@@ -59,6 +68,22 @@ function Desk({ session }: { session: AuthSession }) {
   const [moving, setMoving] = useState<Chat | null>(null);
   const [targetProject, setTargetProject] = useState("");
   const [preview, setPreview] = useState<Resource | null>(null);
+  const [modeTransition, setModeTransition] = useState<ConversationMode | null>(null);
+
+  useEffect(() => {
+    if (!modeTransition) return;
+    const timer = window.setTimeout(
+      () => setModeTransition(null),
+      reduced ? 0 : 620,
+    );
+    return () => window.clearTimeout(timer);
+  }, [modeTransition, reduced]);
+
+  function changeConversationMode(next: ConversationMode) {
+    if (id || ws.busy || ws.modeChanging || ws.conversationMode === next) return;
+    setModeTransition(next);
+    ws.setConversationMode(next);
+  }
 
   useEffect(() => {
     const media = window.matchMedia("(max-width: 1100px)");
@@ -135,7 +160,9 @@ function Desk({ session }: { session: AuthSession }) {
       });
     },
   };
-  const title = library
+  const title = officePage
+    ? ({ skills: "技能工坊", research: "海事检索", cases: "案件协作" }[officePage])
+    : library
     ? "资料库"
     : ws.detail.data?.conversation.title || "新对话";
   const group = ws.projects.data?.projects.find(
@@ -156,12 +183,12 @@ function Desk({ session }: { session: AuthSession }) {
     />
   );
   const invalidPath =
-    !library && !id && !/^\/workspace\/?$/.test(location.pathname);
+    !library && !officePage && !id && !/^\/workspace\/?$/.test(location.pathname);
   if (invalidPath) return <Navigate to="/workspace" replace />;
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="workspace">
+      <div className={`workspace ${modeTransition ? "is-mode-transitioning" : ""}`}>
         <a className="ws-skip-link" href="#workspace-main">
           跳到主要内容
         </a>
@@ -200,7 +227,12 @@ function Desk({ session }: { session: AuthSession }) {
               </div>
             </div>
             <div className="ws-topbar-actions">
-              {library ? (
+              {officePage ? (
+                <Link className="ws-text-button" to="/workspace">
+                  <ArrowLeft size={16} />
+                  <span>回到对话</span>
+                </Link>
+              ) : library ? (
                 <Link className="ws-text-button" to="/workspace">
                   <ArrowLeft size={16} />
                   <span>回到对话</span>
@@ -209,9 +241,10 @@ function Desk({ session }: { session: AuthSession }) {
                 <>
                   <ConversationModeSwitch
                     value={ws.conversationMode}
-                    onChange={(mode) => void ws.setConversationMode(mode)}
+                    onChange={changeConversationMode}
                     disabled={ws.modeChanging || Boolean(id && ws.detail.isPending)}
                     locked={Boolean(id)}
+                    transitioning={Boolean(modeTransition)}
                   />
                   <button
                     className={`ws-materials-trigger ${materials ? "is-active" : ""}`}
@@ -237,10 +270,32 @@ function Desk({ session }: { session: AuthSession }) {
                 </>
               )}
             </div>
+            <AnimatePresence initial={false}>
+              {modeTransition && (
+                <motion.div
+                  className="ws-mode-transition"
+                  role="status"
+                  aria-live="polite"
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                >
+                  <LoaderCircle size={13} aria-hidden="true" />
+                  正在准备{modeTransition === "work" ? "工作" : "聊天"}空间…
+                </motion.div>
+              )}
+            </AnimatePresence>
           </header>
           <div className="ws-work-area">
             <main id="workspace-main" className="ws-main" tabIndex={-1}>
-              {library ? (
+              {officePage ? (
+                <MaritimeDesk
+                  key={officePage}
+                  page={officePage}
+                  token={session.session.token}
+                  accountId={session.account.id}
+                />
+              ) : library ? (
                 <LibraryPage
                   ws={ws}
                   onPreview={setPreview}
@@ -255,7 +310,7 @@ function Desk({ session }: { session: AuthSession }) {
               )}
             </main>
             <AnimatePresence initial={false}>
-              {materials && !library && !narrow && (
+              {materials && !library && !officePage && !narrow && (
                 <motion.aside
                   key="materials"
                   id="workspace-materials"
@@ -295,7 +350,7 @@ function Desk({ session }: { session: AuthSession }) {
           />
         </Modal>
         <Modal
-          open={materials && narrow && !library}
+          open={materials && narrow && !library && !officePage}
           onOpenChange={setMaterials}
           title="资料与依据"
           description="管理本对话的资料与附件。"
@@ -454,6 +509,42 @@ function Desk({ session }: { session: AuthSession }) {
               <IconButton label="关闭提示" onClick={() => ws.setNotice("")}>
                 <X size={16} />
               </IconButton>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {modeTransition && (
+            <motion.div
+              className={`ws-mode-refresh is-${modeTransition}`}
+              role="status"
+              aria-live="polite"
+              data-testid="mode-refresh"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: reduced ? 0 : 0.16, ease: "easeOut" }}
+            >
+              <div className="ws-mode-refresh-sheen" aria-hidden="true" />
+              <motion.div
+                className="ws-mode-refresh-card"
+                initial={{ opacity: 0, y: 10, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                transition={{
+                  duration: reduced ? 0 : 0.36,
+                  delay: reduced ? 0 : 0.06,
+                  ease: [0.16, 1, 0.3, 1],
+                }}
+              >
+                <span className="ws-mode-refresh-icon" aria-hidden="true">
+                  {modeTransition === "work" ? <BriefcaseBusiness size={18} /> : <MessageCircle size={18} />}
+                </span>
+                <div className="ws-mode-refresh-copy">
+                  <strong>正在切换到{modeTransition === "work" ? "工作" : "聊天"}模式</strong>
+                  <span>为这段新对话准备独立空间</span>
+                </div>
+                <span className="ws-mode-refresh-meter" aria-hidden="true"><span /></span>
+              </motion.div>
             </motion.div>
           )}
         </AnimatePresence>

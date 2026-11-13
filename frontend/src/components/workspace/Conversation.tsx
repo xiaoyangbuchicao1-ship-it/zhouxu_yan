@@ -1,5 +1,6 @@
 import { ThinkingModeSelect } from "./ThinkingModeSelect";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
@@ -25,11 +26,14 @@ import {
 import type { useWorkspace } from "@/hooks/use-workspace";
 import type { Artifact, Message, SourceDocument, SourceReference } from "@/lib/workbench-api";
 import { mergeRunMessages } from "@/lib/workbench-api";
-import { IconButton, Menu, MenuItem, Loading, LoadError } from "./Primitives";
+import { useAuthSession } from "@/lib/auth-session";
+import { maritimeApi, type MaritimeCase } from "@/lib/maritime-api";
+import { IconButton, Menu, MenuItem, Loading, LoadError, Modal } from "./Primitives";
 
 import { RunProgress } from "./RunProgress";
 import { ActivityIndicator } from "./ActivityIndicator";
 import { MaterialCards, MaterialDescription } from "./MaterialCards";
+import { WorkPackages } from "./WorkPackages";
 import { useStreamingText } from "@/hooks/use-streaming-text";
 
 type Workspace = ReturnType<typeof useWorkspace>;
@@ -208,6 +212,102 @@ function ArtifactCards({ artifacts, onDownload }: { artifacts?: Artifact[]; onDo
   );
 }
 
+const MARITIME_SOURCE_URL = /(?:\/api\/)?maritime\/sources\/(?:laws|cases)\/[^\s<>\x29\x5d`"”，。；]+(?:\?[^\s<>\x29\x5d`"”，。；]*)?/;
+const MARITIME_SOURCE_URL_GLOBAL = new RegExp(MARITIME_SOURCE_URL.source, "g");
+const MARITIME_SOURCE_MARKDOWN = new RegExp(`\\[[^\\]]*\\]\\(${MARITIME_SOURCE_URL.source}\\)`, "g");
+
+function stripMaritimeSourceMarkup(content: string) {
+  return content
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(line) || !MARITIME_SOURCE_URL.test(line))
+    .map((line) => line.replace(MARITIME_SOURCE_MARKDOWN, "").replace(MARITIME_SOURCE_URL_GLOBAL, "").trimEnd())
+    .filter((line, index, lines) => line.trim() || (index > 0 && lines[index - 1].trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+function SaveAnswer({ message, onNotice }: { message: Message; onNotice: (text: string) => void }) {
+  const session = useAuthSession();
+  const location = useLocation();
+  const [open, setOpen] = useState(false);
+  const [cases, setCases] = useState<MaritimeCase[]>([]);
+  const [caseId, setCaseId] = useState("");
+  const [title, setTitle] = useState("海事研究草稿");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function show() {
+    if (!session) return;
+    setOpen(true);
+    setBusy(true);
+    setError("");
+    try {
+      const value = await maritimeApi(session.session.token).cases();
+      setCases(value.cases);
+      const preferred = new URLSearchParams(location.search).get("case");
+      setCaseId(value.cases.find((item) => item.id === preferred)?.id || value.cases[0]?.id || "");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "案件未能载入");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save() {
+    if (!session || !caseId || !title.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await maritimeApi(session.session.token).saveEntry(caseId, {
+        kind: "document",
+        title: title.trim(),
+        content: stripMaritimeSourceMarkup(message.content),
+        status: "draft",
+      });
+      setOpen(false);
+      onNotice("已保存为案件文书草稿，待专业复核。");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "保存未完成");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button className="ws-text-button" onClick={() => void show()}>
+        <FileText size={15} />
+        存入案件
+      </button>
+      <Modal
+        open={open}
+        onOpenChange={(value) => { if (!busy) setOpen(value); }}
+        title="存入案件"
+        description="只保存为草稿，不自动确认专业复核或发送。"
+      >
+        {error && <p role="alert" className="md-form-error">{error}</p>}
+        {busy ? <Loading label="处理中…" /> : !cases.length ? (
+          <p>请先在<Link to="/workspace/cases">案件协作</Link>建立案件，再保存这份草稿。</p>
+        ) : (
+          <form className="md-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+            <label>
+              目标案件
+              <select aria-label="目标案件" value={caseId} onChange={(event) => setCaseId(event.target.value)}>
+                {cases.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+              </select>
+            </label>
+            <label>
+              文书标题
+              <input required maxLength={160} value={title} onChange={(event) => setTitle(event.target.value)} />
+            </label>
+            <button className="ws-primary-button" disabled={busy || !caseId || !title.trim()}>保存草稿</button>
+          </form>
+        )}
+      </Modal>
+    </>
+  );
+}
+
 function SourceViewer({
   reference,
   document,
@@ -298,6 +398,10 @@ function Answer({
       <Markdown content={message.content} />
       <SourceCards sources={message.sources} onOpen={onOpenSource} />
       <ArtifactCards artifacts={message.artifacts} onDownload={onDownloadArtifact} />
+      <WorkPackages
+        runId={message.run_id || undefined}
+        renderText={(text) => <Markdown content={text} />}
+      />
       {message.status === "stopped" && (
         <div className="ws-run-status ws-run-status-stopped" role="status">
           已停止
@@ -320,6 +424,7 @@ function Answer({
           {copied ? <Check size={15} /> : <Copy size={15} />}
           {copied ? "已复制" : "复制回答"}
         </button>
+        <SaveAnswer message={message} onNotice={onNotice} />
       </div>
     </article>
   );

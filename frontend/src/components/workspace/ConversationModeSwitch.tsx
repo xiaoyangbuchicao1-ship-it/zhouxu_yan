@@ -1,4 +1,5 @@
 import { BriefcaseBusiness, LockKeyhole, MessageCircle } from "lucide-react";
+import { motion } from "framer-motion";
 import type { ConversationMode } from "@/lib/workbench-api";
 
 const modes: Array<{
@@ -26,11 +27,13 @@ export default function ConversationModeSwitch({
   onChange,
   disabled = false,
   locked = false,
+  transitioning = false,
 }: {
   value: ConversationMode;
   onChange?: (mode: ConversationMode) => void;
   disabled?: boolean;
   locked?: boolean;
+  transitioning?: boolean;
 }) {
   const selected = modes.find(({ value: mode }) => mode === value) || modes[0];
   if (locked) {
@@ -50,7 +53,11 @@ export default function ConversationModeSwitch({
     );
   }
   return (
-    <div className="ws-mode-switch" role="group" aria-label="会话模式">
+    <div
+      className={`ws-mode-switch ${transitioning ? "is-transitioning" : ""}`}
+      role="group"
+      aria-label="会话模式"
+    >
       {modes.map(({ value: mode, label, description, Icon }) => (
         <button
           key={mode}
@@ -58,9 +65,17 @@ export default function ConversationModeSwitch({
           className={`ws-mode-option ${value === mode ? "is-selected" : ""}`}
           aria-pressed={value === mode}
           title={description}
-          disabled={disabled}
+          disabled={disabled || transitioning}
           onClick={() => onChange?.(mode)}
         >
+          {value === mode && (
+            <motion.span
+              layoutId="ws-mode-option-active"
+              className="ws-mode-option-active"
+              transition={{ type: "spring", stiffness: 420, damping: 32 }}
+              aria-hidden="true"
+            />
+          )}
           <Icon size={15} strokeWidth={1.8} aria-hidden="true" />
           <span>{label}</span>
         </button>

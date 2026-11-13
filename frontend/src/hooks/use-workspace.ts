@@ -5,14 +5,19 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { saveSession } from "@/lib/auth-session";
 import type { AuthSession } from "@/lib/auth";
-import { workbenchApi, WorkbenchError, acceptStreamSequence, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference } from "@/lib/workbench-api";
+import { workbenchApi, WorkbenchError, acceptStreamSequence, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
 
 export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; materials: Material[]; updates: string[]; activities: Activity[]; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "waiting" | "completed" | "failed" | "stopped" | "interrupted"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; question: string }; }
 export interface Upload { key: string; conversationId: string; file: File; error?: string; }
 const terminal = new Set<RunStatus>(["completed", "failed", "stopped", "interrupted"]);
 const stateFor = (status: RunStatus): PendingTurn["state"] => status === "waiting_user" ? "waiting" : terminal.has(status) ? status as PendingTurn["state"] : "receiving";
 
-export function useWorkspace(session: AuthSession, id?: string) {
+export interface WorkspaceTaskContext {
+  skillId?: string;
+  caseId?: string;
+}
+
+export function useWorkspace(session: AuthSession, id?: string, taskContext: WorkspaceTaskContext = {}) {
   const navigate = useNavigate();
   const client = useQueryClient();
   const [lifetime, setLifetime] = useState(() => new AbortController());
@@ -42,6 +47,10 @@ export function useWorkspace(session: AuthSession, id?: string) {
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const taskFacts = useMemo<TaskContextFacts>(() => ({
+    ...(taskContext.skillId ? { skill_id: taskContext.skillId } : {}),
+    ...(taskContext.caseId ? { case_id: taskContext.caseId } : {}),
+  }), [taskContext.caseId, taskContext.skillId]);
   const controllers = useRef<Record<string, AbortController>>({});
   const sequences = useRef<Record<string, number>>({});
   const submitLock = useRef(false);
@@ -101,7 +110,10 @@ export function useWorkspace(session: AuthSession, id?: string) {
     if (!creation.current) creation.current = (draftConversationMode === "chat" ? api.create(title) : api.create(title, draftConversationMode)).then(chat => {
       if (lifetime.signal.aborted) throw new DOMException("Aborted", "AbortError");
       setDrafts(current => { const next = { ...current, [chat.id]: current.new || current[chat.id] || "" }; delete next.new; return next; });
-      navigate(`/workspace/chat/${chat.id}`, { replace: true });
+      const query = new URLSearchParams();
+      if (taskContext.skillId) query.set("skill", taskContext.skillId);
+      if (taskContext.caseId) query.set("case", taskContext.caseId);
+      navigate(`/workspace/chat/${chat.id}${query.toString() ? `?${query}` : ""}`, { replace: true });
       void client.invalidateQueries({ queryKey: [...scope, "history"] }); return chat.id;
     }).finally(() => { creation.current = undefined; });
     return creation.current;
@@ -237,13 +249,13 @@ export function useWorkspace(session: AuthSession, id?: string) {
       const conversationId = await ensureConversation(conversationTitle(question)); const sent = [...draftMaterials];
       let run: RunEnvelope;
       if (mode === "steer" && turn?.runId && turn.status === "running") {
-        run = (await api.steer(turn.runId, conversationId, question, [], sent.map(m => m.id))).run;
+        run = (await api.steer(turn.runId, conversationId, question, [], sent.map(m => m.id), taskFacts)).run;
         controllers.current[run.run_id]?.abort(); delete controllers.current[run.run_id];
       } else if (turn?.state === "waiting" && turn.runId && turn.inputRequest) {
         run = (await api.resume(turn.runId, conversationId, turn.inputRequest.requestId, question, sent.map(m => m.id))).run;
       } else {
         const key = crypto.randomUUID();
-        const submit = () => api.submit(conversationId, question, [], lifetime.signal, key, undefined, sent.map(m => m.id), selectedMode);
+        const submit = () => api.submit(conversationId, question, [], lifetime.signal, key, undefined, sent.map(m => m.id), selectedMode, taskFacts);
         try { run = (await submit()).run; }
         catch (e) { if (e instanceof WorkbenchError && e.status === 0 && !lifetime.signal.aborted) run = (await submit()).run; else throw e; }
       }
@@ -274,7 +286,7 @@ export function useWorkspace(session: AuthSession, id?: string) {
       await applyRun(id, stopped, queued.materials);
       let steered: RunEnvelope;
       try {
-        steered = (await api.steer(active.runId, id, queued.question, [], queued.materials.map(material => material.id))).run;
+        steered = (await api.steer(active.runId, id, queued.question, [], queued.materials.map(material => material.id), taskFacts)).run;
       } catch (error) {
         setDrafts(current => ({ ...current, [id]: [queued.question, current[id]].filter(Boolean).join("\n\n") }));
         setAttachments(current => ({ ...current, [id]: [...new Map([...(current[id] || []), ...queued.materials].map(material => [material.id, material])).values()] }));
@@ -333,7 +345,7 @@ export function useWorkspace(session: AuthSession, id?: string) {
   async function retryTurn(runId = turn?.runId) {
     if (!id || !runId || submitLock.current) return;
     submitLock.current = true;
-    try { const source = (await api.run(runId, id)).run; if (source.status === "waiting_user") { const stopped = await api.stop(runId, id); await applyRun(id, stopped.run); } const { run } = await api.submit(id, source.payload.text, source.payload.material_ids, lifetime.signal, crypto.randomUUID(), runId, source.payload.attached_material_ids, source.payload.thinking_mode); await applyRun(id, run); observe(id, run.run_id); await refresh(); }
+    try { const source = (await api.run(runId, id)).run; if (source.status === "waiting_user") { const stopped = await api.stop(runId, id); await applyRun(id, stopped.run); } const retryFacts: TaskContextFacts = { skill_id: typeof source.payload.facts.skill_id === "string" ? source.payload.facts.skill_id : taskFacts.skill_id, case_id: typeof source.payload.facts.case_id === "string" ? source.payload.facts.case_id : taskFacts.case_id }; const { run } = await api.submit(id, source.payload.text, source.payload.material_ids, lifetime.signal, crypto.randomUUID(), runId, source.payload.attached_material_ids, source.payload.thinking_mode, retryFacts); await applyRun(id, run); observe(id, run.run_id); await refresh(); }
     catch (e) { report(e); } finally { submitLock.current = false; }
   }
   async function cancel(interrupt = false) {

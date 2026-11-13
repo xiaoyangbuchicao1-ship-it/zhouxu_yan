@@ -1,4 +1,4 @@
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Plus,
@@ -14,7 +14,9 @@ import {
   LogOut,
   ArrowUpRight,
   BriefcaseBusiness,
+  Compass,
   MessageCircle,
+  Search,
 } from "lucide-react";
 import logo from "../../../zhou-xu-mark.png";
 import { IconButton, Menu, MenuItem, Loading, LoadError } from "./Primitives";
@@ -54,6 +56,8 @@ export default function Sidebar({
   logout,
 }: SidebarProps) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const officePage = location.pathname.match(/^\/workspace\/(skills|research|cases)\/?$/)?.[1];
   const conversations = ws.history.data?.conversations || [];
   const list = ws.projectFilter
     ? conversations.filter((c) => c.project_id === ws.projectFilter)
@@ -144,7 +148,7 @@ export default function Sidebar({
         <Link
           to="/workspace"
           onClick={onNavigate}
-          className={`ws-new-chat ${!id && !library ? "is-active" : ""}`}
+          className={`ws-new-chat ${!id && !library && !officePage ? "is-active" : ""}`}
           title="新建对话"
         >
           <Plus size={19} />
@@ -160,6 +164,23 @@ export default function Sidebar({
           <Library size={18} />
           <span>资料库</span>
         </Link>
+        {([
+          ["skills", "技能工坊", Compass],
+          ["research", "海事检索", Search],
+          ["cases", "案件协作", BriefcaseBusiness],
+        ] as const).map(([path, label, Icon]) => (
+          <Link
+            key={path}
+            to={`/workspace/${path}`}
+            onClick={onNavigate}
+            className={`ws-nav-link ${officePage === path ? "is-active" : ""}`}
+            title={label}
+            aria-current={officePage === path ? "page" : undefined}
+          >
+            <Icon size={18} />
+            <span>{label}</span>
+          </Link>
+        ))}
       </nav>
       <AnimatePresence initial={false}>
         {!collapsed && (

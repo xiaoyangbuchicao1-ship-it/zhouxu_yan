@@ -251,6 +251,14 @@ def create_app(
         app.state.control_service = supplied_service
         app.state.event_hub = EventHub()
 
+    # Maritime office features extend the existing workbench application.  The
+    # router owns only its domain endpoints and resolves the authenticated
+    # account through the same account service already used by the workbench;
+    # it does not create a second application or harness.
+    from backend.interfaces.api.maritime import attach_maritime
+
+    attach_maritime(app, settings)
+
     def service(request: Request) -> HarnessControlService:
         return request.app.state.control_service
 
@@ -266,6 +274,37 @@ def create_app(
             repository = CorpusSourceRepository(settings)
             request.app.state.source_repository = repository
         return repository
+
+    def resolve_run_facts(
+        request: Request,
+        principal: AccountPrincipal,
+        facts: dict,
+        conversation_mode: str,
+    ) -> dict:
+        """Resolve optional maritime context through the existing workbench.
+
+        The browser may send a Skill or case identifier, but never a resolved
+        body.  The maritime adapter re-reads the authorized records and strips
+        client supplied context before the Run enters the Harness.
+        """
+
+        values = dict(facts or {})
+        requested_mode = values.get("task_mode")
+        if requested_mode is not None:
+            if not isinstance(requested_mode, str) or requested_mode not in {
+                "chat",
+                "work",
+            }:
+                raise HTTPException(status_code=422, detail="invalid_task_mode")
+            if requested_mode != conversation_mode:
+                raise HTTPException(
+                    status_code=409, detail="conversation_mode_locked"
+                )
+        values.setdefault("task_mode", conversation_mode)
+        resolver = getattr(request.app.state, "resolve_maritime_skill", None)
+        if resolver is None:
+            return values
+        return resolver(request, principal.id, values)
 
     def bearer_token(authorization: str | None) -> str:
         if not authorization or not authorization.lower().startswith("bearer "):
@@ -860,6 +899,7 @@ def create_app(
             ).mode
         if body.conversation_id != conversation_id:
             raise HTTPException(status_code=400, detail="conversation_id_mismatch")
+        run_facts = resolve_run_facts(request, principal, body.facts, conversation_mode)
         if body.dispatch_mode in {"queue", "steer"} and not body.text.strip():
             raise HTTPException(status_code=422, detail="text_required")
         if body.dispatch_mode == "queue" and not body.client_request_id:
@@ -914,7 +954,7 @@ def create_app(
                         run_id=body.target_run_id,
                         payload=RunInput(
                             text=body.text,
-                            facts=body.facts,
+                            facts=run_facts,
                             constraints=body.constraints,
                             material_ids=steer_material_ids,
                         ),
@@ -963,7 +1003,7 @@ def create_app(
                     text=body.text,
                     mode=conversation_mode,
                     thinking_mode=body.thinking_mode or settings.model.thinking_mode,
-                    facts=body.facts,
+                    facts=run_facts,
                     constraints=body.constraints,
                     material_ids=material_ids,
                     attached_material_ids=body.attached_material_ids,
@@ -1179,13 +1219,22 @@ def create_app(
                 raise HTTPException(status_code=404, detail=exc.code) from None
         from backend.contracts.modules.loop import RunInput
 
+        conversation_mode = "chat"
+        workspace_service = workspace(request)
+        if workspace_service is not None:
+            conversation_mode = workspace_service.get(
+                account_id=principal.id, conversation_id=body.conversation_id
+            ).mode
+        run_facts = resolve_run_facts(request, principal, body.facts, conversation_mode)
+
         try:
             _, run = await service(request).steer(
                 session_id=body.conversation_id,
                 run_id=run_id,
                 payload=RunInput(
                     text=body.text,
-                    facts=body.facts,
+                    mode=conversation_mode,
+                    facts=run_facts,
                     constraints=body.constraints,
                     material_ids=ids,
                     attached_material_ids=body.attached_material_ids,
@@ -1722,7 +1771,11 @@ def create_app(
                 payload=RunInput(
                     text=body.text,
                     mode=conversation_mode,
-                    facts=body.facts,
+                    facts=(
+                        resolve_run_facts(request, principal, body.facts, conversation_mode)
+                        if principal is not None
+                        else body.facts
+                    ),
                     constraints=body.constraints,
                     material_ids=material_ids,
                 ),

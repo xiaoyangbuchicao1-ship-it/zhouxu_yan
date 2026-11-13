@@ -124,6 +124,7 @@ class WorkspaceExecutionProvider:
             "read": ToolSpec(
                 name="read",
                 description="读取当前工作区内的文本文件或目录。path只能是相对当前工作区的路径；二进制文档请用bash调用文档库读取。",
+                kind="execution",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -141,6 +142,7 @@ class WorkspaceExecutionProvider:
             "write": ToolSpec(
                 name="write",
                 description="在当前工作区创建文本文件或脚本。默认不覆盖已有文件；需要修改已有文本时使用edit。",
+                kind="execution",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -156,6 +158,7 @@ class WorkspaceExecutionProvider:
             "edit": ToolSpec(
                 name="edit",
                 description="按精确唯一文本替换修改文件。可传expected_sha256；匹配不到或匹配多处时不会写入。二进制DOCX请用脚本和bash处理。",
+                kind="execution",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -171,6 +174,7 @@ class WorkspaceExecutionProvider:
             "bash": ToolSpec(
                 name="bash",
                 description="在当前工作区的隔离执行环境内运行bash命令。命令只应操作本次会话工作区；首期文档生成可调用python-docx、lxml、LibreOffice和PDF检查工具。固定模板或复杂OOXML由部署运行时提供。",
+                kind="execution",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -475,13 +479,19 @@ shutil.copyfile(result,target)
         for path in workspace.root.rglob("*"):
             if path.is_file() and path.suffix.lower() in {".docx", ".docm"}:
                 relative = path.relative_to(workspace.root).as_posix()
-                check = workspace.runtime.python(
-                    "from docx import Document; import sys; Document(sys.argv[1])",
-                    [relative],
-                    check=False,
-                )
-                if check.returncode == 0:
-                    self._ensure_preview(workspace, relative)
+                try:
+                    check = workspace.runtime.python(
+                        "from docx import Document; import sys; Document(sys.argv[1])",
+                        [relative],
+                        check=False,
+                    )
+                    if check.returncode == 0:
+                        self._ensure_preview(workspace, relative)
+                except (OSError, RuntimeError, TimeoutError):
+                    # A missing office converter must not hide the original
+                    # document.  The completed Run still exposes it for
+                    # download; the API can report preview unavailable.
+                    continue
         for path in workspace.root.rglob("*.pdf"):
             if path.is_file():
                 relative = path.relative_to(workspace.root).as_posix()
@@ -530,7 +540,8 @@ shutil.copyfile(result,target)
                         for candidate in artifacts
                         if candidate is not item
                         and candidate["kind"] == "document"
-                        and Path(candidate["name"]).stem == Path(item["name"]).stem
+                        and Path(candidate["relative_path"]).with_suffix("").as_posix()
+                        == Path(item["relative_path"]).with_suffix("").as_posix()
                     ),
                     None,
                 )
