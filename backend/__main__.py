@@ -34,7 +34,7 @@ async def main():
                 ensure_ascii=False,
             )
         )
-        return 0 if result.status in ("completed", "needs_input") else 1
+        return 0 if result.status in ("succeeded", "waiting_user") else 1
     except PortError as exc:
         print(exc.error.model_dump_json())
         return 1

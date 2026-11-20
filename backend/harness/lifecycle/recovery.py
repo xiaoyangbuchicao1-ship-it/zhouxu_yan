@@ -124,7 +124,7 @@ def recovery_for_state(
 
     if status in {
         "queued", "preparing", "running", "waiting_user", "resuming",
-        "retrying", "completed", "succeeded",
+        "retrying", "succeeded",
     }:
         return RunRecovery()
 
@@ -136,16 +136,12 @@ def recovery_for_state(
             message="已暂停，当前进度已保存，可以继续处理。",
         )
 
-    if status in {"interrupted", "stopped", "cancelled"}:
+    if status == "cancelled":
         return RunRecovery(
             mode="checkpoint",
-            can_continue=True,
+            can_continue=False,
             can_retry=True,
-            message=(
-                "已保留当前进度，可以继续处理。"
-                if status == "interrupted"
-                else "已停止，当前进度已保留。"
-            ),
+            message="已取消；如需继续，请重新发起一次运行。",
         )
 
     code = error_code

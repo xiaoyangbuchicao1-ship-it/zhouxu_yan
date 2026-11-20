@@ -117,7 +117,7 @@ class HarnessRunExecutor:
             # The Harness stream is the source of visible text. When execution
             # stops or fails before producing a final answer, project its deltas
             # into the Run result so the scheduler can persist partial_output.
-            if not result.answer and result.status != "completed":
+            if not result.answer and result.status != "succeeded":
                 stream_events = getattr(harness.streams, "stream_events", [])
                 partial = visible_text(
                     event for event in stream_events if event.run_id == run.run_id
@@ -128,7 +128,7 @@ class HarnessRunExecutor:
                 artifacts = await asyncio.to_thread(
                     self._execution_tools.collect_artifacts,
                     run.run_id,
-                    completed=result.status == "completed",
+                    completed=result.status == "succeeded",
                 )
                 if artifacts:
                     state = dict(result.execution_state or {})

@@ -12,7 +12,7 @@ resume with `after_sequence` and discard already accepted events. `done` only
 closes visible text; the lifecycle snapshot remains authoritative.
 
 Conversation history stores the run id on each message and keeps final output
-separate from `partial_output`. Stopped, interrupted, and failed runs retain
+separate from `partial_output`. Paused, cancelled, and failed runs retain
 the visible partial answer. Conversation lifecycle is explicit: `POST
 /archive` is reversible soft archive, `POST /restore` removes the archive
 marker, and `DELETE` permanently deletes an inactive Conversation and its

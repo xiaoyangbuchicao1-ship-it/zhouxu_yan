@@ -403,14 +403,14 @@ function Answer({
         runId={message.run_id || undefined}
         renderText={(text) => <Markdown content={text} />}
       />
-      {message.status === "stopped" && (
-        <div className="ws-run-status ws-run-status-stopped" role="status">
-          已停止
+      {message.status === "cancelled" && (
+        <div className="ws-run-status ws-run-status-cancelled" role="status">
+          已取消
         </div>
       )}
-      {message.status === "interrupted" && (
+      {message.status === "paused" && (
         <div className="ws-run-status" role="status">
-          {message.recovery?.message || "已打断，已保留已生成内容。"}
+          {message.recovery?.message || "已暂停，已保留当前进度。"}
         </div>
       )}
       {message.status === "failed" && (
@@ -660,7 +660,7 @@ export default function Conversation({
                       </span>
                       <span>舟序</span>
                       <span className="ws-stream-state">
-                        {card.status === "running" ? "正在回答" : card.status === "waiting_user" ? "等待补充" : card.status === "completed" ? "已完成" : card.status === "failed" ? "运行失败" : card.status === "stopped" ? "已停止" : card.status === "interrupted" ? "已打断" : "未确认保存"}
+                        {card.status === "running" ? "正在回答" : card.status === "waiting_user" ? "等待补充" : card.status === "succeeded" ? "已完成" : card.status === "failed" ? "运行失败" : card.status === "cancelled" ? "已取消" : card.status === "paused" ? "已暂停" : "未确认保存"}
                       </span>
                     </div>
                     <RunProgress
@@ -672,7 +672,7 @@ export default function Conversation({
                       activeElapsedMs={card.activeElapsedMs}
                       wallElapsedMs={card.wallElapsedMs}
                     />
-                    <StreamingAnswer key={card.runId} text={card.answer} live={card.state === "receiving"} onSettled={card.status === "completed" ? () => void ws.finishPresentation(card.runId!) : undefined} />
+                    <StreamingAnswer key={card.runId} text={card.answer} live={card.state === "receiving"} onSettled={card.status === "succeeded" ? () => void ws.finishPresentation(card.runId!) : undefined} />
                     <SourceCards sources={card.sources} onOpen={(source) => void openSource(source)} />
                     <ArtifactCards artifacts={card.artifacts} onDownload={(artifact) => downloadArtifact(card.runId, artifact)} />
                     {card.state === "waiting" && card.inputRequest && (
@@ -682,7 +682,7 @@ export default function Conversation({
                         <button className="ws-text-button" onClick={() => void ws.retryTurn(card.runId)}>重新处理本任务</button>
                       </div>
                     )}
-                    {(card.state === "interrupted" || card.state === "failed") && (
+                    {(card.state === "paused" || card.state === "failed") && (
                       <div className="ws-run-status" role="status">
                         <p>{card.recovery.message || card.error || "处理未完成，已有内容已保留。"}</p>
                         <div className="ws-run-status-actions">
@@ -691,9 +691,9 @@ export default function Conversation({
                         </div>
                       </div>
                     )}
-                    {card.state === "stopped" && (
-                      <div className="ws-run-status ws-run-status-stopped" role="status">
-                        已停止
+                    {card.state === "cancelled" && (
+                      <div className="ws-run-status ws-run-status-cancelled" role="status">
+                        已取消
                       </div>
                     )}
                   </article>

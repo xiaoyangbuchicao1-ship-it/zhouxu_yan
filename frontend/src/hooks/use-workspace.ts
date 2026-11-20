@@ -8,15 +8,15 @@ import { createClientRequestId } from "@/lib/client-request-id";
 import type { AuthSession } from "@/lib/auth";
 import { workbenchApi, WorkbenchError, acceptStreamSequence, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunNodeState, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
 
-export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; materials: Material[]; updates: string[]; activities: Activity[]; nodes: RunNodeState[]; activeElapsedMs?: number | null; wallElapsedMs?: number | null; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "waiting" | "completed" | "failed" | "stopped" | "interrupted"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; question: string }; }
+export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; materials: Material[]; updates: string[]; activities: Activity[]; nodes: RunNodeState[]; activeElapsedMs?: number | null; wallElapsedMs?: number | null; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "waiting" | "succeeded" | "failed" | "cancelled" | "paused"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; question: string }; }
 export interface Upload { key: string; conversationId: string; file: File; error?: string; }
-const terminal = new Set<RunStatus>(["completed", "succeeded", "failed", "cancelled", "stopped", "interrupted", "paused"]);
+const terminal = new Set<RunStatus>(["succeeded", "failed", "cancelled", "paused"]);
 const stateFor = (status: RunStatus): PendingTurn["state"] => {
   if (status === "waiting_user") return "waiting";
   if (status === "failed") return "failed";
-  if (status === "cancelled" || status === "stopped") return "stopped";
-  if (status === "interrupted" || status === "paused") return "interrupted";
-  if (status === "completed" || status === "succeeded") return "completed";
+  if (status === "cancelled") return "cancelled";
+  if (status === "paused") return "paused";
+  if (status === "succeeded") return "succeeded";
   return "receiving";
 };
 
@@ -216,8 +216,8 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
         if (error instanceof WorkbenchError && [401, 403, 404].includes(error.status)) report(error);
         update(runId, c => ({
           ...c,
-          state: "interrupted",
-          status: "interrupted",
+          state: "paused",
+          status: "paused",
           recovery: { mode: "none", can_continue: false, can_retry: false, message: "连接暂时中断，请重新打开对话确认进度。" },
           error: "连接暂时中断，请重新打开对话确认进度。",
         }));
@@ -383,7 +383,7 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const finishPresentation = useCallback(async (runId: string) => {
     if (!id) return;
     await client.invalidateQueries({ queryKey: [...scope, "chat", id] });
-    setCards(current => { if (current[runId]?.status !== "completed") return current; const next = { ...current }; delete next[runId]; return next; });
+    setCards(current => { if (current[runId]?.status !== "succeeded") return current; const next = { ...current }; delete next[runId]; return next; });
   }, [client, id, scope]);
   const downloadArtifact = useCallback(async (runId: string, artifactId: string, name: string) => {
     if (!id) return;

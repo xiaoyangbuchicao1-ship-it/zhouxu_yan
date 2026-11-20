@@ -109,9 +109,9 @@ Docker 默认限制网络、根文件系统、权限和资源。Native 使用专
 
 ## 状态、恢复与公开事件
 
-运行包含 queued、running、waiting_user、completed、failed、stopped、interrupted。等待补充时默认发送恢复原 Run；运行中普通发送排队，显式调整使用 steer。原始目标保留，较新要求另外记录。
+运行包含 queued、preparing、running、waiting_user、pausing、paused、resuming、retrying、succeeded、failed、cancelled。等待补充时默认发送恢复原 Run；运行中普通发送排队，显式调整使用 steer。原始目标保留，较新要求另外记录。
 
-阶段交付保存可用正文及 remaining_work 后继续；达到一轮执行上限可 yielded 回到同一 Run。停止和打断保留已有正文，continue 使用同一检查点；retry 新建来源关联的 Run。未知副作用不自动重放。
+阶段交付保存可用正文及 remaining_work 后继续；达到一轮执行上限可 yielded 回到同一 Run。暂停保留检查点，取消结束当前 Run；continue 使用同一检查点，retry 新建来源关联的 Run。未知副作用不自动重放。
 
 业务 SQLite 保存账户、授权历史和材料信息；SQLiteRunStore 保存私有检查点、公开事件序号和可见正文，以文件锁限定单服务进程。启动自动调度持久化的 queued/running；手动停止、打断和等待补充不自动恢复。旧 JSON 仅作已有数据的读取迁移源。
 

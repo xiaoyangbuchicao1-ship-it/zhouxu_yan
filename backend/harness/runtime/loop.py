@@ -402,7 +402,8 @@ class Harness:
                     retries += 1
                     self._emit(RunEvent(run_id=run_id, module=name, phase="retrying"))
                     continue
-                raise Halt(response.status, error)
+                status = "waiting_user" if response.status == "needs_input" else response.status
+                raise Halt(status, error)
 
         async def remember(source, updates, summary="", *, retention=None):
             record = MemoryRecord(
@@ -435,7 +436,7 @@ class Harness:
 
         def finish(status, *, answer=None, error=None, missing_inputs=None):
             answer = answer or last_answer
-            if not answer and status != "completed":
+            if not answer and status != "succeeded":
                 answer = (
                     visible_text(
                         event
@@ -444,13 +445,13 @@ class Harness:
                     )
                     or None
                 )
-            if status == "completed":
+            if status == "succeeded":
                 progress("finalizing")
                 if self.streams is not None:
                     self.streams.emit_stream(
                         StreamEvent(type="done", run_id=run_id, text=answer or "")
                     )
-            elif status == "needs_input":
+            elif status == "waiting_user":
                 progress("waiting_user")
             elif status == "yielded":
                 progress("stage_delivered")
@@ -1051,11 +1052,11 @@ class Harness:
                     if proposal.kind != "answer" or not (proposal.answer or "").strip():
                         raise Halt("failed", self.settings.error("invalid_completion"))
                     remaining_work = []
-                    return finish("completed", answer=delivered_prefix() + proposal.answer)
+                    return finish("succeeded", answer=delivered_prefix() + proposal.answer)
                 if review.decision == "needs_input":
                     questions = proposal.missing_inputs or review.issues
                     return finish(
-                        "needs_input",
+                        "waiting_user",
                         missing_inputs=questions,
                         error=self.settings.error("missing_input"),
                     )

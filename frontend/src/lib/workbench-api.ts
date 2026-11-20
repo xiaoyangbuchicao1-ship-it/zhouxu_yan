@@ -4,8 +4,8 @@ import { createClientRequestId } from "./client-request-id";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type RunStatus =
   | "queued" | "preparing" | "running" | "waiting_user" | "pausing"
-  | "paused" | "resuming" | "retrying" | "succeeded" | "completed"
-  | "failed" | "cancelled" | "stopped" | "interrupted";
+  | "paused" | "resuming" | "retrying" | "succeeded"
+  | "failed" | "cancelled";
 export type RunNodeKind = "skill" | "tool" | "model" | "file" | "human_gate" | "compile" | "subgraph" | "transform";
 export type RunNodeStatus =
   | "queued" | "preparing" | "running" | "waiting_user" | "pausing"

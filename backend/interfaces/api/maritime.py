@@ -134,7 +134,7 @@ def attach_maritime(app, settings):
         if (
             run.account_id != user.id
             or run.conversation_id != conversation_id
-            or run.status != "completed"
+            or run.status != "succeeded"
         ):
             raise HTTPException(404, "run_not_found")
         raw = run.execution_state.get("artifacts", []) if isinstance(run.execution_state, dict) else []

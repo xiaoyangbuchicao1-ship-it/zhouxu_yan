@@ -32,12 +32,8 @@ RunStatus = Literal[
     "resuming",
     "retrying",
     "succeeded",
-    "cancelled",
-    # Legacy values remain valid for old clients and persisted runs.
-    "interrupted",
-    "stopped",
-    "completed",
     "failed",
+    "cancelled",
 ]
 RecoveryMode = Literal["none", "checkpoint", "fresh_attempt"]
 CommandKind = Literal["submit", "resume", "steer", "interrupt", "stop"]
@@ -116,9 +112,9 @@ class RunEnvelope(Contract):
     completed_units: int | None = None
     total_units: int | None = None
     current_unit: str | None = None
-    # Generic runtime graph state. These fields are optional so old JSON
-    # checkpoints and old clients remain valid while the scheduler is being
-    # migrated to graph execution.
+    # Generic runtime graph state. A chat request and a graph request share the
+    # same Run object; a graph is optional only because a chat executor can
+    # remain a single node in the same lifecycle.
     graph: RunGraph | None = None
     spec: RunSpec | None = None
     graph_id: str | None = None

@@ -137,7 +137,7 @@ class GraphRunExecutor:
                 emit(node, attempt, "finished", "succeeded")
                 progress.current_node_id = progress.current_attempt_id = None
                 await publish()
-            return RunResult(run_id=run.run_id, status="completed", answer="\n\n".join(summaries), elapsed_seconds=monotonic() - started, completed_units=len(ordered), total_units=len(ordered), execution_state=progress.state)
+            return RunResult(run_id=run.run_id, status="succeeded", answer="\n\n".join(summaries), elapsed_seconds=monotonic() - started, completed_units=len(ordered), total_units=len(ordered), execution_state=progress.state)
         except StopRequested:
             await publish()
             return RunResult(run_id=run.run_id, status="cancelled", answer="\n\n".join(summaries), elapsed_seconds=monotonic() - started, execution_state=progress.state)

@@ -36,39 +36,8 @@ NodeStatus = Literal[
     "failed",
     "cancelled",
 ]
-StandardRunStatus = Literal[
-    "queued",
-    "preparing",
-    "running",
-    "waiting_user",
-    "pausing",
-    "paused",
-    "resuming",
-    "retrying",
-    "succeeded",
-    "failed",
-    "cancelled",
-]
-
-
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def standard_run_status(value: str) -> StandardRunStatus:
-    """Map legacy scheduler values to the public lifecycle vocabulary."""
-
-    return {
-        "completed": "succeeded",
-        "interrupted": "paused",
-        "stopped": "cancelled",
-    }.get(value, value)  # type: ignore[return-value]
-
-
-def canonical_run_status(value: str) -> StandardRunStatus:
-    """Compatibility name used by the first lifecycle migration draft."""
-
-    return standard_run_status(value)
 
 
 class Ref(Contract):

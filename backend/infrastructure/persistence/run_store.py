@@ -145,7 +145,7 @@ class SQLiteRunStore:
             for run in state.snapshot.runs:
                 text, sequence = self.visible(run.run_id)
                 run.last_sequence = max(run.last_sequence, sequence)
-                if text and run.status != "completed":
+                if text and run.status != "succeeded":
                     run.partial_output = text
             return state
         value = await self.legacy.load(session_id=session_id) if self.legacy else None

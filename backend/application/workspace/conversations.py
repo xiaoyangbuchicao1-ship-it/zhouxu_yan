@@ -554,7 +554,7 @@ class WorkspaceService:
                     error=error,
                     error_code=error_code,
                     created_at=created_at or now,
-                    completed_at=completed_at or (now if status in {"completed", "failed", "stopped", "interrupted"} else None),
+                    completed_at=completed_at or (now if status in {"succeeded", "failed", "cancelled"} else None),
                 )
                 session.add(record)
             else:
@@ -563,7 +563,7 @@ class WorkspaceService:
                     record.answer = answer
                 if partial_output is not None:
                     record.partial_output = partial_output
-                elif status == "completed":
+                elif status == "succeeded":
                     # A successful retry supersedes an earlier partial result.
                     # Do not leave stale text visible after the final answer.
                     record.partial_output = None
@@ -587,7 +587,7 @@ class WorkspaceService:
                     record.client_request_id = client_request_id
                 if record.retry_of_run_id is None:
                     record.retry_of_run_id = retry_of_run_id
-                if status in {"completed", "failed", "stopped", "interrupted"}:
+                if status in {"succeeded", "failed", "cancelled"}:
                     record.completed_at = record.completed_at or completed_at or now
             conversation.updated_at = now
             try:

@@ -8,42 +8,42 @@ class StopRequested(Exception):
 
 
 class RunControl:
-    """Cooperative stop: no new work after an in-flight call returns."""
+    """Cooperative cancellation at the execution boundary."""
 
     def __init__(self):
-        self._stop = Event()
-        self._reason: Literal["interrupt", "stop"] | None = None
+        self._cancel_requested = Event()
+        self._reason: Literal["pause", "cancel", "steer"] | None = None
         self.checkpoint = None
         self.graph_progress = None
 
-    def cancel(self, reason: Literal["interrupt", "stop"] = "interrupt") -> None:
+    def cancel(self, reason: Literal["pause", "cancel", "steer"] = "pause") -> None:
         """Request cooperative cancellation of the current execution."""
-        self._stop.set()
+        self._cancel_requested.set()
         self._reason = reason
 
     def stop(self) -> None:
         """Mark cancellation as terminal for the current Run."""
-        self.cancel("stop")
+        self.cancel("cancel")
 
     @property
     def cancelled(self) -> bool:
-        return self._stop.is_set()
+        return self._cancel_requested.is_set()
 
     @property
-    def reason(self) -> Literal["interrupt", "stop"] | None:
+    def reason(self) -> Literal["pause", "cancel", "steer"] | None:
         return self._reason
 
     async def read(self, operation):
         """Cancel model reads promptly; never use this for side-effecting tools."""
         task = asyncio.ensure_future(operation)
-        stopped = asyncio.create_task(self._stop.wait())
+        cancelled = asyncio.create_task(self._cancel_requested.wait())
         try:
-            await asyncio.wait({task, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({task, cancelled}, return_when=asyncio.FIRST_COMPLETED)
             if self.cancelled:
                 raise StopRequested
             return await task
         finally:
-            for pending in (task, stopped):
+            for pending in (task, cancelled):
                 if not pending.done():
                     pending.cancel()
-            await asyncio.gather(task, stopped, return_exceptions=True)
+            await asyncio.gather(task, cancelled, return_exceptions=True)

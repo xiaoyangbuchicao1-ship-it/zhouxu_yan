@@ -864,7 +864,7 @@ def create_app(
                 partial_output=run.partial_output,
                 retryable=False,
             )
-            if visible_answer or run.status in {"failed", "interrupted", "stopped"}:
+            if visible_answer or run.status in {"failed", "cancelled", "paused"}:
                 messages.append(
                     WorkspaceMessageView(
                         message_id=f"{run.run_id}:assistant",
@@ -1104,7 +1104,7 @@ def create_app(
             run = await service(request).run(session_id=conversation_id, run_id=run_id)
         except SchedulerCommandError as exc:
             raise _command_error(exc) from exc
-        if run.account_id != principal.id or run.status != "completed":
+        if run.account_id != principal.id or run.status != "succeeded":
             raise HTTPException(status_code=404, detail="artifact_not_found")
         raw_artifacts = run.execution_state.get("artifacts", []) if isinstance(run.execution_state, dict) else []
         selected = next(
@@ -1398,10 +1398,10 @@ def create_app(
                 if hub is not None and hub.stream_events_since(run_id=run_id, after_sequence=cursor):
                     continue
                 if run.status in {
-                    "completed",
+                    "succeeded",
                     "failed",
-                    "stopped",
-                    "interrupted",
+                    "cancelled",
+                    "paused",
                     "waiting_user",
                 }:
                     return
@@ -2034,7 +2034,7 @@ def create_app(
                             last_stream_sequences[event.run_id] = event.sequence
                 if matching and all(
                     run.status
-                    in {"completed", "succeeded", "failed", "interrupted", "stopped", "cancelled", "paused", "waiting_user"}
+                    in {"succeeded", "failed", "cancelled", "paused", "waiting_user"}
                     for run in matching
                 ):
                     return

@@ -200,7 +200,7 @@ class ReflectionResult(Contract):
 
 class RunResult(Contract):
     run_id: str
-    status: Literal["completed", "needs_input", "failed", "cancelled", "yielded"]
+    status: Literal["succeeded", "waiting_user", "failed", "cancelled", "yielded"]
     answer: str | None = None
     missing_inputs: list[str] = Field(default_factory=list)
     error: Error | None = None

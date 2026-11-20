@@ -78,7 +78,7 @@ class InMemoryRunScheduler:
                 await self._ensure_session(session_id)
 
     async def shutdown(self) -> None:
-        # Cancel execution tasks without turning running work into a user stop.
+        # Shutdown cancels worker tasks while preserving their latest checkpoint.
         async with self._lock:
             tasks = [task for session in self._sessions.values() for task in session.tasks.values()]
         for task in tasks:
@@ -92,7 +92,7 @@ class InMemoryRunScheduler:
             run = self._require_run(session, run_id)
             if run.status in {"running", "queued"}:
                 return self._result_locked(session, run)
-            if run.status not in {"stopped", "interrupted", "failed"}:
+            if run.status not in {"paused", "failed"}:
                 raise SchedulerCommandError("run cannot be continued")
             recovery = recovery_for_run(run)
             if not recovery.can_continue:
@@ -177,7 +177,7 @@ class InMemoryRunScheduler:
                 run.partial_output = partial_output
                 # A terminal run must never expose an unfinished answer as its
                 # final output. Keep output separate until the executor finishes.
-                if run.status != "completed":
+                if run.status != "succeeded":
                     run.output = None
                 # Text persistence is not a new execution generation.
                 await self._persist_locked(session)
@@ -237,18 +237,18 @@ class InMemoryRunScheduler:
             run.payload = payload
             run.revision += 1
             control = session.controls[run_id]
-            control.cancel("interrupt")
+            control.cancel("steer")
             await self._persist_locked(session)
             return self._result_locked(session, run)
 
     async def interrupt(self, *, session_id: str, run_id: str) -> DispatchResult:
         return await self._cancel(
-            session_id=session_id, run_id=run_id, terminal="interrupted"
+            session_id=session_id, run_id=run_id, terminal="paused"
         )
 
     async def stop(self, *, session_id: str, run_id: str) -> DispatchResult:
         return await self._cancel(
-            session_id=session_id, run_id=run_id, terminal="stopped"
+            session_id=session_id, run_id=run_id, terminal="cancelled"
         )
 
     async def get_run(self, *, session_id: str, run_id: str) -> RunEnvelope:
@@ -306,16 +306,20 @@ class InMemoryRunScheduler:
         async with self._lock:
             session = self._require_session(session_id)
             run = self._require_run(session, run_id)
-            if run.status in {"completed", "failed", "interrupted", "stopped"}:
+            if run.status in {"succeeded", "failed", "cancelled", "paused", "pausing"}:
                 return self._result_locked(session, run)
-            run.status = terminal
-            run.completed_at = datetime.now(timezone.utc)
+            run.status = terminal if terminal == "cancelled" else "pausing"
+            if terminal == "cancelled":
+                run.completed_at = datetime.now(timezone.utc)
             run.revision += 1
             if run_id in session.queue:
                 session.queue.remove(run_id)
             control = session.controls.get(run_id)
             if control is not None:
-                control.cancel("stop" if terminal == "stopped" else "interrupt")
+                control.cancel("cancel" if terminal == "cancelled" else "pause")
+            elif terminal == "paused":
+                run.status = "paused"
+                run.paused_at = datetime.now(timezone.utc)
             should_dispatch = session.active_run_id != run_id
             await self._persist_locked(session)
         if should_dispatch:
@@ -391,7 +395,7 @@ class InMemoryRunScheduler:
                     run.execution_state = outcome.execution_state
                 # A steer superseded this execution. Its result is never
                 # published; the same Run is placed ahead of ordinary queue work.
-                if run.status not in {"stopped", "interrupted"}:
+                if run.status not in {"cancelled", "pausing"}:
                     run.status = "queued"
                     session.queue.appendleft(run_id)
                 elif outcome.execution_state:
@@ -399,7 +403,7 @@ class InMemoryRunScheduler:
                     if outcome.answer:
                         run.partial_output = outcome.answer
                 session.active_run_id = None
-            elif run.status in {"stopped", "interrupted"}:
+            elif run.status in {"cancelled", "pausing"}:
                 if outcome.answer:
                     run.partial_output = outcome.answer
                     run.output = None
@@ -408,6 +412,9 @@ class InMemoryRunScheduler:
                 run.total_units = outcome.total_units
                 run.current_unit = outcome.current_unit
                 run.execution_state = outcome.execution_state
+                if run.status == "pausing":
+                    run.status = "paused"
+                    run.paused_at = datetime.now(timezone.utc)
                 session.active_run_id = None
             else:
                 self._apply_outcome(session, run, outcome)
@@ -420,7 +427,7 @@ class InMemoryRunScheduler:
     def _apply_outcome(
         self, session: _SessionRuntime, run: RunEnvelope, outcome: RunResult
     ) -> None:
-        if outcome.status == "completed":
+        if outcome.status == "succeeded":
             run.output = outcome.answer
             run.partial_output = None
         elif outcome.answer:
@@ -434,18 +441,18 @@ class InMemoryRunScheduler:
         run.active_elapsed_ms += int(outcome.elapsed_seconds * 1000)
         run.wall_elapsed_ms = int((datetime.now(timezone.utc) - run.created_at).total_seconds() * 1000)
         run.revision += 1
-        if outcome.status in {"completed", "failed", "cancelled"}:
+        if outcome.status in {"succeeded", "failed", "cancelled"}:
             run.completed_at = datetime.now(timezone.utc)
-        if outcome.status == "completed":
-            run.status = "completed"
+        if outcome.status == "succeeded":
+            run.status = "succeeded"
             return
         if outcome.status == "failed":
             run.status = "failed"
             return
         if outcome.status == "cancelled":
-            run.status = "interrupted"
+            run.status = "cancelled"
             return
-        if outcome.status == "needs_input":
+        if outcome.status == "waiting_user":
             run.status = "waiting_user"
             questions = outcome.missing_inputs or [
                 outcome.error.message if outcome.error is not None else "missing input"

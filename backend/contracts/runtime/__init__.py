@@ -14,8 +14,6 @@ from backend.contracts.runtime.graph import (
     RunGraph,
     RunPolicy,
     RunSpec,
-    canonical_run_status,
-    standard_run_status,
 )
 
 __all__ = [
@@ -32,6 +30,4 @@ __all__ = [
     "RunGraph",
     "RunPolicy",
     "RunSpec",
-    "canonical_run_status",
-    "standard_run_status",
 ]

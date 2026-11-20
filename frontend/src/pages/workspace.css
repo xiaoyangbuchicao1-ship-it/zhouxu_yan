@@ -820,7 +820,7 @@
 .ws-run-status p {
   margin: 0;
 }
-.ws-run-status-stopped {
+.ws-run-status-cancelled {
   color: #7e8a99;
 }
 .ws-run-status-waiting {
