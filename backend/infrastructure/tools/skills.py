@@ -48,7 +48,17 @@ class SkillReadTool:
                 "type": "object",
                 "properties": {
                     "skill_id": {"type": "string", "minLength": 1, "maxLength": 80},
-                    "version": {"type": "integer", "minimum": 1},
+                    "version": {
+                        "anyOf": [
+                            {"type": "integer", "minimum": 1},
+                            {"type": "string", "minLength": 1, "maxLength": 80},
+                        ],
+                    },
+                    "resource": {
+                        "type": "string",
+                        "description": "可选：读取该 Skill 返回的 resources 中一个包内资源名称；省略则读取完整 SKILL.md。",
+                        "maxLength": 160,
+                    },
                 },
                 "required": ["skill_id"],
                 "additionalProperties": False,
@@ -69,23 +79,40 @@ class SkillReadTool:
             if not isinstance(name, str) or not name.strip():
                 raise ValueError
             name = name.strip()
-            version = arguments.get("version")
-            if version is not None and (type(version) is not int or version < 1):
+            resource = arguments.get("resource")
+            if resource is not None and not isinstance(resource, str):
                 raise ValueError
-
+            resources: tuple[str, ...] = ()
+            runtime_instructions = ""
+            version = arguments.get("version")
             user_facts = (request.context or {}).get("user_facts", {})
             if not isinstance(user_facts, dict):
                 user_facts = {}
             if version is None and user_facts.get("skill_id") == name:
-                selected_version = user_facts.get("skill_version")
-                if type(selected_version) is int and selected_version >= 1:
-                    version = selected_version
+                version = user_facts.get("skill_version")
+            if version is not None and not (
+                (type(version) is int and version >= 1)
+                or (isinstance(version, str) and 1 <= len(version.strip()) <= 80)
+            ):
+                raise ValueError
 
             if self.registry.contains(name):
                 descriptor = self.registry.descriptor(name)
                 if version is not None and str(version) != descriptor.version:
                     raise SkillNotFound("skill_version_not_found")
-                body = self.registry.read(name)
+                body = self.registry.read_resource(name, resource) if resource else self.registry.read(name)
+                resources = self.registry.resources(name)
+                if name == "csl-law-paper-generator":
+                    runtime_instructions = (
+                        "舟序运行适配：先按选题调用 capability_card_select，匹配时用 capability_card_read "
+                        "读取方法；用 information_card_search/read 获取论文观点，法规与案例分别用现有工具核对。"
+                        "没有匹配方法时继续研究，不套用无关能力卡。包内引注指南可通过 read_skill 的 resource 参数读取。"
+                        "用 write 写入当前工作区的 .typ 源码，再调用 paper_compile(source_path=相对路径)。"
+                        "paper_compile 执行本 Skill 原始固定脚本并提供模板；不要用 bash 猜测宿主路径或自行重写编译器。"
+                        "只有双端编译成功才能交付 PDF 和 Word；错误信息可用于修正源稿后重试。"
+                        "引注中的作者、出版信息、案号和具体页码必须有真实来源；卡片没有页码时不能据此编造印刷页码。"
+                        "能力卡、信息卡、工具名和检索状态只供内部组织工作，不写进论文正文。"
+                    )
                 method = self.registry.method(name)
                 skill_name = descriptor.name
                 skill_id = descriptor.skill_id
@@ -93,6 +120,8 @@ class SkillReadTool:
                 skill_description = descriptor.description
                 source = "builtin"
             else:
+                if resource:
+                    raise SkillNotFound("skill_resource_not_found")
                 account_id = (request.context or {}).get("account_id")
                 if (
                     not isinstance(account_id, str)
@@ -100,7 +129,9 @@ class SkillReadTool:
                     or self.account_skill_loader is None
                 ):
                     raise SkillNotFound("skill_not_found")
-                selected = self.account_skill_loader(account_id, name, version)
+                selected = self.account_skill_loader(
+                    account_id, name, int(version) if version is not None else None
+                )
                 if not isinstance(selected, dict):
                     raise SkillNotFound("skill_not_found")
                 body = selected.get("instructions")
@@ -141,6 +172,9 @@ class SkillReadTool:
                 "branches": method.get("branches", []),
                 "anti_example": method.get("anti_example"),
                 "content": body,
+                "resource": resource,
+                "resources": list(resources),
+                "runtime_instructions": runtime_instructions,
             },
             outcome="ok",
             session_summary={

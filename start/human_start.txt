@@ -1,0 +1,12 @@
+本地电脑开机后执行：
+cd "D:\projects\codex\论文库\真正的舟序"
+
+docker compose -f deploy/app/compose.yaml up -d
+
+& "$env:LOCALAPPDATA\ZhouXu\frp-0.72.0\frpc.exe" -c "$env:LOCALAPPDATA\ZhouXu\frp-0.72.0\zhouxu-docker.toml"
+然后检查：
+docker compose -f deploy/app/compose.yaml ps
+Invoke-WebRequest http://39.105.65.168/
+重新连接 ECS：
+ssh -i "$env:USERPROFILE\.ssh\id_ed25519_zhouxu" root@39.105.65.168
+

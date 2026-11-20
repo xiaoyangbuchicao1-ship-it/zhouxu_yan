@@ -101,7 +101,13 @@ class Client:
         parsed = urllib.parse.urlparse(url)
         require(parsed.scheme == "https" and parsed.hostname and not parsed.username and
                 not parsed.query and parsed.path in ("", "/"), "Use an HTTPS OpenSearch origin")
-        env_path = root / "opensearch_delivery/dev/.env"
+        configured_env = os.environ.get("ZHOUXU_RUNTIME_ENV_FILE", "").strip()
+        candidates = [
+            Path(configured_env) if configured_env else None,
+            root.parent / "deploy/app/.env",
+            root / "runtime.env",
+        ]
+        env_path = next((path for path in candidates if path and path.is_file()), candidates[1])
         env = {}
         for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
             line = raw.strip()
@@ -325,7 +331,7 @@ def vector_body(vector, filters=(), size=50):
     return {"size": size, "_source": {"excludes": ["vector", "embed_text"]}, "query": {"knn": {"vector": knn}}}
 
 
-def rrf(bm25_hits, vector_hits, size=10, k=60):
+def rrf(bm25_hits, vector_hits, size=10, k=60, identity_field="chunk_id"):
     merged = {}
     for channel, hits in (("bm25", bm25_hits), ("vector", vector_hits)):
         for rank, hit in enumerate(hits, 1):
@@ -333,7 +339,7 @@ def rrf(bm25_hits, vector_hits, size=10, k=60):
             row[channel + "_rank"] = rank
             row[channel + "_score"] = hit["_score"]
             row["rrf_score"] += 1 / (k + rank)
-    return sorted(merged.values(), key=lambda row: (-row["rrf_score"], row["chunk"]["chunk_id"]))[:size]
+    return sorted(merged.values(), key=lambda row: (-row["rrf_score"], row["chunk"][identity_field]))[:size]
 
 
 def hybrid(client, index, text, vector, filters=(), candidates=50, size=10):

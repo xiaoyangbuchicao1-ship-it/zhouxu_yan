@@ -45,7 +45,7 @@ def builtin_skills():
 
 
 def historical_builtin(skill_id, version):
-    if version == 1:
+    if str(version) == "1":
         for row in json.loads((ROOT / "history/v1.json").read_text(encoding="utf-8")):
             if row["id"] == skill_id:
                 return row

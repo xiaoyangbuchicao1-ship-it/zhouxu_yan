@@ -37,7 +37,7 @@ def registered_builtin_skills():
                 "name": descriptor.name,
                 "summary": descriptor.description,
                 "instructions": registry.read(descriptor.name),
-                "version": int(descriptor.version),
+                "version": descriptor.version,
                 "owner_id": None,
                 "visibility": "builtin",
                 "provenance": "舟序声明式研究 Skill · 只读方法包",
@@ -105,12 +105,17 @@ class MaritimeOffice:
     def skill(self, account_id, skill_id, version=None):
         for item in builtin_skills() + registered_builtin_skills():
             if item["id"] == skill_id:
-                if version in (None, item["version"]):
+                if version is None or str(version) == str(item["version"]):
                     return item
                 old = historical_builtin(skill_id, version)
                 if old:
                     return old
                 raise MaritimeError("技能版本不存在", 404)
+        if version is not None:
+            try:
+                version = int(version)
+            except (TypeError, ValueError):
+                raise MaritimeError("技能版本不存在", 404) from None
         with self.connection() as db:
             row = db.execute(
                 "SELECT * FROM skills WHERE id=? AND (owner_id=? OR visibility='community')",

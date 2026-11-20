@@ -2,19 +2,15 @@
 
 舟序前端使用 React、Vite、TypeScript、Tailwind CSS、Radix UI 和 Framer Motion，包含落地页、登录注册和 Zhouxu 研究工作台。
 
-## 本地运行
+## 运行
 
-本机 Windows 开发需要 Node.js 20.19+ 或 22.12+、npm；启动脚本使用 `frontend/node_modules-windows`。Linux/ECS 和另一台 Windows 电脑通过 Docker Compose 在容器内安装和运行 Node/Nginx，不需要主机的 `node_modules`。项目根目录的安装与启动见 [README](../README.md)。
+前端由 `deploy/app` 的 web 容器构建并由 Nginx 提供服务。所有平台统一使用项目根目录的 Compose 入口，不在宿主机安装 Node 或保留 `node_modules`：
 
 ```powershell
-npm ci
-Copy-Item .env.example .env
-npm run dev:all
+.\start\windows\start-compose.cmd
 ```
 
-`dev:all` 会先启动后端并等待 `http://127.0.0.1:8010/healthz` 返回成功，再启动前端。打开 `http://127.0.0.1:4173`。退出前端进程时会一并停止本次启动的后端进程。可用 `ZHOUXU_API_PORT`、`ZHOUXU_WEB_PORT` 和 `ZHOUXU_API_TARGET` 覆盖本地端口；不要在任何 `VITE_` 配置中存放密钥。
-
-如果只需要单独启动前端，仍可运行 `npm run dev -- --port 4173`，但这不会启动后端。
+Linux、WSL 或 ECS 使用 `./start/linux/start.sh`。页面地址默认为 `http://127.0.0.1:8080/`。
 
 ## 验证与构建
 

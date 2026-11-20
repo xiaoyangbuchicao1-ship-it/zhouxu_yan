@@ -2,13 +2,15 @@
 
 ## 结论
 
-当前采用一份源码、一个 Compose 项目、三个容器：
+当前采用一份源码、一个 Compose 项目、三个长期服务和一个一次性初始化容器：
 
 ```text
 zhouxu-web  ->  zhouxu-api  ->  opensearch
 ```
 
-Windows 本机开发可以直接运行 Python/Node；另一台 Windows、Linux 和 ECS 统一使用 Docker Compose。WSL2 只作为 Docker Desktop 的底层 Linux 环境，不再维护一套 WSL 原生舟序依赖。
+`zhouxu-init` 负责启动时校验/导入法规、案例与信息卡独立索引，成功后正常显示 `Exited (0)`。
+
+Windows、WSL、Linux 和 ECS 统一使用 Docker Compose。WSL2 只作为 Docker Desktop 的底层 Linux 环境，不再维护一套原生舟序依赖。
 
 ## 为什么这样拆
 
@@ -16,7 +18,7 @@ Windows 本机开发可以直接运行 Python/Node；另一台 Windows、Linux �
 - `zhouxu-api` 包含 FastAPI、文档工具和 CPU PyTorch，镜像内部自带 Linux 依赖。
 - `opensearch` 使用官方 OpenSearch 镜像，数据通过 bind mount 保存到项目外/项目持久目录。
 
-应用镜像可以替换，OpenSearch 数据目录不随镜像重建。法条库和案例库不需要两个 OpenSearch 服务：它们是同一集群里的两个索引和两个查询别名。
+应用镜像可以替换，OpenSearch 数据目录不随镜像重建。法规、案例与信息卡是同一集群里的三个独立索引和查询别名。原始信息卡、能力卡与论文 Skill 只读挂载在项目外，具体目录与处理流程见[科研资源接入](research-resources.md)。
 
 ## Compose 文件和端口
 
@@ -41,9 +43,9 @@ ZHOUXU_API_IMAGE / ZHOUXU_WEB_IMAGE  本地构建或镜像仓库地址
 ZHOUXU_WEB_PORT                    默认 8080
 ```
 
-`.env` 被 Compose 作为容器环境文件，并以只读方式挂载到 `/app/opensearch/opensearch_delivery/dev/.env`。这是为了让初始化脚本、OpenSearch 发布脚本和后端读取同一份密码；不会把密码写入镜像。
+`.env` 被 Compose 作为容器环境文件，并以只读方式挂载到 `/app/runtime.env`。这是为了让初始化脚本、OpenSearch 发布脚本和后端读取同一份密码；不会把密码写入镜像。
 
-镜像包含 CPU PyTorch，但不包含约 6.8GB 的 BGE-M3 权重。因而“容器健康、页面可打开、索引初始化成功”不等于“向量检索已经可用”。完整 RAG 交付还要决定模型资产的方式：宿主机只读挂载最省镜像体积，打进镜像最便于单机复制但会显著增大镜像，首次联网下载最省交付文件但启动/首次查询依赖外网。当前 Compose 先完成应用与索引闭环，未默认选择其中一种。
+镜像包含 CPU PyTorch，BGE-M3 权重由 `ZHOUXU_HF_CACHE_DIR` 指向宿主机并只读挂载到 API 容器。当前使用固定 revision `5617a9f61b028005a4858fdac845db406aefb181`，所以法规和案例向量检索可以离线运行。迁移时必须带上同一模型缓存，或把该变量改为目标机上的等价目录。
 
 ## Windows Docker Desktop
 

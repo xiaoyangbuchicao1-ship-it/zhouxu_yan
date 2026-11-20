@@ -1,16 +1,18 @@
 # 舟序 Compose 部署
 
-这套 Compose 把应用拆成三个独立容器：
+这套 Compose 有三个长期运行服务，另有一个只在启动时执行一次的数据初始化容器：
 
 ```text
 zhouxu-web  (Nginx + 前端静态文件)
       -> /api
 zhouxu-api  (FastAPI + CPU PyTorch)
       -> https://opensearch:9200
-opensearch  (法条索引 + 案例索引)
+opensearch  (法条索引 + 案例索引 + 论文信息卡索引)
+
+zhouxu-init  (校验/导入三个索引，成功后显示 Exited (0))
 ```
 
-这样拆分的关键原因是 OpenSearch 的数据必须独立保存。更新前端或后端镜像时，只替换应用镜像，不会覆盖检索数据。法条库和案例库仍然是两个逻辑库、两个索引/别名，但由同一个 OpenSearch 容器承载。
+这样拆分的关键原因是 OpenSearch 的数据必须独立保存。更新前端或后端镜像时，只替换应用镜像，不会覆盖检索数据。法条、案例、论文信息卡有独立索引/别名，共用 OpenSearch 容器及数据目录。三类原始科研资源继续放在项目外，只读挂载；能力卡不进入信息卡索引。具体目录、向量生成与验收要求见 [科研资源接入](../../docs/research-resources.md)。
 
 ## 给另一台 Windows 电脑什么
 
@@ -27,7 +29,11 @@ data/                        账户、材料、案例快照和运行数据
 opensearch/corpus/           法条语料清单与正文
 opensearch/import/           法条向量和导入清单
 opensearch/opensearch_delivery/  索引定义、导入脚本、查询
+models/huggingface/         固定 BGE-M3 缓存
+models/fonts/              论文模板字体
 ```
+
+另外保留项目外的信息卡、能力卡和完整 `csl-law-paper-generator` 目录，在 `.env` 中指定路径；原目录不复制进源码。`opensearch/import/information_cards/` 必须包含已校验的派生向量与清单。运行状态保存在 `data/runtime/`，编译文件保存在当前会话工作区，并沿用前端认证下载接口。
 
 如果要保留现有 OpenSearch 的快速运行快照，再复制：
 
@@ -37,7 +43,7 @@ opensearch/vector_db_data/opensearch/
 
 复制运行快照时，目标机的 `OPENSEARCH_INITIAL_ADMIN_PASSWORD` 必须使用创建该快照时的同一密码；OpenSearch 只在第一次初始化数据目录时读取这个变量。若原密码不确定，省略运行快照，让 `zhouxu-init` 从语料和案例快照重新导入，并在目标机设置一个新密码。
 
-没有这个目录也可以启动；`zhouxu-init` 会在 OpenSearch 就绪后根据 `corpus/`、`import/` 和 `data/cases/` 导入两个逻辑库。第一次导入会花时间，但不会静默把错误当成空库。
+没有这个目录也可以启动；`zhouxu-init` 会在 OpenSearch 就绪后根据 `corpus/`、`import/`、`data/cases/` 与只读信息卡来源导入三个逻辑库。第一次导入会花时间，但不会静默把错误当成空库。
 
 ### 方案 B：使用已发布镜像
 
@@ -50,7 +56,11 @@ data/
 opensearch/corpus/
 opensearch/import/
 opensearch/opensearch_delivery/
+models/huggingface/
+models/fonts/
 ```
+
+信息卡、能力卡、原 Skill 仍从 `.env` 指向的项目外目录只读挂载。
 
 若已经把 OpenSearch 数据目录作为迁移快照发布，也复制 `opensearch/vector_db_data/opensearch/`。此方案不需要 `backend/`、`frontend/` 和本机 Python/Node；Compose 会拉取已经构建好的 `zhouxu-api`、`zhouxu-web` 镜像。
 
@@ -67,7 +77,7 @@ docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml up -d --bui
 
 `.env` 至少要设置一个真实的 `OPENSEARCH_INITIAL_ADMIN_PASSWORD` 和后端所需的 `DEEPSEEK_API_KEY`。不要把 `.env` 上传 GitHub。
 
-说明：这套镜像自带 CPU PyTorch，但没有把约 6.8GB 的 BGE-M3 权重打进镜像。网页、健康检查、索引初始化可以先完成；真正执行向量检索前，还要为 API 容器提供与配置中 revision 一致的本地模型。模型可以后续选择“宿主机只读挂载”“打进发布镜像”或“首次联网下载”，当前 Compose 尚未默认启用这三种方式中的任何一种。
+说明：这套镜像自带 CPU PyTorch，BGE-M3 权重不打进镜像，而是由 `ZHOUXU_HF_CACHE_DIR` 指向宿主机的 Hugging Face 缓存，并以只读方式挂载到 API 容器的 `/root/.cache/huggingface`。当前配置使用固定 revision `5617a9f61b028005a4858fdac845db406aefb181`，因此法规和案例的向量检索可以离线运行。迁移到另一台机器时，必须复制同一模型缓存，或把 `ZHOUXU_HF_CACHE_DIR` 改为目标机上包含该 revision 的目录；只复制前后端镜像而不提供模型，网页仍能打开，但向量检索会失败。
 
 启动完成后访问：
 
@@ -89,7 +99,7 @@ http://127.0.0.1:8080/
 .\start\windows\stop-compose.cmd
 ```
 
-`start\windows\start.cmd` 仍然保留给本机原生开发模式；交付给只安装 Docker Desktop 的 Windows 电脑时，请使用上面的 `start-compose.cmd`。
+Windows 也只使用上面的 `start-compose.cmd`；项目不再维护宿主机原生启动模式。
 
 查看状态与初始化结果：
 

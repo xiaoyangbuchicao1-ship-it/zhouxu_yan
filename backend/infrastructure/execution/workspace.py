@@ -125,6 +125,7 @@ class WorkspaceExecutionProvider:
                 name="read",
                 description="读取当前工作区内的文本文件或目录。path只能是相对当前工作区的路径；二进制文档请用bash调用文档库读取。",
                 kind="execution",
+                read_only=True,
                 parameters={
                     "type": "object",
                     "properties": {

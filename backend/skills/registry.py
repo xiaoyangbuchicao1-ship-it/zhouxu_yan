@@ -8,6 +8,7 @@ is the model-facing, read-only tool adapter.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,12 @@ class SkillDescriptor:
 
 
 _SKILL_ROOT = BACKEND_ROOT / "skills"
+_EXTERNAL_CSL_ROOT = Path(
+    os.environ.get(
+        "ZHOUXU_CSL_PAPER_SKILL_DIR",
+        str(BACKEND_ROOT.parent.parent / "技能候选" / "csl-law-paper-generator"),
+    )
+).resolve()
 
 
 def _load_method(path: Path) -> dict[str, Any]:
@@ -107,6 +114,15 @@ for _name, _fallback_description in _MARITIME_SKILLS:
         version="2",
     )
 
+_CSL_SKILL_PATH = _EXTERNAL_CSL_ROOT / "SKILL.md"
+if _CSL_SKILL_PATH.is_file():
+    _CATALOG["csl-law-paper-generator"] = _descriptor(
+        "csl-law-paper-generator",
+        "中文海事法学论文写作、Typst 源稿和固定 PDF/Word 双链路编译规范。",
+        _CSL_SKILL_PATH,
+        version="3.5",
+    )
+
 
 class SkillNotFound(ValueError):
     pass
@@ -117,6 +133,10 @@ class SkillRegistry:
 
     def __init__(self, catalog: dict[str, SkillDescriptor] | None = None):
         self._catalog = dict(catalog or _CATALOG)
+
+    @staticmethod
+    def _allowed_roots() -> tuple[Path, ...]:
+        return (_SKILL_ROOT.resolve(), _EXTERNAL_CSL_ROOT.resolve())
 
     def descriptors(self) -> tuple[SkillDescriptor, ...]:
         return tuple(self._catalog.values())
@@ -133,20 +153,40 @@ class SkillRegistry:
         return value
 
     @staticmethod
-    def _safe_path(path: Path, *, root: Path, filename: str) -> Path:
+    def _safe_path(path: Path, *, roots: tuple[Path, ...], filename: str) -> Path:
         resolved = path.resolve()
-        resolved_root = root.resolve()
-        if resolved_root not in resolved.parents or resolved.name != filename:
+        if not any(root == resolved.parent or root in resolved.parents for root in roots):
+            raise SkillNotFound("skill_path_invalid")
+        if resolved.name != filename:
             raise SkillNotFound("skill_path_invalid")
         return resolved
 
     def read(self, name: str) -> str:
         descriptor = self.descriptor(name)
-        path = self._safe_path(descriptor.path, root=_SKILL_ROOT, filename="SKILL.md")
+        path = self._safe_path(
+            descriptor.path, roots=self._allowed_roots(), filename="SKILL.md"
+        )
         try:
             return path.read_text(encoding="utf-8")
         except OSError as exc:
             raise SkillNotFound("skill_unavailable") from exc
+
+    def resources(self, name: str) -> tuple[str, ...]:
+        if name == "csl-law-paper-generator":
+            return ("references/clsci_citation_guide.md", "assets/csl_template.typ")
+        return ()
+
+    def read_resource(self, name: str, resource: str) -> str:
+        if resource not in self.resources(name):
+            raise SkillNotFound("skill_resource_not_found")
+        root = self.descriptor(name).path.parent.resolve()
+        path = (root / resource).resolve()
+        if root not in path.parents:
+            raise SkillNotFound("skill_path_invalid")
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SkillNotFound("skill_resource_unavailable") from exc
 
     def method(self, name: str) -> dict[str, Any]:
         """Return method metadata without exposing a filesystem path."""
@@ -155,7 +195,7 @@ class SkillRegistry:
         if descriptor.method_path is None:
             return dict(descriptor.metadata)
         path = self._safe_path(
-            descriptor.method_path, root=_SKILL_ROOT, filename="method.json"
+            descriptor.method_path, roots=self._allowed_roots(), filename="method.json"
         )
         try:
             value = json.loads(path.read_text(encoding="utf-8"))

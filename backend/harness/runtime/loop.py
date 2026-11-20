@@ -103,7 +103,12 @@ class Harness:
         task_id = task_id or run_id
         control = control or RunControl()
         started = perf_counter()
-        deadline = started + self.settings.runtime.run_timeout_seconds
+        run_timeout = (
+            self.settings.runtime.work_run_timeout_seconds
+            if value.mode == "work"
+            else self.settings.runtime.run_timeout_seconds
+        )
+        deadline = started + run_timeout
         retries = 0
         saved = ExecutionState.model_validate(recovery or {})
         tool_counts: dict[str, int] = dict(saved.tool_counts)

@@ -2,6 +2,7 @@
 max_rounds = 50
 max_retries = 1
 run_timeout_seconds = 180.0
+work_run_timeout_seconds = 1800.0
 call_timeout_seconds = 25.0
 # Generation is bounded separately from ordinary modules. HTTP read timeout
 # remains 25 seconds without a provider chunk; active generation may last longer.
@@ -9,8 +10,8 @@ model_call_timeout_seconds = 180.0
 action_timeout_seconds = 40.0
 tool_history_items = 4
 tool_history_chars = 3000
-recoverable_tool_errors = ["unknown_tool", "invalid_arguments", "material_not_found", "material_unit_not_found", "material_read_budget"]
-read_only_recoverable_errors = ["tool_failed", "timeout", "rag_search_failed", "rag_tool_budget"]
+recoverable_tool_errors = ["unknown_tool", "invalid_arguments", "material_not_found", "material_unit_not_found", "material_read_budget", "paper_compile_failed"]
+read_only_recoverable_errors = ["tool_failed", "timeout", "rag_search_failed", "rag_tool_budget", "execution_file_not_found"]
 no_progress_rounds = 2
 
 [model]
@@ -195,6 +196,33 @@ read_description = """
 读取一个公开HTTP或HTTPS网页的Markdown正文。url应来自web_search或用户明确提供；返回标题、正文、抓取时间、正文SHA-256、字符范围和是否截断。正文才是可进入证据矩阵的联网材料，仍需区分原文事实、作者观点和模型推断。搜索摘要不能替代正文；正文被截断时不要声称已经覆盖全文。每个运行最多调用本工具4次。
 """
 
+[research_cards]
+enabled = true
+information_alias = "maritime_information_cards_read"
+information_index = "maritime_information_cards_v3"
+information_max_results = 6
+information_result_budget_chars = 12000
+# Native runs resolve these paths from the project parent. Docker Compose
+# overrides them with read-only mounted paths through environment variables.
+capability_dir = "../能力卡"
+capability_file = "capability_cards.jsonl"
+skill_dir = "../技能候选/csl-law-paper-generator"
+search_description = """
+以 BM25 与 BGE-M3 双路召回并融合排序，检索已通过来源校验的论文信息卡。信息卡记录论文中的事实、观点、方法或规范线索，属于学术材料候选，不等于现行法律。需要法律结论时仍须调用法规工具；需要案件事实时仍须调用案例工具。查询应简短明确，回查来源标题、路径、定位和时间语境；若 method=bm25 且 status=partial，须如实说明语义检索不可用。
+"""
+read_description = """
+按 card_id 读取信息卡完整记录和来源定位。source_path 是原文来源定位，不是当前工作区文件；不要用工作区 read 读取它。信息卡只能证明该卡记录的论文材料，不得直接写成现行法、法院认定或现实数据；需要这些结论时继续核对法规库、案例库或外部原文。
+"""
+capability_select_description = """
+按用户研究问题选择候选能力卡。能力卡只规定研究动作顺序、证据要求和停止条件，不提供法条结论，也不能替代法规、案例或论文原文。没有明确触发条件时返回空候选，不强行套用。
+"""
+capability_read_description = """
+读取候选能力卡的触发条件、研究步骤、证据要求和停止条件。把它作为科研流程参考，不能把卡片内容当作法律证据或最终论文事实。
+"""
+paper_compile_description = """
+使用已注册 csl-law-paper-generator Skill 的固定编译脚本，把当前运行工作区内的 .typ 源稿编译成 PDF 和 Word。只接受当前运行工作区的相对路径，不接受宿主机绝对路径；编译失败直接返回错误，不生成伪造交付物。
+"""
+
 [execution]
 enabled = true
 # Local development keeps the Docker provider. Cloud deployments without
@@ -219,7 +247,7 @@ review_enabled = false
 endpoint = "https://localhost:19200"
 allowed_hosts = ["localhost", "127.0.0.1", "::1"]
 read_alias = "maritime_law_chunks_read"
-credential_file = "../opensearch/opensearch_delivery/dev/.env"
+credential_file = "../opensearch/runtime.env"
 username = "admin"
 password_name = "OPENSEARCH_INITIAL_ADMIN_PASSWORD"
 local_dev_certificate = true
@@ -315,6 +343,7 @@ task = """
 材料范围与专业依据分别判断：材料足够就直接使用；存在影响当前结论的具体规则疑点、关键条件或版本缺口，且知识库能补时自主查询；不把每项专业判断都变成强制核验。已有参考只作为其内容实际支持的依据；学理通说、条约参加事实、私人事件等不能由相近法条替代证明，也不靠反复改写检索补齐工具能力之外的知识。
 业务行动可以同轮提出多个彼此独立的必要查询；参数按当前工具定义填写，不猜精确条号。结果足够即可交付，不要求查询所有知识点。空结果不证明不存在，服务故障不是用户事实缺失，不要求用户替系统修复。
 原文已在当前窗口时先使用它；需要定位用search_material，需要未提供正文或核对位置用read_material。读取不必逐块，游标不是待办，已读回执不等于任务完成。确有核对目的时可以重读，不能只为完整感重复取同样内容。
+用户要求学术论文、研究设计或研究方法时，按研究问题调用capability_card_select；有适用候选时用capability_card_read读取步骤、证据要求和适用边界，再决定如何使用。没有匹配就继续研究，不套用无关方法；普通计算、翻译等不触发这一流程。论文观点通过information_card_search/read读取，规范与裁判分别使用法规、案例工具；来源路径不是当前工作区中的文件。
 工具回执区分正常、部分、空和错误，有用部分仍可使用。更新判断时依据用户原文，不能把自己的改述当成原文；结论与说明一致，引用只能支持实际取得正文所写的内容。
 只有缺少会改变核心判断或方向且必须用户提供的事实时，调用补充工具问最关键的1至3项。草稿可用占位、一般方法可直接给方法，不能编造私人记录。历史摘要只覆盖声明的旧记录，较新回执仍可见；内部整理后继续工作，不把窗口和轮次变成用户缺失事实。
 """
@@ -392,7 +421,7 @@ web_call_limit = "本轮联网调用已达到上限，请依据已有来源继�
 execution_unavailable = "工作环境暂时不可用。"
 execution_timeout = "这一步超过了执行时间。"
 execution_invalid_path = "文件位置不在当前工作区。"
-execution_file_not_found = "没有找到这份文件。"
+execution_file_not_found = "未在当前工作区找到文件。检索回执中的来源路径不代表文件已复制到工作区，请使用对应资料读取工具。"
 execution_file_too_large = "文件超过当前工作区允许的大小。"
 execution_conflict = "文件已经被修改，请先读取最新内容再继续。"
 execution_exact_match = "没有找到唯一的可修改内容。"
@@ -427,6 +456,12 @@ rag_timeout = "本次检索已达到时间预算。"
 rag_configuration = "检索配置、目标地址或凭证不可用。"
 rag_call_limit = "本轮检索调用已达到上限，请依据已取得证据回答并说明尚未解决的缺口。"
 rag_tool_budget = "证据输出超过本轮可用预算，未传入的片段不能作为已读取依据。"
+information_card_search_failed = "论文信息卡检索服务不可用或返回不完整结果。"
+information_card_read_failed = "论文信息卡读取失败，未取得可核对的来源记录。"
+information_card_configuration = "论文信息卡索引或检索配置不可用。"
+capability_card_unavailable = "科研能力卡资源不可用，未强行套用研究流程。"
+paper_compile_failed = "论文编译未完成，未生成可交付的 PDF 或 Word。"
+paper_compile_configuration = "论文 Skill 编译资源不可用。"
 model_profile_invalid = "模型预设不存在，或该预设的供应商配置不可用；请检查 model_routing 配置。"
 
 context_configuration = "模型能力或预算配置无法形成有效请求，请检查当前模型配置。"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start-up gate for the two OpenSearch sources used by ZhouXu.
+"""Start-up gate for the three independent OpenSearch sources used by ZhouXu.
 
 The script is deliberately small and explicit: it waits for the local
 OpenSearch endpoint, checks the published aliases and document counts, and
@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import shutil
 import ssl
 import subprocess
@@ -21,11 +20,14 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-
+from pathlib import Path
 
 LAW_ALIAS = "maritime_law_chunks_read"
 LAW_INDEX = "maritime_law_chunks_v2"
 CASE_ALIAS = "maritime_cases_read"
+INFORMATION_ALIAS = "maritime_information_cards_read"
+INFORMATION_INDEX = "maritime_information_cards_v3"
+PREVIOUS_INFORMATION_INDEX = "maritime_information_cards_v2"
 DEFAULT_URL = "https://127.0.0.1:19200"
 
 
@@ -119,7 +121,12 @@ def alias_count(client: OpenSearch, alias: str, expected_index: str) -> int | No
     return int(count.get("count", -1))
 
 
-def expected_counts(project_root: Path) -> tuple[int, int, str]:
+def information_source(project_root: Path) -> Path:
+    configured = os.environ.get("ZHOUXU_INFORMATION_CARDS_DIR", "").strip()
+    return Path(configured).resolve() if configured else (project_root.parent / "信息卡").resolve()
+
+
+def expected_counts(project_root: Path) -> tuple[int, int, str, int]:
     law_root = project_root / "opensearch"
     law_manifest = law_root / "corpus" / "manifest" / "corpus_manifest.json"
     case_root = project_root / "data" / "cases"
@@ -136,7 +143,12 @@ def expected_counts(project_root: Path) -> tuple[int, int, str]:
     case_count = int(case["chunk_count"])
     if law_count <= 0 or case_count <= 0:
         raise StartupError("数据清单中的文档数必须为正数")
-    return law_count, case_count, str(case["snapshot_id"])
+    from opensearch.opensearch_delivery.scripts.information_cards_index import (
+        load_cards,
+    )
+
+    cards, _ = load_cards(information_source(project_root))
+    return law_count, case_count, str(case["snapshot_id"]), len(cards)
 
 
 def run_checked(command: list[str], *, cwd: Path) -> None:
@@ -179,35 +191,155 @@ def publish_cases(project_root: Path, python: Path) -> None:
     )
 
 
+def publish_information_cards(project_root: Path, python: Path, url: str) -> None:
+    script = (
+        project_root
+        / "opensearch"
+        / "opensearch_delivery"
+        / "scripts"
+        / "information_cards_index.py"
+    )
+    source = information_source(project_root)
+    if not script.is_file():
+        raise StartupError(f"缺少信息卡发布脚本：{script}")
+    commands = [
+        [str(python), "-B", str(script), "validate", "--source-dir", str(source)],
+        [
+            str(python),
+            "-B",
+            str(script),
+            "create",
+            "--source-dir",
+            str(source),
+            "--root",
+            str(project_root / "opensearch"),
+            "--index",
+            INFORMATION_INDEX,
+            "--url",
+            url,
+        ],
+        [
+            str(python),
+            "-B",
+            str(script),
+            "import",
+            "--source-dir",
+            str(source),
+            "--root",
+            str(project_root / "opensearch"),
+            "--index",
+            INFORMATION_INDEX,
+            "--url",
+            url,
+        ],
+        [
+            str(python),
+            "-B",
+            str(script),
+            "verify",
+            "--source-dir",
+            str(source),
+            "--root",
+            str(project_root / "opensearch"),
+            "--index",
+            INFORMATION_INDEX,
+            "--url",
+            url,
+        ],
+        [
+            str(python),
+            "-B",
+            str(script),
+            "activate",
+            "--source-dir",
+            str(source),
+            "--root",
+            str(project_root / "opensearch"),
+            "--index",
+            INFORMATION_INDEX,
+            "--alias",
+            INFORMATION_ALIAS,
+            "--replace-index",
+            PREVIOUS_INFORMATION_INDEX,
+            "--url",
+            url,
+        ],
+    ]
+    for command in commands:
+        run_checked(command, cwd=project_root)
+
+
 def source_status(
     client: OpenSearch, project_root: Path
-) -> tuple[dict[str, int | str | None], int, int, str]:
-    law_count, case_count, snapshot_id = expected_counts(project_root)
+) -> tuple[dict[str, int | str | None], int, int, str, int]:
+    law_count, case_count, snapshot_id, information_count = expected_counts(project_root)
     actual_law = alias_count(client, LAW_ALIAS, LAW_INDEX)
     actual_case = alias_count(client, CASE_ALIAS, snapshot_id)
+    information_aliases = client.get(f"/_alias/{INFORMATION_ALIAS}", missing_ok=True)
+    # A normal restart validates the currently published corpus. Switching a
+    # changed corpus to v3 belongs to its explicit, source-checked release.
+    active_information_index = (
+        PREVIOUS_INFORMATION_INDEX
+        if sorted(information_aliases or {}) == [PREVIOUS_INFORMATION_INDEX]
+        else INFORMATION_INDEX
+    )
+    actual_information = alias_count(client, INFORMATION_ALIAS, active_information_index)
+    if actual_information is not None:
+        from opensearch.opensearch_delivery.scripts.information_cards_index import (
+            DEFAULT_EMBEDDINGS,
+            definition,
+            load_cards,
+            load_embeddings,
+        )
+
+        cards, expected_manifest = load_cards(information_source(project_root))
+        mapping = client.get(f"/{active_information_index}/_mapping")[active_information_index]["mappings"]
+        for key in ("information_cards_sha256", "source_registry_sha256", "validation_sha256"):
+            if mapping.get("_meta", {}).get(key) != expected_manifest[key]:
+                raise StartupError(f"信息卡索引与只读源文件版本不一致：{key}；请核对后重新发布索引")
+        _, embedding_manifest = load_embeddings(DEFAULT_EMBEDDINGS, cards, expected_manifest)
+        for key in ("embedding", "vectors_sha256", "sidecar_sha256", "normalized_cards_sha256", "sources_sha256"):
+            if mapping.get("_meta", {}).get(key) != embedding_manifest[key]:
+                raise StartupError(f"信息卡索引向量版本不一致：{key}")
+        if mapping.get("properties") != definition()["mappings"]["properties"]:
+            raise StartupError("信息卡索引字段与发布契约不一致")
+        coverage = client.get(f"/{active_information_index}/_count?q=_exists_:vector")["count"]
+        if coverage != information_count:
+            raise StartupError("信息卡索引缺少部分向量")
     if actual_law is not None and actual_law != law_count:
         raise StartupError(f"条文库条数不匹配：实际 {actual_law} 条，期望 {law_count} 条")
     if actual_case is not None and actual_case != case_count:
         raise StartupError(f"案例库条数不匹配：实际 {actual_case} 条，期望 {case_count} 条")
+    if actual_information is not None and actual_information != information_count:
+        raise StartupError(
+            f"信息卡条数不匹配：实际 {actual_information} 条，期望 {information_count} 条"
+        )
     return (
         {
             "law_index": LAW_INDEX,
             "law_documents": actual_law,
             "case_index": snapshot_id,
             "case_documents": actual_case,
+            "information_index": active_information_index,
+            "information_documents": actual_information,
         },
         law_count,
         case_count,
         snapshot_id,
+        information_count,
     )
 
 
 def verify_sources(client: OpenSearch, project_root: Path) -> dict[str, int | str]:
-    status, law_count, case_count, _ = source_status(client, project_root)
+    status, law_count, case_count, _, information_count = source_status(client, project_root)
     if status["law_documents"] != law_count:
         raise StartupError(f"条文库未就绪：实际 {status['law_documents']} 条，期望 {law_count} 条")
     if status["case_documents"] != case_count:
         raise StartupError(f"案例库未就绪：实际 {status['case_documents']} 条，期望 {case_count} 条")
+    if status["information_documents"] != information_count:
+        raise StartupError(
+            f"信息卡未就绪：实际 {status['information_documents']} 条，期望 {information_count} 条"
+        )
     return {key: value for key, value in status.items() if value is not None}
 
 
@@ -220,7 +352,8 @@ def main() -> int:
     parser.add_argument("--allow-remote", action="store_true")
     args = parser.parse_args()
     project_root = args.project_root.resolve()
-    env_path = project_root / "opensearch" / "opensearch_delivery" / "dev" / ".env"
+    configured_env = os.environ.get("ZHOUXU_RUNTIME_ENV_FILE", "").strip()
+    env_path = Path(configured_env) if configured_env else project_root / "deploy" / "app" / ".env"
     env = read_env(env_path)
     client = OpenSearch(
         args.url,
@@ -228,11 +361,20 @@ def main() -> int:
         allow_remote=args.allow_remote,
     )
     wait_for_cluster(client, args.timeout)
-    status, law_count, case_count, snapshot_id = source_status(client, project_root)
-    print(f"OpenSearch 已就绪；目标条文 {law_count} 条，案例 {case_count} 条（{snapshot_id}）")
+    status, law_count, case_count, snapshot_id, information_count = source_status(
+        client, project_root
+    )
+    print(
+        f"OpenSearch 已就绪；目标条文 {law_count} 条，案例 {case_count} 条（{snapshot_id}），"
+        f"信息卡 {information_count} 条"
+    )
 
-    if status["law_documents"] == law_count and status["case_documents"] == case_count:
-        print("两个检索源已经发布，跳过重复导入。")
+    if (
+        status["law_documents"] == law_count
+        and status["case_documents"] == case_count
+        and status["information_documents"] == information_count
+    ):
+        print("三个检索源已经发布，跳过重复导入。")
         print(json.dumps(status, ensure_ascii=False))
         return 0
     if args.check_only:
@@ -243,8 +385,10 @@ def main() -> int:
         publish_law(project_root, python, args.url)
     if status["case_documents"] is None:
         publish_cases(project_root, python)
+    if status["information_documents"] is None:
+        publish_information_cards(project_root, python, args.url)
     status = verify_sources(client, project_root)
-    print("条文库和案例库均已通过条数与别名检查。")
+    print("条文库、案例库和信息卡均已通过条数与别名检查。")
     print(json.dumps(status, ensure_ascii=False))
     return 0
 

@@ -37,15 +37,7 @@ docs/                当前架构、接口与部署说明
 
 ## 本地开发与部署
 
-本机开发推荐 Windows 原生启动；Linux/ECS 和另一台 Windows 电脑推荐 Docker Desktop + WSL2，通过同一份 Compose 运行三个容器。容器内部自带 Python、Node、Nginx 和 CPU PyTorch，宿主机不需要创建 Linux 虚拟环境。
-
-Windows 原生开发需要 uv、Python 3.11、Node.js 20.19+ 或 22.12+、npm。启动入口会把依赖分别放入 `backend/.venv-windows` 与 `frontend/node_modules-windows`：
-
-```powershell
-.\start\windows\start.cmd
-```
-
-前端 `http://127.0.0.1:4173`，后端 `http://127.0.0.1:8010`。这条路径适合写代码和快速调试。
+项目运行统一走 Docker Compose。Windows、WSL、Linux 和 ECS 都使用同一份 Compose；WSL2 只是 Docker Desktop 的底层 Linux，不再维护第二套原生依赖。容器内部自带 Python、Node、Nginx 和 CPU PyTorch，宿主机不需要安装项目运行时。
 
 Compose 部署：
 
@@ -55,13 +47,19 @@ notepad deploy\app\.env
 docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml up -d --build
 ```
 
-另一台只安装 Docker Desktop 的 Windows 电脑可直接运行：
+Windows + Docker Desktop 的一键入口：
 
 ```powershell
 .\start\windows\start-compose.cmd
 ```
 
-浏览器访问 `http://127.0.0.1:8080/`。Linux/ECS 也运行同一份 Compose；`start/linux/start.sh` 只是这个 Compose 命令的薄封装，不再安装 `.venv-linux`。
+浏览器访问 `http://127.0.0.1:8080/`。Linux、WSL 或 ECS 使用同一份 Compose：
+
+```bash
+./start/linux/start.sh
+```
+
+停止服务使用对应的 `stop-compose`/`stop.sh` 入口；不要再使用旧的 Windows 原生启动命令。
 
 完整功能还需准备：
 

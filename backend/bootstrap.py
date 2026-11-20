@@ -38,6 +38,8 @@ def build_harness(
     rag: Module | None = None,
     model_context: ModelContextPort | None = None,
     execution_tools: ExecutionProvider | None = None,
+    research_card_tools: dict[str, tuple[ToolSpec, ToolExecutor | ContextualToolExecutor]]
+    | None = None,
     account_skill_loader: Callable[[str, str, int | None], dict[str, Any]] | None = None,
     web_client=None,
 ) -> Harness:
@@ -50,6 +52,10 @@ def build_harness(
             if name in registered:
                 raise ValueError("duplicate_tool_registration")
             registered[name] = pair
+    for name, pair in (research_card_tools or {}).items():
+        if name in registered:
+            raise ValueError("duplicate_tool_registration")
+        registered[name] = pair
     if rag is not None:
         from backend.infrastructure.tools.rag import RagSearchTool
 
@@ -282,6 +288,19 @@ async def open_harnesses(
                         error_code="case_service_unavailable",
                     )
                 )
+        information_client = getattr(getattr(retrieval, "search", None), "client", None)
+        information_encoder = getattr(getattr(retrieval, "search", None), "encoder", None)
+        if settings.research_cards.enabled and information_client is None:
+            # Keep keyword retrieval/read available with an explicit degraded
+            # response when semantic retrieval cannot start.
+            # Reuse the existing credential/HTTPS boundary with its own lifetime.
+            from backend.infrastructure.search.opensearch import OpenSearchRetriever
+
+            information_search = await stack.enter_async_context(
+                OpenSearchRetriever(settings, None)
+            )
+            information_client = information_search.client
+        research_card_tools = _research_card_tools(settings, information_client, information_encoder)
         harnesses = {}
         for mode in dict.fromkeys(modes):
             if mode not in settings.model.modes:
@@ -299,6 +318,7 @@ async def open_harnesses(
                 rag=rag,
                 tools=_case_tools(settings, case_service),
                 execution_tools=execution_tools,
+                research_card_tools=research_card_tools,
                 account_skill_loader=account_skill_loader,
                 web_client=web_client,
             )
@@ -311,6 +331,37 @@ def _case_tools(settings, service):
     from backend.infrastructure.tools.cases import CaseTool
 
     tools = [CaseTool(service, settings), CaseTool(service, settings, read=True)]
+    return {tool.spec.name: (tool.spec, tool) for tool in tools}
+
+
+def _research_card_tools(settings, information_client, information_encoder=None):
+    if not settings.research_cards.enabled:
+        return {}
+    from backend.infrastructure.search.research_cards import (
+        InformationCardRetriever,
+        UnavailableInformationCardRetriever,
+    )
+    from backend.infrastructure.tools.paper_compile import PaperCompileTool
+    from backend.infrastructure.tools.research_cards import (
+        CapabilityCardReadTool,
+        CapabilityCardSelectTool,
+        CapabilityCardStore,
+        InformationCardReadTool,
+        InformationCardSearchTool,
+    )
+
+    if information_client is not None:
+        information_retriever = InformationCardRetriever(information_client, settings, information_encoder)
+    else:
+        information_retriever = UnavailableInformationCardRetriever(settings)
+    capability_store = CapabilityCardStore(settings)
+    tools = [
+        InformationCardSearchTool(information_retriever, settings),
+        InformationCardReadTool(information_retriever, settings),
+        CapabilityCardSelectTool(capability_store, settings),
+        CapabilityCardReadTool(capability_store, settings),
+        PaperCompileTool(settings),
+    ]
     return {tool.spec.name: (tool.spec, tool) for tool in tools}
 
 

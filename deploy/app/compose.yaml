@@ -49,14 +49,18 @@ services:
     environment:
       ZHOUXU_OPENSEARCH_URL: https://opensearch:9200
       ZHOUXU_OPENSEARCH_INSECURE: "1"
+      ZHOUXU_RUNTIME_ENV_FILE: /app/runtime.env
+      ZHOUXU_OPENSEARCH_CREDENTIAL_FILE: /app/runtime.env
+      ZHOUXU_INFORMATION_CARDS_DIR: /app/runtime-resources/information_cards
     volumes:
       - ${ZHOUXU_DATA_DIR:-../../data}:/app/data:ro
       - ${ZHOUXU_OPENSEARCH_DIR:-../../opensearch}:/app/opensearch:ro
+      - ${ZHOUXU_INFORMATION_CARDS_DIR:-../../../信息卡}:/app/runtime-resources/information_cards:ro
       # The init script and the existing index publisher both read this path.
       # Keep the one deployment env file as the only password source.
       - type: bind
         source: ${ZHOUXU_RUNTIME_ENV_FILE:-.env}
-        target: /app/opensearch/opensearch_delivery/dev/.env
+        target: /app/runtime.env
         read_only: true
     command: ["python", "-B", "/app/start/common/ensure_indexes.py", "--project-root", "/app", "--url", "https://opensearch:9200", "--allow-remote", "--timeout", "600"]
 
@@ -79,12 +83,26 @@ services:
     environment:
       ZHOUXU_OPENSEARCH_URL: https://opensearch:9200
       ZHOUXU_OPENSEARCH_INSECURE: "1"
+      ZHOUXU_RUNTIME_ENV_FILE: /app/runtime.env
+      ZHOUXU_OPENSEARCH_CREDENTIAL_FILE: /app/runtime.env
+      ZHOUXU_CAPABILITY_CARDS_DIR: /app/runtime-resources/capability_cards
+      ZHOUXU_CSL_PAPER_SKILL_DIR: /app/runtime-resources/skills/csl-law-paper-generator
+      # The API already runs inside Docker. Run workspace commands there,
+      # rather than requiring a second Docker daemon/socket inside the image.
+      ZHOUXU_EXECUTION_PROVIDER: native
     volumes:
       - ${ZHOUXU_DATA_DIR:-../../data}:/app/data
+      - ${ZHOUXU_RUN_STATE_DIR:-../../data/runtime}:/app/backend/.runtime
       - ${ZHOUXU_OPENSEARCH_DIR:-../../opensearch}:/app/opensearch:ro
+      - ${ZHOUXU_CAPABILITY_CARDS_DIR:-../../../能力卡}:/app/runtime-resources/capability_cards:ro
+      - ${ZHOUXU_CSL_PAPER_SKILL_DIR:-../../../技能候选/csl-law-paper-generator}:/app/runtime-resources/skills/csl-law-paper-generator:ro
+      # BGE-M3 is pinned and loaded offline at runtime. Keep the model outside
+      # the image so the same API image can run with a host-mounted model cache.
+      - ${ZHOUXU_HF_CACHE_DIR:-../../models/huggingface}:/root/.cache/huggingface:ro
+      - ${ZHOUXU_PAPER_FONT_DIR:-../../models/fonts}:/usr/share/fonts/zhouxu:ro
       - type: bind
         source: ${ZHOUXU_RUNTIME_ENV_FILE:-.env}
-        target: /app/opensearch/opensearch_delivery/dev/.env
+        target: /app/runtime.env
         read_only: true
     expose:
       - "8010"

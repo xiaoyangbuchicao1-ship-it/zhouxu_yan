@@ -366,7 +366,7 @@ def attach_maritime(app, settings):
     def skill(
         skill_id: str,
         request: Request,
-        version: int | None = None,
+        version: str | None = None,
         user=Depends(account),
     ):
         return invoke(office(request).skill, user.id, skill_id, version)

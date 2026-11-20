@@ -4,19 +4,13 @@ Python 3.11、FastAPI、Pydantic v2、httpx、SQLAlchemy 与自研 Harness。提
 
 ## 启动
 
-本机 Windows 开发从项目根目录运行：
-
-```powershell
-.\start\windows\start.cmd
-```
-
-Linux/ECS 不在主机创建 Python 环境，使用项目 Compose：
+所有平台都使用项目 Compose；Linux、ECS 或 WSL 运行：
 
 ```bash
 ./start/linux/start.sh
 ```
 
-这个脚本只启动 `deploy/app/compose.yaml`。Windows 的原生开发环境在 `backend/.venv-windows`；不要复制虚拟环境到另一台机器。
+这个脚本只启动 `deploy/app/compose.yaml`。Windows Docker Desktop 使用 `..\start\windows\start-compose.cmd`；不要在主机创建或复制 Python 虚拟环境。
 
 统一前后端启动见[项目说明](../README.md)。CLI 为 `python -m backend "问题"`，会调用真实模型；可用 `--config <完整 TOML 路径>` 指定配置。默认参数、提示词和文案在 `config/defaults.toml`，修改后重建 Harness 或重启服务。
 
@@ -43,9 +37,9 @@ Linux/ECS 不在主机创建 Python 环境，使用项目 Compose：
 
 `infrastructure/execution/workspace.py` 统一 read / write / edit / bash、账户/会话工作区、版本冲突、产物、预览和 Run 回收。正文与编辑补丁经标准输入传输。
 
-`CommandRuntime` 要求 exec / python / bash / close；Docker 与 Native 只实现各自进程边界。新增运行时继承 `WorkspaceExecutionProvider` 并实现 `_create_runtime`，再接入配置及组装入口。
+`CommandRuntime` 要求 exec / python / bash / close；当前部署统一使用 Docker 进程边界。新增运行时继承 `WorkspaceExecutionProvider` 并实现 `_create_runtime`，再接入配置及组装入口。
 
-默认 Docker 镜像为 `zhouxu-task-runtime:0.2`，源码在 `deploy/task-runtime/`。Linux 无 Docker 可设置 `ZHOUXU_EXECUTION_PROVIDER=native`；显式 TOML 需直接选择 provider。会话文件持续保存，Run 收尾释放进程。文档库、LibreOffice、Poppler、中文字体和 Bash 要按[部署说明](../docs/deployment.md)准备。
+默认 Docker 镜像为 `zhouxu-task-runtime:0.2`，源码在 `deploy/task-runtime/`。不再把 Native 作为部署路径；会话文件持续保存，Run 收尾释放进程。文档库、LibreOffice、Poppler、中文字体和 Bash 要按[部署说明](../docs/deployment.md)准备。
 
 ## 数据、上下文与恢复
 

@@ -1,76 +1,46 @@
 # 舟序启动入口
 
-`start` 提供两条明确的路径：
+项目运行只保留 Docker Compose 这一条路径。Windows、WSL、Linux 和 ECS 使用同一套容器；宿主机不安装项目 Python、Node、uv 或 CUDA。
 
-- `start/windows/start.cmd`：本机 Windows 原生开发，使用 Windows 的 Python/Node 依赖。
-- `start/windows/start-compose.cmd`：Windows + Docker Desktop 部署，不要求宿主机安装 Python/Node/uv。
-- `start/linux/start.sh`：Linux、ECS 或 WSL 中的 Docker Compose 入口，不创建 `.venv-linux`。
+## Windows + Docker Desktop
 
-两条路径不要同时启动同一份应用；否则会并发写 SQLite 和 RunStore。
-
-## Windows 原生开发
-
-在项目根目录运行：
+首次部署：
 
 ```powershell
-.\start\windows\start.cmd
-```
-
-它首次创建 `backend/.venv-windows` 和 `frontend/node_modules-windows`，连接本机开发 OpenSearch，并启动：
-
-- 前端：`http://127.0.0.1:4173/`
-- 后端：`http://127.0.0.1:8010/healthz`
-- OpenSearch：`https://127.0.0.1:19200`
-
-停止本机开发进程：
-
-```powershell
-.\start\windows\stop.ps1
-```
-
-`start.cmd` 会设置 UTF-8 代码页；PowerShell 脚本本身使用 ASCII 文本，兼容 Windows PowerShell 5.1，不依赖管理员权限。只有 Docker Desktop、uv、Node/npm 未安装或端口被占用时，才需要处理系统环境。
-
-## Docker Compose（另一台 Windows、Linux、ECS）
-
-先把 `deploy/app/.env.example` 复制为 `deploy/app/.env`，填写 OpenSearch 管理员密码和模型凭证。然后在项目根目录运行：
-
-```bash
-chmod +x start/linux/*.sh
-./start/linux/start.sh
-```
-
-Windows Docker Desktop 直接运行同一份 Compose 命令：
-
-```powershell
-docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml up -d --build
-```
-
-交付给另一台 Windows 电脑时，推荐使用项目内的一键入口：
-
-```powershell
+Copy-Item deploy\app\.env.example deploy\app\.env
+notepad deploy\app\.env
 .\start\windows\start-compose.cmd
 ```
 
-停止并保留数据：
+访问 `http://127.0.0.1:8080/`。
+
+停止但保留数据：
 
 ```powershell
 .\start\windows\stop-compose.cmd
 ```
 
-页面地址是 `http://127.0.0.1:8080/`。此路径不使用 `backend/.venv-linux`、`backend/.venv-windows` 或宿主机 `node_modules`；依赖都在镜像中。
+## Linux、WSL、ECS
 
-停止而保留数据：
+```bash
+cp deploy/app/.env.example deploy/app/.env
+# 编辑 deploy/app/.env，填写密码和凭证
+chmod +x start/linux/*.sh
+./start/linux/start.sh
+```
+
+停止但保留数据：
 
 ```bash
 ./start/linux/stop.sh
 ```
 
-或：
+页面默认地址为 `http://127.0.0.1:8080/`。公网访问由 ECS 的 Nginx/FRP 转发到这个端口；OpenSearch 只在 Compose 网络内提供 `9200`，不对公网开放。
 
-```powershell
-docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml down
-```
+## 模型和数据
 
-不要使用 `down -v`。OpenSearch 数据位于 `opensearch/vector_db_data/opensearch`，删除它会删除检索库。
+API 容器只读挂载宿主机的 BGE-M3 缓存（`ZHOUXU_HF_CACHE_DIR`）。法规语料、案例快照、SQLite 和 OpenSearch 运行数据也必须保留；不要使用 `docker compose down -v`，不要删除 `opensearch/vector_db_data/opensearch`。
 
-更多迁移文件清单和镜像仓库用法见 [`deploy/app/README.md`](../deploy/app/README.md) 和 [部署合同](../docs/deployment.md)。
+旧的 Windows 原生启动脚本和本机虚拟环境不再属于交付路径。
+
+完整迁移说明见 [`deploy/app/README.md`](../deploy/app/README.md) 和 [部署合同](../docs/deployment.md)。

@@ -25,6 +25,7 @@ class RuntimeSettings(BaseModel):
     max_rounds: int = Field(ge=1)
     max_retries: int = Field(ge=0)
     run_timeout_seconds: float = Field(gt=0)
+    work_run_timeout_seconds: float = Field(default=1800.0, gt=0)
     call_timeout_seconds: float = Field(gt=0)
     model_call_timeout_seconds: float | None = Field(default=None, gt=0)
     action_timeout_seconds: float | None = Field(default=None, gt=0)
@@ -200,6 +201,26 @@ class CaseSettings(BaseModel):
     read_description: str = ""
 
 
+class ResearchCardSettings(BaseModel):
+    """Runtime boundaries for information cards, capability cards and paper Skill."""
+
+    # The model remains usable in older test fixtures that do not mount the
+    # optional research resources. Production defaults enable the integration.
+    enabled: bool = False
+    information_alias: str = "maritime_information_cards_read"
+    information_index: str = "maritime_information_cards_v3"
+    information_max_results: int = Field(default=6, ge=1, le=20)
+    information_result_budget_chars: int = Field(default=12000, ge=1000)
+    capability_dir: str = ""
+    capability_file: str = "capability_cards.jsonl"
+    skill_dir: str = ""
+    search_description: str = ""
+    read_description: str = ""
+    capability_select_description: str = ""
+    capability_read_description: str = ""
+    paper_compile_description: str = ""
+
+
 class DeepSeekWebSettings(BaseModel):
     """Configuration for the direct Search and Fetch API adapter."""
 
@@ -256,6 +277,7 @@ class Settings(BaseModel):
     rag: RagSettings
     rag_tool: RagToolSettings
     cases: CaseSettings = Field(default_factory=CaseSettings)
+    research_cards: ResearchCardSettings = Field(default_factory=ResearchCardSettings)
     web: DeepSeekWebSettings = Field(default_factory=DeepSeekWebSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     prompts: dict[str, str]
@@ -290,6 +312,15 @@ def load_settings(path: Path | None = None) -> Settings:
         credential_file = os.environ.get("ZHOUXU_OPENSEARCH_CREDENTIAL_FILE", "").strip()
         if credential_file:
             rag["credential_file"] = credential_file
+    if path is None:
+        research = data.setdefault("research_cards", {})
+        for env_name, field_name in (
+            ("ZHOUXU_CAPABILITY_CARDS_DIR", "capability_dir"),
+            ("ZHOUXU_CSL_PAPER_SKILL_DIR", "skill_dir"),
+        ):
+            value = os.environ.get(env_name, "").strip()
+            if value:
+                research[field_name] = value
     with (BACKEND_ROOT / "config" / "model_capabilities.toml").open("rb") as stream:
         profiles = tomllib.load(stream)
     data.setdefault("model_capabilities", profiles["models"])

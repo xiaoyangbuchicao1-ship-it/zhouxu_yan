@@ -8,7 +8,7 @@ export interface MaritimeSkill {
   summary: string;
   instructions: string;
   category?: string;
-  version: number;
+  version: number | string;
   owner_id: string | null;
   visibility: "builtin" | "private" | "community";
   parent_id?: string;
@@ -164,7 +164,7 @@ export function maritimeApi(token: string) {
     },
     skills: () => call<{ skills: MaritimeSkill[] }>("/skills"),
     saveSkill: (
-      input: Partial<MaritimeSkill> & { expected_version?: number },
+      input: Partial<MaritimeSkill> & { expected_version?: number | string },
       id?: string,
     ) =>
       call<MaritimeSkill>(

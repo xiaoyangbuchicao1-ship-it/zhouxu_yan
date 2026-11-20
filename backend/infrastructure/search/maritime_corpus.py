@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import ssl
@@ -17,8 +18,21 @@ ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INDEX = ROOT / "backend/.runtime/maritime-corpus.sqlite3"
 CORPORA = {
     "laws": ROOT / "opensearch/corpus/manifest/chunks.jsonl",
-    "cases": ROOT / "opensearch_1/海事案例库/maritime_case_rag/corpus/chunk.jsonl",
+    "cases": ROOT / "data/cases/case_eb1be2c7fa1cd1fb/chunks.jsonl",
 }
+
+
+def runtime_env_path():
+    configured = os.environ.get("ZHOUXU_RUNTIME_ENV_FILE", "").strip()
+    candidates = [
+        Path(configured) if configured else None,
+        ROOT / "deploy/app/.env",
+        ROOT / "opensearch/runtime.env",
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return candidate
+    raise LookupError("search_credentials_unconfigured")
 
 
 def corpus_root(kind):
@@ -50,10 +64,15 @@ def complete_law_text(item):
 
 
 def complete_case_text(item):
-    root = corpus_root("cases")
+    snapshot_id = item.get("snapshot_id")
+    root = ROOT / "data" / "cases" / snapshot_id if snapshot_id else None
     case_id = item.get("case_id")
-    cases_path = root / "corpus" / "cases.jsonl"
-    if case_id and cases_path.is_file():
+    if root is None:
+        root = ROOT / "data" / "cases"
+    case_files = [root / "cases.jsonl"] if root.name != "cases" else sorted(root.glob("*/cases.jsonl"))
+    for cases_path in case_files:
+        if not case_id or not cases_path.is_file():
+            continue
         with cases_path.open(encoding="utf-8-sig") as stream:
             for line in stream:
                 try:
@@ -504,16 +523,18 @@ class MaritimeCorpus:
             except (LookupError, OSError, sqlite3.Error):
                 precise_items = []
         try:
-            # Fixed loopback addresses only; caller content cannot choose a host or index.
-            values = dotenv_values(
-                ROOT / "opensearch/opensearch_delivery/dev/.env", interpolate=False
-            )
+            # The deployment injects the internal Compose address.  Keep the
+            # loopback value only for a native local run; caller content never
+            # chooses the host or index.
+            values = dotenv_values(runtime_env_path(), interpolate=False)
             password = values.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD")
             if not password:
                 raise LookupError("search_credentials_unconfigured")
             context = ssl.create_default_context()
             context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
-            endpoint = "https://127.0.0.1:19200"
+            endpoint = os.environ.get(
+                "ZHOUXU_OPENSEARCH_URL", "https://127.0.0.1:19200"
+            ).rstrip("/")
             options = {"auth": ("admin", password), "verify": context}
             if kind == "laws":
                 alias = "maritime_law_chunks_read"

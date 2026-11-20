@@ -12,11 +12,9 @@ frontend/node_modules
 frontend/node_modules-*
 **/node_modules
 **/node_modules-*
-backend/.venv-windows
-backend/.venv-linux
 frontend/dist
 data
-opensearch_1
+models
 opensearch/vector_db_data
 opensearch/corpus
 opensearch/import

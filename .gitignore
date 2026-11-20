@@ -12,15 +12,13 @@ docs/reviews/
 
 # User data, models, services and local runtime
 data/
+models/
 opensearch/
-opensearch_1/
 # Version deployment source; corpus, vectors, database and credentials stay local.
 !opensearch/
 opensearch/*
 !opensearch/opensearch_delivery/
 opensearch/opensearch_delivery/*
-!opensearch/opensearch_delivery/native/
-!opensearch/opensearch_delivery/native/**
 !opensearch/opensearch_delivery/README.md
 !opensearch/opensearch_delivery/requirements*.txt
 !opensearch/opensearch_delivery/scripts/
@@ -29,11 +27,6 @@ opensearch/opensearch_delivery/*
 !opensearch/opensearch_delivery/index_definitions/**
 !opensearch/opensearch_delivery/queries/
 !opensearch/opensearch_delivery/queries/**
-!opensearch/opensearch_delivery/dev/
-opensearch/opensearch_delivery/dev/*
-!opensearch/opensearch_delivery/dev/README.md
-!opensearch/opensearch_delivery/dev/compose.yaml
-!opensearch/opensearch_delivery/dev/.env.example
 **/.runtime/
 **/.ai_tmp/
 **/.ai-tmp/

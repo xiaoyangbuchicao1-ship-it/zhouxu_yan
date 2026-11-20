@@ -1,13 +1,12 @@
 # 舟序部署清单
 
-更新时间：2026-11-16
+更新时间：2026-11-18
 
 ## 一句话结论
 
-源码只有一份；运行时只启动一套应用。Windows 原生用于本机开发，Docker Compose 用于另一台 Windows、Linux 和 ECS。
+源码只有一份；运行时只启动一套 Docker Compose 应用。Windows、WSL、Linux 和 ECS 都运行同样的三个容器。
 
 ```text
-Windows 原生开发：backend/.venv-windows + frontend/node_modules-windows
 Docker Compose：zhouxu-web + zhouxu-api + opensearch
 ```
 
@@ -22,7 +21,7 @@ WSL2 是 Docker Desktop 的底层 Linux 环境，不是第三套舟序。当前 
 ├─ data/                          账户、材料、案例快照、SQLite（不进 Git）
 ├─ opensearch/
 │  ├─ corpus/                     法条语料（数据包）
-│  ├─ import/                     法条向量和清单（数据包）
+│  ├─ import/                     法条及信息卡向量和清单（数据包）
 │  ├─ vector_db_data/opensearch/  OpenSearch 运行快照（可选数据包）
 │  └─ opensearch_delivery/        索引定义、导入脚本和查询
 ├─ deploy/app/
@@ -32,13 +31,13 @@ WSL2 是 Docker Desktop 的底层 Linux 环境，不是第三套舟序。当前 
 │  ├─ .env.example                部署配置模板
 │  └─ README.md                   迁移与启动说明
 ├─ start/
-│  ├─ windows/                    本机 Windows 原生开发入口
+│  ├─ windows/                    Docker Desktop 入口
 │  ├─ linux/                      Docker Compose 入口
-│  └─ common/                     两端共用的索引就绪检查
+│  └─ common/                     Compose 共用的索引就绪检查
 └─ docs/                          架构和部署说明
 ```
 
-`backend/.venv-windows`、`frontend/node_modules-windows` 是本机缓存，不是交付物。另一台电脑通过 Dockerfile 在 Linux 容器内重建依赖。
+宿主机 Python、Node、uv、`.venv-*` 和 `node_modules-*` 都不是交付物；依赖在 Linux 容器镜像内构建。
 
 ## 三个 Compose 服务
 
@@ -48,16 +47,17 @@ WSL2 是 Docker Desktop 的底层 Linux 环境，不是第三套舟序。当前 
 | `zhouxu-api` | FastAPI + 文档工具 + CPU PyTorch | 只在 Compose 网络监听 `8010` |
 | `opensearch` | OpenSearch 2.19 | 只在 Compose 网络监听 `9200`，数据 bind mount |
 
-`zhouxu-init` 是一次性初始化任务，不是第四个长期服务：它等待 OpenSearch 健康，校验/导入法条和案例，成功后退出码为 0。
+`zhouxu-init` 是一次性初始化任务，不是第四个长期服务：它等待 OpenSearch 健康，校验/导入法规、案例和信息卡，成功后退出码为 0。`models/` 保存只读模型缓存与论文模板字体；`data/runtime/` 保存任务记录，避免容器重建丢失任务。
 
-## 两个逻辑库，一个 OpenSearch
+## 三个逻辑库，一个 OpenSearch
 
 | 逻辑库 | 索引/别名 | 输入 |
 |---|---|---|
 | 法条库 | `maritime_law_chunks_v2` / `maritime_law_chunks_read` | `opensearch/corpus`、`opensearch/import` |
 | 案例库 | 当前案例快照 ID / `maritime_cases_read` | `data/cases/<snapshot>/` |
+| 信息卡库 | `maritime_information_cards_v3` / `maritime_information_cards_read` | 项目外只读信息卡，`opensearch/import/information_cards/` 派生向量；字段结构沿用 v2 |
 
-它们不是两个容器，也不是一个索引混装。一个 OpenSearch 集群承载多个索引，数据目录独立于应用镜像。
+一个 OpenSearch 集群承载三个独立来源索引，数据目录独立于应用镜像。外部能力卡与完整论文 Skill 只读挂载给 API，不混入上述索引。完整新增目录及验收场景见[科研资源接入](research-resources.md)。
 
 ## 另一台 Windows 的交付包
 
@@ -118,23 +118,10 @@ docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml logs zhouxu
 
 停止时使用 `down`，不要使用 `down -v`。
 
-## Windows 原生开发入口
-
-本机 PowerShell 运行：
-
-```powershell
-Set-Location 'D:\projects\codex\论文库\真正的舟序'
-.\start\windows\start.cmd
-```
-
-它使用 Windows 专属依赖并连接本机开发 OpenSearch。不要同时在 Windows 和 WSL 启动两套后端，否则会并发写 SQLite/RunStore。
-
 ## 端口
 
 | 端口 | 来源 | 作用 |
 |---:|---|---|
-| `4173` | Windows 原生 Vite | 本机开发页面 |
-| `8010` | Windows 原生 FastAPI | 本机开发 API |
 | `127.0.0.1:8080` | Compose web 容器 | Docker 页面/本机反向代理 |
 | `9200` | Compose 网络内部 | OpenSearch，不公网开放 |
 | ECS 80/443 | 外部 Nginx/FRP/Cloudflare | 公网入口 |

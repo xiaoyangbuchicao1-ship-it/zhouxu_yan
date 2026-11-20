@@ -1,0 +1,31 @@
+{
+  "dynamic": "strict",
+  "_meta": {
+    "schema_version": "2.0",
+    "source_type": "validated_information_card",
+    "retrieval_contract": "BM25 + BGE-M3 dense HNSW; shared application RRF(k=60)",
+    "embedding": {"model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "pooling": "cls", "normalize": true, "dimensions": 1024}
+  },
+  "properties": {
+    "card_id": {"type": "keyword"},
+    "card_type": {"type": "keyword"},
+    "status": {"type": "keyword"},
+    "evidence_type": {"type": "keyword"},
+    "time_scope": {"type": "keyword"},
+    "topics": {"type": "keyword"},
+    "retrieval_text": {"type": "text", "analyzer": "card_cjk"},
+    "claim_or_fact": {"type": "text", "analyzer": "card_cjk"},
+    "caveat": {"type": "text", "analyzer": "card_cjk"},
+    "source_document_id": {"type": "keyword"},
+    "source_title": {"type": "text", "analyzer": "card_cjk", "fields": {"keyword": {"type": "keyword", "ignore_above": 512}}},
+    "source_path": {"type": "keyword"},
+    "source_sha256": {"type": "keyword"},
+    "source_authors": {"type": "keyword"},
+    "source_collection": {"type": "keyword"},
+    "source_provenance": {"type": "object", "enabled": false},
+    "source_locator": {"type": "object", "dynamic": "false"},
+    "source_uri": {"type": "keyword"},
+    "source_time_scope": {"type": "keyword"},
+    "vector": {"type": "knn_vector", "dimension": 1024, "method": {"name": "hnsw", "engine": "lucene", "space_type": "cosinesimil", "parameters": {"m": 16, "ef_construction": 128}}}
+  }
+}
