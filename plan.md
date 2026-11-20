@@ -682,9 +682,9 @@ frontend/src/components/admin/ResourceHealth.tsx
 **目标**
 
 - 定义通用 RunSpec、NodeSpec、NodeState、Edge、Attempt、Checkpoint、Artifact；
-- 将现有 RunEnvelope/RunEvent/StreamEvent 扩展为兼容合同；
+- 将现有 RunEnvelope/RunEvent/StreamEvent 收敛为统一合同；
 - 动态节点不再与论文步骤绑定；
-- 明确状态转换和旧状态兼容映射。
+- 明确标准状态转换；历史旧数据只通过显式一次性迁移命令处理。
 
 **端到端测试**
 
@@ -1149,7 +1149,7 @@ frontend/src/components/admin/ResourceHealth.tsx
 - 事件 sequence 单调递增；
 - 产物、Skill、资源、模型 profile 都保存版本/哈希或可追溯引用；
 - 数据库迁移有版本、备份和回滚路径；
-- 旧数据先读兼容，再决定迁移或废弃；
+- 旧数据先备份，再通过显式迁移命令导入；运行时不自动读取旧格式；
 - 不在未授权情况下删除旧数据库、旧 Skill、历史产物或用户数据。
 
 ### 14.4 前端实现
@@ -1199,7 +1199,7 @@ frontend/src/components/admin/ResourceHealth.tsx
 
 1. 复核当前 Git 差异和运行数据备份状态；
 2. 设计并锁定 Run/Graph/Node/Attempt/Event/Checkpoint/Artifact 合同；
-3. 为旧 `RunEnvelope`、`RunEvent`、`StreamEvent` 写兼容投影；
+3. 固化 `RunEnvelope`、`RunEvent`、`StreamEvent` 的统一投影；旧数据另走显式迁移命令；
 4. 只实现“一个 Skill 节点”和“一个混合节点图”的最小纵向切片；
 5. 运行 Milestone 1 的三个用户测试；
 6. 通过后提交独立 Git 版本，并向用户汇报实际证据；

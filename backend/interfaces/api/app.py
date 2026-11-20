@@ -197,8 +197,8 @@ def create_app(
                 database.close()
             return
 
-        legacy_path = Path(settings.application.get("run_store_path", "backend/.runtime/runs.json"))
-        run_store = SQLiteRunStore(legacy_path.with_suffix(".sqlite3"), legacy_path=legacy_path)
+        run_store_path = Path(settings.application.get("run_store_path", "backend/.runtime/runs.sqlite3"))
+        run_store = SQLiteRunStore(run_store_path)
         events = EventHub(store=run_store)
         app.state.project_run = RunProjection(active_workspace_service, events)
         async with AsyncExitStack() as stack:

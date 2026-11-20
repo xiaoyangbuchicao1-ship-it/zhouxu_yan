@@ -25,7 +25,7 @@ Python 3.11、FastAPI、Pydantic v2、httpx、SQLAlchemy 与自研 Harness。提
 | `bootstrap.py` | 具体实现的组装与资源生命周期 |
 | `contracts/` | 请求、响应、事件与端口 |
 | `application/` | 账户、项目、会话、材料归属与历史 |
-| `harness/` | 主循环、预算、排队、补充、停止与恢复 |
+| `harness/` | 主循环、预算、排队、补充、暂停、取消与恢复 |
 | `modules/` | 感知、记忆、推理、行动、结构反思与法规检索 |
 | `infrastructure/` | 模型、数据库、检索、材料解析和执行适配 |
 | `skills/` | 显式注册的只读工作方法 |
@@ -43,7 +43,7 @@ Python 3.11、FastAPI、Pydantic v2、httpx、SQLAlchemy 与自研 Harness。提
 
 ## 数据、上下文与恢复
 
-业务 SQLite 保存账户、授权历史和材料信息；SQLiteRunStore 保存私有检查点、公开事件及正文，并限定单服务进程。启动恢复 queued/running，停止、打断和等待补充不自动恢复；未知副作用不自动重放。
+业务 SQLite 保存账户、授权历史和材料信息；SQLiteRunStore 保存私有检查点、公开事件及正文，并限定单服务进程。启动恢复 queued/running，暂停、取消和等待补充不自动恢复；未知副作用不自动重放。旧 JSON 只能通过 `backend.infrastructure.persistence.migrate_json_runs` 显式迁移，启动不会自动读取。
 
 唯一完整请求预算在 `infrastructure/model/budget.py`。材料先给有界预览，再按需 search_material / read_material；解析、当前正文可见和任务完成分别表达。供应商隐藏推理只留在按 Run 隔离的私有协议续接与检查点。
 

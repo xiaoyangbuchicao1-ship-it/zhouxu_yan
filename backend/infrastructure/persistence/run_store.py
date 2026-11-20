@@ -86,10 +86,9 @@ class SQLiteRunStore:
     imported once; existing files and user records are never deleted.
     """
 
-    def __init__(self, path: str | Path, *, legacy_path: str | Path | None = None):
+    def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.legacy = JsonRunStore(legacy_path) if legacy_path else None
         self._event_db = None
         self._event_lock = threading.RLock()
         with self._connection() as db:
@@ -148,10 +147,7 @@ class SQLiteRunStore:
                 if text and run.status != "succeeded":
                     run.partial_output = text
             return state
-        value = await self.legacy.load(session_id=session_id) if self.legacy else None
-        if value:
-            await self.save(value)
-        return value
+        return None
 
     async def save(self, state: PersistedSession) -> None:
         serialized = state.model_dump(mode="json")
@@ -163,8 +159,7 @@ class SQLiteRunStore:
     async def list_sessions(self) -> list[str]:
         with self._connection() as db:
             ids = [row[0] for row in db.execute("SELECT id FROM run_sessions")]
-        legacy = await self.legacy.list_sessions() if self.legacy else []
-        return list(dict.fromkeys(ids + legacy))
+        return ids
 
     def append_event(self, event: StreamEvent) -> StreamEvent:
         with self._event_lock:

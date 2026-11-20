@@ -383,10 +383,8 @@ retry_feedback = "本轮结果不完整，请修正后再回答。"
 title = "舟序最小 Harness"
 health_path = "/healthz"
 cli_description = "本地运行最小 Harness；当前不提供用户会话 API。"
-run_store_path = "backend/.runtime/runs.json"
-# Legacy compatibility only.  Production uses dynamic_rag_search and the
-# dedicated case tools; old corpus calls stay available only when explicitly
-# enabled for a migration or recovery run.
+run_store_path = "backend/.runtime/runs.sqlite3"
+# The old corpus protocol is available only to an explicit migration command.
 expose_legacy_corpus_tool = false
 
 [messages]
