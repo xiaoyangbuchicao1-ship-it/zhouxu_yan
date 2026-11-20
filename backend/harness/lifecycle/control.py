@@ -21,10 +21,6 @@ class RunControl:
         self._cancel_requested.set()
         self._reason = reason
 
-    def stop(self) -> None:
-        """Mark cancellation as terminal for the current Run."""
-        self.cancel("cancel")
-
     @property
     def cancelled(self) -> bool:
         return self._cancel_requested.is_set()

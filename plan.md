@@ -54,7 +54,7 @@
 
 - 后端：Python 3.11、FastAPI、Pydantic v2、httpx、SQLAlchemy、SQLite、OpenSearch 2.19、BGE-M3、BM25 + 向量混合检索、现有 Harness、DeepSeek；
 - 前端：React 18、TypeScript、Vite、Tailwind CSS、Radix UI、Framer Motion、cmdk、React Query、react-resizable-panels、react-markdown、GSAP；
-- 运行基础：`RunEnvelope`、`RunEvent`、`StreamEvent`、生命周期 scheduler、checkpoint/recovery、continue、interrupt、stop、retry、partial output 和 `InMemoryRunScheduler`；
+- 运行基础：`RunEnvelope`、`RunEvent`、`StreamEvent`、生命周期 scheduler、checkpoint/recovery、continue、pause、cancel、retry、partial output 和 `InMemoryRunScheduler`；
 - 部署约束：统一 Docker Compose，项目内发布运行资产，外部原始资料不再作为运行时隐式依赖；
 - Git 基线：`codex/fuse-handoff-v1`，提交 `86deff4 chore: snapshot ZhouXu before workspace improvements`。
 
@@ -515,7 +515,7 @@ frontend/src/components/admin/ResourceHealth.tsx
 
 | 页面/区域 | 用户目的 | 关键内容 |
 |---|---|---|
-| 工作区运行头 | 迅速知道当前 Run | 任务标题、状态、总耗时、当前节点、暂停/继续/停止 |
+| 工作区运行头 | 迅速知道当前 Run | 任务标题、状态、总耗时、当前节点、暂停/继续/取消 |
 | 运行时间线 | 看图执行进度 | 动态节点、依赖关系、完成/执行/等待/失败、节点耗时 |
 | 节点检查器 | 判断是否需要干预 | 节点类型、Skill/工具/模型版本、输入输出引用、尝试、错误 |
 | 任务中心 | 离开会话后找回任务 | 状态筛选、最近运行、失败原因、打开详情、继续 |

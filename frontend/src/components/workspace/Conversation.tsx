@@ -900,12 +900,12 @@ export default function Conversation({
                 <button
                   type="button"
                   className="ws-stop"
-                  aria-label="停止回答"
-                  onClick={ws.stop}
-                  title="停止当前运行并保留已生成结果"
+                  aria-label="暂停回答"
+                  onClick={ws.pause}
+                  title="暂停当前运行并保存检查点"
                 >
                   <Square size={13} />
-                  停止
+                  暂停
                 </button>
               )}
               {

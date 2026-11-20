@@ -291,10 +291,10 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     try {
       // The queued Run has become the active instruction. Stop that queued
       // copy so it cannot execute a second time after the steered Run finishes.
-      const stopped = (await api.stop(queued.runId, id)).run;
+      const cancelled = (await api.cancel(queued.runId, id)).run;
       controllers.current[queued.runId]?.abort();
       delete controllers.current[queued.runId];
-      await applyRun(id, stopped, queued.materials);
+      await applyRun(id, cancelled, queued.materials);
       let steered: RunEnvelope;
       try {
         steered = (await api.steer(active.runId, id, queued.question, [], queued.materials.map(material => material.id), taskFacts)).run;
@@ -356,12 +356,12 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   async function retryTurn(runId = turn?.runId) {
     if (!id || !runId || submitLock.current) return;
     submitLock.current = true;
-    try { const source = (await api.run(runId, id)).run; if (source.status === "waiting_user") { const stopped = await api.stop(runId, id); await applyRun(id, stopped.run); } const retryFacts: TaskContextFacts = { skill_id: typeof source.payload.facts.skill_id === "string" ? source.payload.facts.skill_id : taskFacts.skill_id, case_id: typeof source.payload.facts.case_id === "string" ? source.payload.facts.case_id : taskFacts.case_id }; const { run } = await api.submit(id, source.payload.text, source.payload.material_ids, lifetime.signal, createClientRequestId(), runId, source.payload.attached_material_ids, source.payload.thinking_mode, retryFacts); await applyRun(id, run); observe(id, run.run_id); await refresh(); }
+    try { const source = (await api.run(runId, id)).run; if (source.status === "waiting_user") { const cancelled = await api.cancel(runId, id); await applyRun(id, cancelled.run); } const retryFacts: TaskContextFacts = { skill_id: typeof source.payload.facts.skill_id === "string" ? source.payload.facts.skill_id : taskFacts.skill_id, case_id: typeof source.payload.facts.case_id === "string" ? source.payload.facts.case_id : taskFacts.case_id }; const { run } = await api.submit(id, source.payload.text, source.payload.material_ids, lifetime.signal, createClientRequestId(), runId, source.payload.attached_material_ids, source.payload.thinking_mode, retryFacts); await applyRun(id, run); observe(id, run.run_id); await refresh(); }
     catch (e) { report(e); } finally { submitLock.current = false; }
   }
-  async function cancel(interrupt = false) {
+  async function control(cancelRequested = false) {
     if (!turn?.runId || !id) return;
-    try { const { run } = await (interrupt ? api.interrupt : api.stop)(turn.runId, id); controllers.current[run.run_id]?.abort(); delete controllers.current[run.run_id]; await applyRun(id, run); await refresh(); }
+    try { const { run } = await (cancelRequested ? api.cancel : api.pause)(turn.runId, id); controllers.current[run.run_id]?.abort(); delete controllers.current[run.run_id]; await applyRun(id, run); await refresh(); }
     catch (e) { report(e); }
   }
   async function deleteConversation(conversationId: string) {
@@ -370,7 +370,7 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     // Empty the queue before stopping active work, which could dispatch the next task.
     activeRuns.sort((left, right) => (left.status === "queued" ? 0 : 1) - (right.status === "queued" ? 0 : 1));
     for (const run of activeRuns) {
-      await api.stop(run.run_id, conversationId);
+      await api.cancel(run.run_id, conversationId);
       controllers.current[run.run_id]?.abort();
       delete controllers.current[run.run_id];
       delete sequences.current[run.run_id];
@@ -395,5 +395,5 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [api, id]);
-  return { deleteConversation, thinkingMode, setThinkingMode, conversationMode, setConversationMode, modeChanging: false, visibleRuns: currentCards, suppressedRunIds, finishPresentation, downloadArtifact, api, scope, notice, setNotice, busy: turn?.state === "receiving", projects, history, resources, detail, act, refresh, report, projectFilter, setProjectFilter, draft, setDraft, draftMaterials, turn, queuedRuns, send, steerQueued, reloadTurn, retryTurn, continueRun, stop: () => cancel(), interrupt: () => cancel(true), steer: () => send("steer"), ensureConversation, uploads, uploadFiles, uploadOne, stageMaterial, removeDraftMaterial, dismissUpload: (key: string) => setUploads(current => current.filter(u => u.key !== key)) };
+  return { deleteConversation, thinkingMode, setThinkingMode, conversationMode, setConversationMode, modeChanging: false, visibleRuns: currentCards, suppressedRunIds, finishPresentation, downloadArtifact, api, scope, notice, setNotice, busy: turn?.state === "receiving", projects, history, resources, detail, act, refresh, report, projectFilter, setProjectFilter, draft, setDraft, draftMaterials, turn, queuedRuns, send, steerQueued, reloadTurn, retryTurn, continueRun, pause: () => control(false), cancel: () => control(true), steer: () => send("steer"), ensureConversation, uploads, uploadFiles, uploadOne, stageMaterial, removeDraftMaterial, dismissUpload: (key: string) => setUploads(current => current.filter(u => u.key !== key)) };
 }

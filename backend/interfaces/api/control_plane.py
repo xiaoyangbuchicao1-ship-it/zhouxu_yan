@@ -107,20 +107,20 @@ class HarnessControlService:
             session_id=session_id, run_id=run_id
         )
 
-    async def interrupt(
+    async def pause(
         self, *, session_id: str, run_id: str
     ) -> tuple[DispatchResult, RunEnvelope]:
-        dispatch = await self.scheduler.interrupt(
+        dispatch = await self.scheduler.pause(
             session_id=session_id, run_id=run_id
         )
         return dispatch, await self.scheduler.get_run(
             session_id=session_id, run_id=run_id
         )
 
-    async def stop(
+    async def cancel(
         self, *, session_id: str, run_id: str
     ) -> tuple[DispatchResult, RunEnvelope]:
-        dispatch = await self.scheduler.stop(session_id=session_id, run_id=run_id)
+        dispatch = await self.scheduler.cancel(session_id=session_id, run_id=run_id)
         return dispatch, await self.scheduler.get_run(
             session_id=session_id, run_id=run_id
         )

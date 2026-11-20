@@ -142,9 +142,9 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
     },
     inputRequest: (runId: string, conversationId: string, requestId: string, signal?: AbortSignal) => request<{ request: InputRequest }>(`${runPath(runId)}/input-requests/${segment(requestId)}?conversation_id=${segment(conversationId)}`, {}, signal),
     snapshot: async (id: string, signal?: AbortSignal) => ({ snapshot: await request<SessionSnapshot>(`${conversationPath(id)}/snapshot`, {}, signal) }),
-    stop: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/stop`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
+    cancel: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/cancel`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
     continueRun: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/continue`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
-    interrupt: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/interrupt`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
+    pause: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/pause`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
     resume: (runId: string, conversationId: string, requestId: string, answer: unknown, attachedIds: string[] = []) => request<RunCommandResponse>(`${runPath(runId)}/resume`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId, request_id: requestId, answer, attached_material_ids: attachedIds }) }),
     steer: (runId: string, conversationId: string, text: string, materialIds: string[] = [], attachedIds: string[] = [], facts: TaskContextFacts = {}) => request<RunCommandResponse>(`${runPath(runId)}/steer`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId, text, facts, constraints: [], material_ids: materialIds, attached_material_ids: attachedIds }) }),
     async stream(conversationId: string, runId: string, onEvent: (event: StreamEvent) => void, signal: AbortSignal, after = 0) {

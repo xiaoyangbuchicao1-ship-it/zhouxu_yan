@@ -241,12 +241,12 @@ class InMemoryRunScheduler:
             await self._persist_locked(session)
             return self._result_locked(session, run)
 
-    async def interrupt(self, *, session_id: str, run_id: str) -> DispatchResult:
+    async def pause(self, *, session_id: str, run_id: str) -> DispatchResult:
         return await self._cancel(
             session_id=session_id, run_id=run_id, terminal="paused"
         )
 
-    async def stop(self, *, session_id: str, run_id: str) -> DispatchResult:
+    async def cancel(self, *, session_id: str, run_id: str) -> DispatchResult:
         return await self._cancel(
             session_id=session_id, run_id=run_id, terminal="cancelled"
         )

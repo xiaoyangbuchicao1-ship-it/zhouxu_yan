@@ -113,7 +113,7 @@ Docker 默认限制网络、根文件系统、权限和资源。Native 使用专
 
 阶段交付保存可用正文及 remaining_work 后继续；达到一轮执行上限可 yielded 回到同一 Run。暂停保留检查点，取消结束当前 Run；continue 使用同一检查点，retry 新建来源关联的 Run。未知副作用不自动重放。
 
-业务 SQLite 保存账户、授权历史和材料信息；SQLiteRunStore 保存私有检查点、公开事件序号和可见正文，以文件锁限定单服务进程。启动自动调度持久化的 queued/running；手动停止、打断和等待补充不自动恢复。旧 JSON 仅作已有数据的读取迁移源。
+业务 SQLite 保存账户、授权历史和材料信息；SQLiteRunStore 保存私有检查点、公开事件序号和可见正文，以文件锁限定单服务进程。启动自动调度持久化的 queued/running；暂停、取消和等待补充不自动恢复。
 
 NDJSON 以 run_id + sequence 去重和续接。`delta` 追加，`answer` 权威替换，`done` 提交可见文本；done 不等于整个 Run 进入终态，生命周期与快照为准。前端显示缓冲不影响标准正文、事件序号或持久化。
 

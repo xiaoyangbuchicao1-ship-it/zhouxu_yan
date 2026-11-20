@@ -36,7 +36,7 @@ RunStatus = Literal[
     "cancelled",
 ]
 RecoveryMode = Literal["none", "checkpoint", "fresh_attempt"]
-CommandKind = Literal["submit", "resume", "steer", "interrupt", "stop"]
+CommandKind = Literal["submit", "resume", "steer", "pause", "cancel"]
 InputRequestStatus = Literal["pending", "answered", "cancelled"]
 
 

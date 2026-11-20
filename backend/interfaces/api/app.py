@@ -1273,17 +1273,17 @@ def create_app(
         sync_run(request, principal, run)
         return WorkbenchRunCommandResponse(run=workbench_run_view(run))
 
-    async def workbench_cancel(
+    async def workbench_control(
         run_id: str,
         body: WorkbenchRunControlRequest,
         request: Request,
         *,
-        stop: bool,
+        cancel: bool,
         authorization: str | None,
     ):
         principal = require_conversation(request, body.conversation_id, authorization)
         try:
-            action = service(request).stop if stop else service(request).interrupt
+            action = service(request).cancel if cancel else service(request).pause
             _, run = await action(session_id=body.conversation_id, run_id=run_id)
             hub = request.app.state.event_hub
             if hub is not None and not run.partial_output:
@@ -1300,29 +1300,29 @@ def create_app(
         return WorkbenchRunCommandResponse(run=workbench_run_view(run))
 
     @app.post(
-        "/workspace/runs/{run_id}/interrupt", response_model=WorkbenchRunCommandResponse
+        "/workspace/runs/{run_id}/pause", response_model=WorkbenchRunCommandResponse
     )
-    async def workbench_interrupt(
+    async def workbench_pause(
         run_id: str,
         body: WorkbenchRunControlRequest,
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        return await workbench_cancel(
-            run_id, body, request, stop=False, authorization=authorization
+        return await workbench_control(
+            run_id, body, request, cancel=False, authorization=authorization
         )
 
     @app.post(
-        "/workspace/runs/{run_id}/stop", response_model=WorkbenchRunCommandResponse
+        "/workspace/runs/{run_id}/cancel", response_model=WorkbenchRunCommandResponse
     )
-    async def workbench_stop(
+    async def workbench_cancel(
         run_id: str,
         body: WorkbenchRunControlRequest,
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        return await workbench_cancel(
-            run_id, body, request, stop=True, authorization=authorization
+        return await workbench_control(
+            run_id, body, request, cancel=True, authorization=authorization
         )
 
     @app.get("/workspace/conversations/{conversation_id}/events")
@@ -1913,19 +1913,19 @@ def create_app(
         sync_run(request, principal, run)
         return RunCommandResponse(dispatch=dispatch, run=run)
 
-    async def cancel_run(
+    async def control_run(
         run_id: str,
         body: RunControlRequest,
         request: Request,
         *,
-        stop: bool,
+        cancel: bool,
         authorization: str | None = None,
     ):
         try:
             principal = require_session_owner(request, body.session_id, authorization)
-            action = service(request).stop if stop else service(request).interrupt
+            action = service(request).cancel if cancel else service(request).pause
             dispatch, run = await action(session_id=body.session_id, run_id=run_id)
-            # A cooperative stop can happen after visible deltas have already
+            # A cooperative cancellation can happen after visible deltas have already
             # reached the client. Preserve those deltas in durable workspace
             # history even when the executor has no terminal answer.
             if not run.partial_output:
@@ -1943,26 +1943,26 @@ def create_app(
         sync_run(request, principal, run)
         return RunCommandResponse(dispatch=dispatch, run=run)
 
-    @app.post("/harness/runs/{run_id}/interrupt", response_model=RunCommandResponse)
-    async def interrupt_run(
+    @app.post("/harness/runs/{run_id}/pause", response_model=RunCommandResponse)
+    async def pause_run(
         run_id: str,
         body: RunControlRequest,
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        return await cancel_run(
-            run_id, body, request, stop=False, authorization=authorization
+        return await control_run(
+            run_id, body, request, cancel=False, authorization=authorization
         )
 
-    @app.post("/harness/runs/{run_id}/stop", response_model=RunCommandResponse)
-    async def stop_run(
+    @app.post("/harness/runs/{run_id}/cancel", response_model=RunCommandResponse)
+    async def cancel_run(
         run_id: str,
         body: RunControlRequest,
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        return await cancel_run(
-            run_id, body, request, stop=True, authorization=authorization
+        return await control_run(
+            run_id, body, request, cancel=True, authorization=authorization
         )
 
     @app.get("/harness/sessions/{session_id}/events")
