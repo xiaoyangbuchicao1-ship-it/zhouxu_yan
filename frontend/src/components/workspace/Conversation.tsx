@@ -31,6 +31,7 @@ import { maritimeApi, type MaritimeCase } from "@/lib/maritime-api";
 import { IconButton, Menu, MenuItem, Loading, LoadError, Modal } from "./Primitives";
 
 import { RunProgress } from "./RunProgress";
+import { RunTimeline } from "./RunTimeline";
 import { ActivityIndicator } from "./ActivityIndicator";
 import { MaterialCards, MaterialDescription } from "./MaterialCards";
 import { WorkPackages } from "./WorkPackages";
@@ -665,6 +666,11 @@ export default function Conversation({
                     <RunProgress
                       activities={card.activities}
                       live={card.state === "receiving"}
+                    />
+                    <RunTimeline
+                      nodes={card.nodes}
+                      activeElapsedMs={card.activeElapsedMs}
+                      wallElapsedMs={card.wallElapsedMs}
                     />
                     <StreamingAnswer key={card.runId} text={card.answer} live={card.state === "receiving"} onSettled={card.status === "completed" ? () => void ws.finishPresentation(card.runId!) : undefined} />
                     <SourceCards sources={card.sources} onOpen={(source) => void openSource(source)} />

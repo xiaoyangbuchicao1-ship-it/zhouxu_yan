@@ -6,12 +6,19 @@ import { useNavigate } from "react-router-dom";
 import { saveSession } from "@/lib/auth-session";
 import { createClientRequestId } from "@/lib/client-request-id";
 import type { AuthSession } from "@/lib/auth";
-import { workbenchApi, WorkbenchError, acceptStreamSequence, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
+import { workbenchApi, WorkbenchError, acceptStreamSequence, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunNodeState, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
 
-export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; materials: Material[]; updates: string[]; activities: Activity[]; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "waiting" | "completed" | "failed" | "stopped" | "interrupted"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; question: string }; }
+export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; materials: Material[]; updates: string[]; activities: Activity[]; nodes: RunNodeState[]; activeElapsedMs?: number | null; wallElapsedMs?: number | null; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "waiting" | "completed" | "failed" | "stopped" | "interrupted"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; question: string }; }
 export interface Upload { key: string; conversationId: string; file: File; error?: string; }
-const terminal = new Set<RunStatus>(["completed", "failed", "stopped", "interrupted"]);
-const stateFor = (status: RunStatus): PendingTurn["state"] => status === "waiting_user" ? "waiting" : terminal.has(status) ? status as PendingTurn["state"] : "receiving";
+const terminal = new Set<RunStatus>(["completed", "succeeded", "failed", "cancelled", "stopped", "interrupted", "paused"]);
+const stateFor = (status: RunStatus): PendingTurn["state"] => {
+  if (status === "waiting_user") return "waiting";
+  if (status === "failed") return "failed";
+  if (status === "cancelled" || status === "stopped") return "stopped";
+  if (status === "interrupted" || status === "paused") return "interrupted";
+  if (status === "completed" || status === "succeeded") return "completed";
+  return "receiving";
+};
 
 export interface WorkspaceTaskContext {
   skillId?: string;
@@ -140,6 +147,9 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
         conversationId, runId: run.run_id, mode: run.payload.mode || "chat", question: run.payload.text, revision: run.revision,
         answer: (run.last_sequence || 0) >= (sequences.current[run.run_id] || 0) ? (run.output ?? run.partial_output ?? previous?.answer ?? "") : (previous?.answer || ""),
         materials: [...new Map([...(previous?.materials || []), ...(materials || [])].map(m => [m.id, m])).values()], updates: Object.values({ ...((run.payload.facts.user_answers || {}) as Record<string, unknown>), ...run.answers }).filter((v): v is string => typeof v === "string"), activities: previous?.activities || [],
+        nodes: run.node_states?.length ? run.node_states : previous?.nodes || [],
+        activeElapsedMs: run.active_elapsed_ms ?? previous?.activeElapsedMs,
+        wallElapsedMs: run.wall_elapsed_ms ?? previous?.wallElapsedMs,
         sources: run.sources?.length ? run.sources : previous?.sources || [],
         artifacts: run.artifacts?.length ? run.artifacts : previous?.artifacts || [],
         recovery,
@@ -224,7 +234,7 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     if (!id) return;
     const controller = new AbortController();
     void api.snapshot(id, controller.signal).then(async ({ snapshot }) => {
-      for (const run of snapshot.runs.filter(r => ["running", "queued", "waiting_user"].includes(r.status))) {
+      for (const run of snapshot.runs.filter(r => ["queued", "preparing", "running", "waiting_user", "pausing", "resuming", "retrying"].includes(r.status))) {
         if (controller.signal.aborted) return;
         sequences.current[run.run_id] = run.last_sequence || 0;
         const all = detail.data?.linked_resources || [];
@@ -356,7 +366,7 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   }
   async function deleteConversation(conversationId: string) {
     const { snapshot } = await api.snapshot(conversationId);
-    const activeRuns = snapshot.runs.filter(run => ["running", "queued", "waiting_user"].includes(run.status));
+    const activeRuns = snapshot.runs.filter(run => ["queued", "preparing", "running", "waiting_user", "pausing", "resuming", "retrying"].includes(run.status));
     // Empty the queue before stopping active work, which could dispatch the next task.
     activeRuns.sort((left, right) => (left.status === "queued" ? 0 : 1) - (right.status === "queued" ? 0 : 1));
     for (const run of activeRuns) {

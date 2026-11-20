@@ -215,12 +215,20 @@ def create_app(
                     )
                 )
                 harness = harnesses[settings.model.thinking_mode]
+                from backend.harness.graph.executor import (
+                    GraphRunExecutor,
+                    RoutedRunExecutor,
+                    default_graph_handlers,
+                )
                 from backend.harness.lifecycle.executor import HarnessRunExecutor
 
                 app.state.control_service = HarnessControlService(
-                    HarnessRunExecutor(
-                        harness, material_service=active_material_service,
-                        history_service=active_workspace_service, harnesses=harnesses,
+                    RoutedRunExecutor(
+                        HarnessRunExecutor(
+                            harness, material_service=active_material_service,
+                            history_service=active_workspace_service, harnesses=harnesses,
+                        ),
+                        GraphRunExecutor(default_graph_handlers(), events=events),
                     ),
                     store=run_store,
                 )
@@ -539,6 +547,17 @@ def create_app(
             first_delta_at=run.first_delta_at,
             completed_at=run.completed_at,
             last_sequence=run.last_sequence,
+            graph=run.graph,
+            graph_id=run.graph_id,
+            graph_version=run.graph_version,
+            node_states=list(run.node_states.values()),
+            current_node_id=run.current_node_id,
+            current_attempt_id=run.current_attempt_id,
+            runtime_policy=run.runtime_policy,
+            paused_at=run.paused_at,
+            resumed_at=run.resumed_at,
+            active_elapsed_ms=run.active_elapsed_ms,
+            wall_elapsed_ms=run.wall_elapsed_ms,
         )
 
     @app.get(
@@ -1006,6 +1025,8 @@ def create_app(
                 account_id=principal.id,
                 client_request_id=body.client_request_id,
                 retry_of_run_id=body.retry_of_run_id,
+                graph=body.graph,
+                runtime_policy=body.runtime_policy,
                 payload=RunInput(
                     text=body.text,
                     mode=conversation_mode,
@@ -1787,6 +1808,8 @@ def create_app(
                     material_ids=material_ids,
                 ),
                 task_id=body.task_id,
+                graph=body.graph,
+                runtime_policy=body.runtime_policy,
             )
         except SchedulerCommandError as exc:
             raise _command_error(exc) from exc
@@ -2011,7 +2034,7 @@ def create_app(
                             last_stream_sequences[event.run_id] = event.sequence
                 if matching and all(
                     run.status
-                    in {"completed", "failed", "interrupted", "stopped", "waiting_user"}
+                    in {"completed", "succeeded", "failed", "interrupted", "stopped", "cancelled", "paused", "waiting_user"}
                     for run in matching
                 ):
                     return

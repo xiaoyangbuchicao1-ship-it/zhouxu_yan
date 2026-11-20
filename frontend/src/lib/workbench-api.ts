@@ -3,8 +3,26 @@ import { createClientRequestId } from "./client-request-id";
 /* The HTTP adapter validates the versioned Workbench contract at the boundary. */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type RunStatus =
-  | "queued" | "running" | "waiting_user" | "completed"
-  | "failed" | "stopped" | "interrupted";
+  | "queued" | "preparing" | "running" | "waiting_user" | "pausing"
+  | "paused" | "resuming" | "retrying" | "succeeded" | "completed"
+  | "failed" | "cancelled" | "stopped" | "interrupted";
+export type RunNodeKind = "skill" | "tool" | "model" | "file" | "human_gate" | "compile" | "subgraph" | "transform";
+export type RunNodeStatus =
+  | "queued" | "preparing" | "running" | "waiting_user" | "pausing"
+  | "paused" | "resuming" | "retrying" | "succeeded" | "failed" | "cancelled";
+export interface RunNodeState {
+  node_id: string;
+  kind: RunNodeKind;
+  label: string;
+  status: RunNodeStatus;
+  attempt: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  error?: { code?: string; message?: string } | null;
+  input_refs?: string[];
+  output_refs?: string[];
+}
 export type ConversationMode = "chat" | "work";
 export interface RunRecovery { mode: "none" | "checkpoint" | "fresh_attempt"; can_continue: boolean; can_retry: boolean; message?: string | null; }
 
@@ -21,17 +39,18 @@ export interface Message { id: string; role: "user" | "assistant"; content: stri
 export interface ConversationDetail { conversation: Conversation; messages: Message[]; pending_materials: Material[]; linked_resources: Resource[]; }
 export interface RunPayload { mode: ConversationMode; thinking_mode?: ThinkingMode | null; text: string; facts: Record<string, unknown>; constraints: string[]; material_ids: string[]; attached_material_ids?: string[]; }
 export interface TaskContextFacts { skill_id?: string; case_id?: string; }
-export interface RunEnvelope { run_id: string; conversation_id: string; status: RunStatus; revision: number; payload: RunPayload; pending_request_ids: string[]; answers: Record<string, unknown>; output?: string | null; partial_output?: string | null; error?: { message: string } | null; recovery: RunRecovery; retry_of_run_id?: string | null; completed_units?: number | null; total_units?: number | null; current_unit?: string | null; sources?: SourceReference[]; artifacts?: Artifact[]; created_at?: string; started_at?: string | null; first_event_at?: string | null; first_delta_at?: string | null; completed_at?: string | null; last_sequence?: number; }
+export interface RunEnvelope { run_id: string; conversation_id: string; status: RunStatus; revision: number; payload: RunPayload; pending_request_ids: string[]; answers: Record<string, unknown>; output?: string | null; partial_output?: string | null; error?: { message: string } | null; recovery: RunRecovery; retry_of_run_id?: string | null; completed_units?: number | null; total_units?: number | null; current_unit?: string | null; sources?: SourceReference[]; artifacts?: Artifact[]; created_at?: string; started_at?: string | null; first_event_at?: string | null; first_delta_at?: string | null; completed_at?: string | null; last_sequence?: number; node_states?: RunNodeState[]; active_elapsed_ms?: number | null; wall_elapsed_ms?: number | null; }
 export interface InputRequest { request_id: string; run_id: string; question: string; options: { value: string; label: string }[]; allow_free_text: boolean; required: boolean; status: "pending" | "answered" | "cancelled"; answer?: unknown; }
 export interface RunCommandResponse { run: RunEnvelope; }
 export interface SessionSnapshot { conversation_id: string; status: "open" | "closed"; active_run_id?: string | null; queued_run_ids: string[]; waiting_run_ids: string[]; runs: RunEnvelope[]; }
+export type StreamEventMeta = { event_type?: "lifecycle" | "node" | "attempt" | "visible" | null; node_id?: string | null; attempt_id?: string | null };
 export type StreamEvent =
-  | { type: "delta"; run_id: string; sequence: number; text: string }
-  | { type: "answer"; run_id: string; sequence: number; text: string }
-  | { type: "progress"; run_id: string; sequence: number; activity: Activity }
-  | { type: "done"; run_id: string; sequence: number; text: string; run?: RunEnvelope | null }
-  | { type: "error"; run_id: string; sequence: number; message: string }
-  | { type: "lifecycle"; run_id: string; sequence: number; run: RunEnvelope };
+  | ({ type: "delta"; run_id: string; sequence: number; text: string } & StreamEventMeta)
+  | ({ type: "answer"; run_id: string; sequence: number; text: string } & StreamEventMeta)
+  | ({ type: "progress"; run_id: string; sequence: number; activity: Activity } & StreamEventMeta)
+  | ({ type: "done"; run_id: string; sequence: number; text: string; run?: RunEnvelope | null } & StreamEventMeta)
+  | ({ type: "error"; run_id: string; sequence: number; message: string } & StreamEventMeta)
+  | ({ type: "lifecycle"; run_id: string; sequence: number; run: RunEnvelope } & StreamEventMeta);
 
 export function acceptStreamSequence(lastSequence: number, event: StreamEvent): boolean {
   return event.type === "lifecycle" || event.sequence > lastSequence;

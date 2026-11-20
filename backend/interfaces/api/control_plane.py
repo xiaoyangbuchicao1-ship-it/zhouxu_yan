@@ -12,6 +12,7 @@ from backend.contracts.harness.lifecycle import (
 )
 from backend.contracts.modules.loop import RunInput
 from backend.contracts.ports import RunStore
+from backend.contracts.runtime import RunGraph, RunPolicy
 from backend.harness.lifecycle.scheduler import (
     InMemoryRunScheduler,
     SchedulerCommandError,
@@ -39,6 +40,8 @@ class HarnessControlService:
         client_request_id: str | None = None,
         retry_of_run_id: str | None = None,
         conversation_id: str | None = None,
+        graph: RunGraph | None = None,
+        runtime_policy: RunPolicy | None = None,
     ) -> tuple[DispatchResult, RunEnvelope]:
         dispatch = await self.scheduler.submit(
             session_id=session_id,
@@ -48,6 +51,8 @@ class HarnessControlService:
             client_request_id=client_request_id,
             retry_of_run_id=retry_of_run_id,
             conversation_id=conversation_id,
+            graph=graph,
+            runtime_policy=runtime_policy,
         )
         return dispatch, await self.scheduler.get_run(
             session_id=session_id, run_id=dispatch.run_id

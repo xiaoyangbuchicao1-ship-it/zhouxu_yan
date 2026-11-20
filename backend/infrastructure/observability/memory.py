@@ -9,9 +9,12 @@ class MemoryEventSink:
         self.events: list[RunEvent] = []
         self.stream_events: list[StreamEvent] = []
         self._stream_sequences: dict[str, int] = {}
+        self._run_sequences: dict[str, int] = {}
 
     def emit(self, event: RunEvent) -> None:
-        self.events.append(event.model_copy(deep=True))
+        sequence = max(self._run_sequences.get(event.run_id, 0) + 1, event.sequence)
+        self._run_sequences[event.run_id] = sequence
+        self.events.append(event.model_copy(update={"sequence": sequence}, deep=True))
 
     def emit_stream(self, event: StreamEvent) -> None:
         sequence = self._stream_sequences.get(event.run_id, 0) + 1

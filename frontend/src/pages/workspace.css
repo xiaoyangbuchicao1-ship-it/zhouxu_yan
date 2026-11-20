@@ -836,6 +836,83 @@
 .ws-run-status .ws-text-button {
   margin: 0;
 }
+.ws-run-timeline {
+  margin-top: 18px;
+  padding: 14px 16px 12px;
+  border: 1px solid rgba(108, 132, 157, 0.24);
+  border-radius: 12px;
+  background: rgba(11, 18, 27, 0.56);
+}
+.ws-run-timeline-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  color: #c6d3e1;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.ws-run-timeline-heading time,
+.ws-run-timeline-note {
+  color: #7f91a5;
+  font-size: 11px;
+  letter-spacing: 0;
+}
+.ws-run-timeline-list {
+  position: relative;
+  display: grid;
+  gap: 0;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ws-run-timeline-list::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 4px;
+  width: 1px;
+  background: rgba(114, 143, 171, 0.28);
+  content: "";
+}
+.ws-run-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 42px;
+}
+.ws-run-node-dot {
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border: 2px solid #526a83;
+  border-radius: 999px;
+  background: #111c28;
+}
+.ws-run-node-running .ws-run-node-dot,
+.ws-run-node-resuming .ws-run-node-dot,
+.ws-run-node-retrying .ws-run-node-dot {
+  border-color: #83b5e6;
+  box-shadow: 0 0 0 3px rgba(131, 181, 230, 0.12);
+}
+.ws-run-node-succeeded .ws-run-node-dot { border-color: #75c5a1; background: #75c5a1; }
+.ws-run-node-failed .ws-run-node-dot { border-color: #d68b8b; background: #d68b8b; }
+.ws-run-node-copy { min-width: 0; padding-bottom: 10px; }
+.ws-run-node-title,
+.ws-run-node-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.ws-run-node-title { color: #c8d4e1; font-size: 13px; }
+.ws-run-node-kind { color: #72869b; font-size: 11px; }
+.ws-run-node-meta { margin-top: 2px; color: #8293a5; font-size: 11px; }
+.ws-run-node-meta time { color: #9aafc2; }
+.ws-run-node-error { margin: 4px 0 0; color: #d99898; font-size: 11px; }
+.ws-run-timeline-note { margin: 3px 0 0 19px; }
 .ws-prose {
   font-size: 16px;
   line-height: 1.85;

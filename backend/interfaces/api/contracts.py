@@ -21,6 +21,7 @@ from backend.contracts.harness.lifecycle import (
 from backend.contracts.modules.loop import ConversationMode, RunInput, ThinkingMode
 from backend.contracts.modules.materials import StoredMaterialRef
 from backend.contracts.modules.sources import SourceDocument, SourceReference
+from backend.contracts.runtime import NodeState, RunGraph, RunPolicy
 from backend.contracts.schemas.core import Contract
 
 
@@ -28,6 +29,8 @@ class SubmitRunRequest(RunInput):
     """A user message plus optional task correlation."""
 
     task_id: str | None = None
+    graph: RunGraph | None = None
+    runtime_policy: RunPolicy | None = None
 
 
 class WorkbenchRunPayload(Contract):
@@ -58,6 +61,8 @@ class WorkbenchSubmitRunRequest(Contract):
     target_run_id: str | None = Field(default=None, min_length=1)
     request_id: str | None = Field(default=None, min_length=1)
     answer: Any | None = None
+    graph: RunGraph | None = None
+    runtime_policy: RunPolicy | None = None
 
 
 class WorkbenchErrorView(Contract):
@@ -90,6 +95,17 @@ class WorkbenchRunView(Contract):
     first_delta_at: datetime | None = None
     completed_at: datetime | None = None
     last_sequence: int = 0
+    graph: RunGraph | None = None
+    graph_id: str | None = None
+    graph_version: str | None = None
+    node_states: list[NodeState] = Field(default_factory=list)
+    current_node_id: str | None = None
+    current_attempt_id: str | None = None
+    runtime_policy: RunPolicy = Field(default_factory=RunPolicy)
+    paused_at: datetime | None = None
+    resumed_at: datetime | None = None
+    active_elapsed_ms: int = 0
+    wall_elapsed_ms: int = 0
 
 
 class WorkbenchRunCommandResponse(Contract):

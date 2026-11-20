@@ -10,13 +10,30 @@ from uuid import uuid4
 
 from pydantic import Field
 
+from backend.contracts.runtime import (
+    Artifact,
+    Attempt,
+    Checkpoint,
+    NodeState,
+    RunGraph,
+    RunPolicy,
+    RunSpec,
+)
 from backend.contracts.schemas.core import Contract, Error
 
 SessionStatus = Literal["open", "closed"]
 RunStatus = Literal[
     "queued",
+    "preparing",
     "running",
     "waiting_user",
+    "pausing",
+    "paused",
+    "resuming",
+    "retrying",
+    "succeeded",
+    "cancelled",
+    # Legacy values remain valid for old clients and persisted runs.
     "interrupted",
     "stopped",
     "completed",
@@ -99,6 +116,25 @@ class RunEnvelope(Contract):
     completed_units: int | None = None
     total_units: int | None = None
     current_unit: str | None = None
+    # Generic runtime graph state. These fields are optional so old JSON
+    # checkpoints and old clients remain valid while the scheduler is being
+    # migrated to graph execution.
+    graph: RunGraph | None = None
+    spec: RunSpec | None = None
+    graph_id: str | None = None
+    graph_version: str | None = None
+    node_states: dict[str, NodeState] = Field(default_factory=dict)
+    current_node_id: str | None = None
+    current_attempt_id: str | None = None
+    attempts: list[Attempt] = Field(default_factory=list)
+    checkpoint: Checkpoint | None = None
+    artifact_refs: list[str] = Field(default_factory=list)
+    graph_artifacts: list[Artifact] = Field(default_factory=list)
+    runtime_policy: RunPolicy = Field(default_factory=RunPolicy)
+    paused_at: datetime | None = None
+    resumed_at: datetime | None = None
+    active_elapsed_ms: int = Field(default=0, ge=0)
+    wall_elapsed_ms: int = Field(default=0, ge=0)
     # Run recovery only. Public serialization must never contain evidence bodies.
     execution_state: dict[str, Any] = Field(default_factory=dict, exclude=True)
 

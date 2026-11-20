@@ -14,6 +14,7 @@ class RunControl:
         self._stop = Event()
         self._reason: Literal["interrupt", "stop"] | None = None
         self.checkpoint = None
+        self.graph_progress = None
 
     def cancel(self, reason: Literal["interrupt", "stop"] = "interrupt") -> None:
         """Request cooperative cancellation of the current execution."""

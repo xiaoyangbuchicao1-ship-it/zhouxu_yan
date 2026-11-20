@@ -13,7 +13,7 @@ from pydantic import Field
 from backend.contracts.harness.lifecycle import RunEnvelope
 from backend.contracts.schemas.core import Contract, Error
 
-StreamEventType = Literal["progress", "delta", "answer", "done", "error"]
+StreamEventType = Literal["progress", "delta", "answer", "done", "error", "lifecycle"]
 
 
 class StreamEvent(Contract):
@@ -21,8 +21,11 @@ class StreamEvent(Contract):
     sequence: int = 0
     emitted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     type: StreamEventType
+    event_type: Literal["lifecycle", "node", "attempt", "visible"] | None = None
     stage: str | None = None
     label: str | None = None
+    node_id: str | None = None
+    attempt_id: str | None = None
     text: str | None = None
     # ``done`` only marks the end of visible text.  Lifecycle or a snapshot
     # remains authoritative for the Run terminal state.

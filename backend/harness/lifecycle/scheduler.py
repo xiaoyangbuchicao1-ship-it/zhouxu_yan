@@ -21,7 +21,15 @@ from backend.contracts.harness.lifecycle import (
 )
 from backend.contracts.modules.loop import RunInput, RunResult
 from backend.contracts.ports import RunStore
+from backend.contracts.runtime import (
+    GraphProgress,
+    NodeState,
+    RunGraph,
+    RunPolicy,
+    RunSpec,
+)
 from backend.contracts.schemas.core import Error
+from backend.harness.graph.executor import validate_graph
 from backend.harness.lifecycle.control import RunControl
 from backend.harness.lifecycle.recovery import (
     prepare_checkpoint_for_continue,
@@ -117,7 +125,11 @@ class InMemoryRunScheduler:
         client_request_id: str | None = None,
         retry_of_run_id: str | None = None,
         conversation_id: str | None = None,
+        graph: RunGraph | None = None,
+        runtime_policy: RunPolicy | None = None,
     ) -> DispatchResult:
+        if graph is not None:
+            validate_graph(graph)
         await self._ensure_session(session_id)
         async with self._lock:
             session = self._session(session_id)
@@ -140,6 +152,12 @@ class InMemoryRunScheduler:
                 payload=payload,
                 client_request_id=client_request_id,
                 retry_of_run_id=retry_of_run_id,
+                graph=graph,
+                graph_id=graph.graph_id if graph else None,
+                graph_version=graph.version if graph else None,
+                spec=RunSpec(goal=payload.text, graph=graph, policy=runtime_policy or RunPolicy()) if graph else None,
+                node_states={node.id: NodeState(node_id=node.id, kind=node.kind, label=node.label, input_refs=node.input_refs) for node in graph.nodes} if graph else {},
+                runtime_policy=runtime_policy or RunPolicy(),
             )
             session.runs[run.run_id] = run
             session.queue.append(run.run_id)
@@ -320,6 +338,26 @@ class InMemoryRunScheduler:
                 await self._persist_locked(session)
 
         control.checkpoint = checkpoint
+
+        async def graph_progress(progress: GraphProgress):
+            async with self._lock:
+                current = self._require_run(session, run_id)
+                if session.controls.get(run_id) is not control:
+                    return
+                current.node_states = progress.node_states
+                current.attempts = progress.attempts
+                current.checkpoint = progress.checkpoint
+                current.graph_artifacts = progress.artifacts
+                current.artifact_refs = [artifact.artifact_id for artifact in progress.artifacts]
+                current.current_node_id = progress.current_node_id
+                current.current_attempt_id = progress.current_attempt_id
+                current.execution_state = progress.state
+                current.active_elapsed_ms = progress.elapsed_ms
+                current.wall_elapsed_ms = int((datetime.now(timezone.utc) - current.created_at).total_seconds() * 1000)
+                current.revision += 1
+                await self._persist_locked(session)
+
+        control.graph_progress = graph_progress
         try:
             outcome = await self._executor.execute(execution_input, control)
         except asyncio.CancelledError as exc:
@@ -334,18 +372,20 @@ class InMemoryRunScheduler:
                 error=Error(code="cancelled", message="run cancelled"),
                 elapsed_seconds=0,
             )
-        except Exception:
+        except Exception as exc:
             outcome = RunResult(
                 run_id=run_id,
                 status="failed",
-                error=Error(code="executor_failed", message="run executor failed"),
+                error=Error(code="executor_failed", message=f"run executor failed: {type(exc).__name__}"),
                 elapsed_seconds=0,
             )
 
         async with self._lock:
             session = self._require_session(session_id)
             run = self._require_run(session, run_id)
-            stale = run.revision != started_revision
+            # Graph progress revisions describe the same execution; only a
+            # user steer changes its payload generation.
+            stale = run.revision != started_revision and run.graph is None
             if stale:
                 if outcome.execution_state:
                     run.execution_state = outcome.execution_state
@@ -391,6 +431,8 @@ class InMemoryRunScheduler:
         run.total_units = outcome.total_units
         run.current_unit = outcome.current_unit
         run.execution_state = outcome.execution_state
+        run.active_elapsed_ms += int(outcome.elapsed_seconds * 1000)
+        run.wall_elapsed_ms = int((datetime.now(timezone.utc) - run.created_at).total_seconds() * 1000)
         run.revision += 1
         if outcome.status in {"completed", "failed", "cancelled"}:
             run.completed_at = datetime.now(timezone.utc)
@@ -438,7 +480,7 @@ class InMemoryRunScheduler:
             if run.status != "queued":
                 continue
             run.status = "running"
-            run.started_at = datetime.now(timezone.utc)
+            run.started_at = run.started_at or datetime.now(timezone.utc)
             control = RunControl()
             session.active_run_id = run_id
             session.controls[run_id] = control

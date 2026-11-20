@@ -21,7 +21,7 @@ class RunProjection:
                 if delta:
                     run.first_delta_at = run.first_delta_at or delta.emitted_at
         run.last_sequence = max(run.last_sequence, sequence)
-        if text and run.status != "completed":
+        if text and run.status not in {"completed", "succeeded"}:
             run.partial_output = text
         source_refs = run.execution_state.get("source_refs", []) if isinstance(run.execution_state, dict) else []
         if not isinstance(source_refs, list):

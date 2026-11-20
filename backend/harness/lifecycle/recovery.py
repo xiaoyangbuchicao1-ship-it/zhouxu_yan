@@ -122,10 +122,21 @@ def recovery_for_state(
 ) -> RunRecovery:
     """Project either a live Run or a persisted workspace row."""
 
-    if status in {"queued", "running", "waiting_user", "completed"}:
+    if status in {
+        "queued", "preparing", "running", "waiting_user", "resuming",
+        "retrying", "completed", "succeeded",
+    }:
         return RunRecovery()
 
-    if status in {"interrupted", "stopped"}:
+    if status == "paused":
+        return RunRecovery(
+            mode="checkpoint",
+            can_continue=True,
+            can_retry=True,
+            message="已暂停，当前进度已保存，可以继续处理。",
+        )
+
+    if status in {"interrupted", "stopped", "cancelled"}:
         return RunRecovery(
             mode="checkpoint",
             can_continue=True,
