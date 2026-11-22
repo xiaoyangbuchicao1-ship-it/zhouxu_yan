@@ -21,6 +21,17 @@ page.setDefaultTimeout(12000);
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 
+function visibleSegments(markdown) {
+  return markdown
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/[`*_>#~-]/g, '')
+    .split(/\r?\n/)
+    .map(value => value.trim())
+    .filter(value => value.length >= 6);
+}
+
 async function api(endpoint, token) {
   return context.request.get(`${base}/api${endpoint}`, { headers: { Authorization: `Bearer ${token}` } });
 }
@@ -66,8 +77,15 @@ try {
   assert.equal(detailResponse.status(), 200);
   const detail = await detailResponse.json();
   assert.ok(detail.runs.length > 0);
-  assert.ok(await page.getByText(detail.runs[0].user_question, { exact: true }).count() > 0);
-  if (detail.runs[0].public_answer) assert.ok(await page.getByText(detail.runs[0].public_answer, { exact: true }).count() > 0);
+  const runCard = page.locator('.admin-run-card').filter({ hasText: detail.runs[0].user_question }).first();
+  await runCard.waitFor();
+  if (detail.runs[0].public_answer) {
+    const rendered = await runCard.locator('.admin-run-answer-text').innerText();
+    const segments = visibleSegments(detail.runs[0].public_answer);
+    assert.ok(segments.length > 0);
+    const markers = [segments[0], segments[Math.floor(segments.length / 2)], segments.at(-1)];
+    markers.forEach(marker => assert.ok(rendered.includes(marker), `公开回答缺少：${marker}`));
+  }
   assert.equal(await page.locator('body').evaluate(body => /payload_json|system_prompt|hidden_reasoning|api_key|disk_path|skill_source/.test(body.innerText)), false);
   await page.reload({ waitUntil: 'networkidle' });
   await page.getByRole('heading', { name: selectedLogs.conversations[0].title, exact: true }).waitFor();

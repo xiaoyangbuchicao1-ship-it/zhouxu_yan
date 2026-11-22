@@ -19,12 +19,12 @@ try {
   await page.waitForURL(/\/admin\/overview$/);
   await page.goto(`${base}/admin/accounts`);
   await page.getByRole('heading', { name: '账户', exact: true }).waitFor();
-  assert.ok(await page.getByRole('searchbox', { name: '搜索账户' }).count());
+  await page.getByRole('searchbox', { name: '搜索账户' }).waitFor();
   await page.getByRole('combobox', { name: '角色筛选' }).click();
   await page.getByRole('option', { name: '普通用户', exact: true }).click();
   await page.getByRole('combobox', { name: '状态筛选' }).click();
   await page.getByRole('option', { name: '正常', exact: true }).click();
-  const card = page.locator('.admin-account-card').filter({ hasNotText: email }).first();
+  const card = page.locator('.admin-account-card').filter({ hasText: '@example.test' }).first();
   await card.waitFor();
   const accountEmail = await card.locator('p').count() ? await card.locator('p').first().innerText() : await card.locator('h2').innerText();
   await card.getByRole('button', { name: '停用', exact: true }).click();

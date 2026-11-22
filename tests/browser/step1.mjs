@@ -178,10 +178,12 @@ try {
   await page.reload();
   const expected = paper ? ['paper.docx', 'paper.pdf'] : ['recovery.txt'];
   assert.deepEqual(completed.artifacts.map(a => a.name).sort(), expected);
-  await page.getByRole('button', { name: '下载', exact: true }).first().waitFor();
+  await page.getByRole('group', { name: `交付文件 ${expected[0]}`, exact: true })
+    .getByRole('button', { name: `下载 ${expected[0]}`, exact: true }).waitFor();
   for (let index = 0; index < expected.length; index++) {
     const downloaded = page.waitForEvent('download');
-    await page.getByRole('button', { name: '下载', exact: true }).nth(index).click();
+    await page.getByRole('group', { name: `交付文件 ${expected[index]}`, exact: true })
+      .getByRole('button', { name: `下载 ${expected[index]}`, exact: true }).click();
     const download = await downloaded;
     const chunks = [];
     for await (const chunk of await download.createReadStream()) chunks.push(chunk);

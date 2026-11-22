@@ -55,7 +55,7 @@ WSL2 是 Docker Desktop 的底层 Linux 环境，不是第三套舟序。当前 
 |---|---|---|
 | 法条库 | `maritime_law_chunks_v2` / `maritime_law_chunks_read` | `opensearch/corpus`、`opensearch/import` |
 | 案例库 | 当前案例快照 ID / `maritime_cases_read` | `data/cases/<snapshot>/` |
-| 信息卡库 | `maritime_information_cards_v3` / `maritime_information_cards_read` | 项目外只读信息卡，`opensearch/import/information_cards/` 派生向量；字段结构沿用 v2 |
+| 信息卡库 | `maritime_information_cards_v4` / `maritime_information_cards_read` | 项目外只读 MinerU 统一信息卡，`opensearch/import/information_cards/` 保存已校验向量与发布清单 |
 
 一个 OpenSearch 集群承载三个独立来源索引，数据目录独立于应用镜像。外部能力卡与完整论文 Skill 只读挂载给 API，不混入上述索引。完整新增目录及验收场景见[科研资源接入](research-resources.md)。
 

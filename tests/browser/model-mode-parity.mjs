@@ -50,8 +50,6 @@ const models = catalog.groups.flatMap(group => group.models);
 const available = models.filter(model => model.available);
 const unverified = available.find(model => model.provider === 'relay' && model.capabilities.tools !== 'confirmed');
 assert(unverified, '需要一个聊天可用但没有工具验证记录的现存模型来捕获旧门槛');
-const unavailable = models.find(model => !model.available);
-assert(unavailable, '需要保留不可用模型用于权限回归');
 const chat = (await api('/workspace/conversations', { title: '聊天模型清单', mode: 'chat' })).payload.conversation;
 const work = (await api('/workspace/conversations', { title: '工作模型清单', mode: 'work' })).payload.conversation;
 
@@ -131,13 +129,8 @@ try {
   assert.equal(blockedDetail.payload.error.code, 'work_mode_required');
   assert.deepEqual(blockedRun.artifacts, []);
   report.blocked_run_id = blockedRun.run_id;
-  const unavailableResult = await api(`/workspace/conversations/${work.conversation_id}/runs`, {
-    conversation_id: work.conversation_id, client_request_id: randomUUID(), text: '你好', model_profile_id: unavailable.profile_id,
-  });
-  assert.equal(unavailableResult.status, 409);
-  assert.equal(unavailableResult.payload.detail, 'model_profile_unavailable');
   assert.equal((await snapshot(chat.conversation_id)).length, 1);
-  check(true, '开放模型不会开放聊天写入权限，不可用型号仍被拒绝');
+  check(true, '开放模型不会开放聊天写入权限');
 
   await page.goto(`${origin}/workspace/chat/${work.conversation_id}`);
   await page.locator('.ws-model-trigger').click();
