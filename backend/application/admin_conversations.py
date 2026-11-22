@@ -136,6 +136,18 @@ class AdminConversationService:
                     ConversationRunModel.conversation_id == conversation_id
                 )
             ) or 0
+            # The page may be a later slice.  The summary must still describe
+            # the conversation's actual last run, rather than the last row in
+            # the current page.
+            latest_status = session.scalar(
+                select(ConversationRunModel.status)
+                .where(ConversationRunModel.conversation_id == conversation_id)
+                .order_by(
+                    ConversationRunModel.created_at.desc(),
+                    ConversationRunModel.run_id.desc(),
+                )
+                .limit(1)
+            )
             statement = (
                 select(ConversationRunModel)
                 .where(ConversationRunModel.conversation_id == conversation_id)
@@ -170,7 +182,6 @@ class AdminConversationService:
                 resource_type="conversation",
                 resource_id=conversation_id,
                 details={
-                    "conversation_id": conversation_id,
                     "cursor": cursor,
                     "limit": limit,
                     "result_count": len(runs),
@@ -179,7 +190,7 @@ class AdminConversationService:
             )
             session.commit()
             return {
-                "conversation": self._summary(conversation, int(count), rows[-1].status if rows else None),
+                "conversation": self._summary(conversation, int(count), latest_status),
                 "runs": runs,
                 "next_cursor": next_cursor,
             }

@@ -105,3 +105,78 @@ class AdminConversationDetailResponse(Contract):
     conversation: AdminConversationSummaryView
     runs: list[AdminRunLogView]
     next_cursor: str | None = None
+
+
+class AdminProviderCreateRequest(Contract):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=120)
+    preset_type: str = Field(default="custom", max_length=32)
+    default_protocol: str
+    auth_style: str = "bearer"
+    base_url: str = Field(min_length=1)
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+    credential_mode: Literal["env_ref", "encrypted_db", "file_ref"] = "env_ref"
+    credential_ref: str | None = None
+    enabled: bool = True
+
+
+class AdminProviderView(Contract):
+    id: str
+    name: str
+    preset_type: str
+    default_protocol: str
+    auth_style: str
+    base_url: str
+    credential_mode: str
+    credential_ref: str | None = None
+    enabled: bool
+    updated_at: datetime
+
+
+class AdminModelCreateRequest(Contract):
+    profile_id: str = Field(min_length=1, max_length=160)
+    provider_id: str = Field(min_length=1, max_length=64)
+    upstream_model_id: str = Field(min_length=1, max_length=200)
+    label: str = Field(min_length=1, max_length=160)
+    family: Literal["deepseek", "gpt", "claude", "gemini", "glm", "other"]
+    protocol_override: str | None = None
+    context_tokens: int = Field(gt=0)
+    max_output_tokens: int = Field(gt=0)
+    thinking_modes: list[Literal["none", "low", "medium", "high", "xhigh", "max"]] = Field(default_factory=lambda: ["none"])
+    default_thinking: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
+    capabilities: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    access_scope: str = "all"
+    is_default: bool = False
+    sort_order: int = 100
+    source: str = "admin"
+    checked_on: str = "2026-11-22"
+
+
+class AdminModelUpdateRequest(Contract):
+    label: str | None = Field(default=None, min_length=1, max_length=160)
+    context_tokens: int | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    thinking_modes: list[Literal["none", "low", "medium", "high", "xhigh", "max"]] | None = None
+    default_thinking: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
+    capabilities: dict[str, str] | None = None
+    enabled: bool | None = None
+    access_scope: str | None = None
+    sort_order: int | None = None
+
+
+class AdminModelView(Contract):
+    profile_id: str
+    provider_id: str
+    upstream_model_id: str
+    label: str
+    family: str
+    protocol_override: str | None = None
+    context_tokens: int
+    max_output_tokens: int
+    thinking_modes: list[str]
+    default_thinking: str
+    enabled: bool
+    access_scope: str
+    revision: int
+    updated_at: datetime

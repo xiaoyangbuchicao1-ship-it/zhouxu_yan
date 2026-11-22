@@ -91,5 +91,3 @@ class ModelRunSnapshot(Contract):
     max_generation_tokens: int | None = None
     capabilities: ModelCapabilityFlags
     checked_on: str
-    provider_revision_id: str | None = None
-    profile_revision_id: str | None = None

@@ -21,6 +21,8 @@ from backend.application.accounts.service import (
     AccountService,
 )
 from backend.application.admin import AdminService, AdminServiceError
+from backend.application.admin_conversations import AdminConversationService
+from backend.application.model_directory import ModelDirectoryAdminService
 from backend.application.workspace.conversations import WorkspaceError, WorkspaceService
 from backend.application.workspace.materials import (
     MaterialService,
@@ -35,6 +37,13 @@ from backend.contracts.admin import (
     AdminAccountView,
     AdminAuditResponse,
     AdminAuditView,
+    AdminConversationDetailResponse,
+    AdminConversationListResponse,
+    AdminModelCreateRequest,
+    AdminModelUpdateRequest,
+    AdminModelView,
+    AdminProviderCreateRequest,
+    AdminProviderView,
     AdminOverviewResponse,
     AdminOverviewView,
 )
@@ -192,7 +201,7 @@ def create_app(
         database = None
         if active_account_service is None and supplied_service is None:
             database = Database(settings.database)
-            database.initialize()
+            database.initialize(require_explicit_migrations=True)
             active_account_service = AccountService(
                 database, settings.database, settings.auth
             )
@@ -209,12 +218,30 @@ def create_app(
             active_workspace_service = WorkspaceService(database)
         if active_workspace_service is None and active_account_service is not None:
             active_workspace_service = WorkspaceService(active_account_service.database)
+        app.state.settings = settings
         app.state.account_service = active_account_service
         app.state.admin_service = (
             AdminService(active_account_service.database)
             if active_account_service is not None
             else None
         )
+        app.state.admin_conversation_service = (
+            AdminConversationService(active_account_service.database)
+            if active_account_service is not None
+            else None
+        )
+        app.state.model_directory = None
+        app.state.model_directory_admin_service = None
+        if active_account_service is not None:
+            from backend.infrastructure.model.sqlite_directory import SqliteModelDirectory
+
+            app.state.model_directory = SqliteModelDirectory(
+                active_account_service.database, settings
+            )
+            app.state.model_directory.ensure_seed()
+            app.state.model_directory_admin_service = ModelDirectoryAdminService(
+                active_account_service.database
+            )
         app.state.material_service = active_material_service
         app.state.workspace_service = active_workspace_service
         app.state.source_repository = CorpusSourceRepository(settings)
@@ -244,6 +271,7 @@ def create_app(
                         settings=settings,
                         events=events,
                         modes=("none", "low", "medium", "high", "xhigh", "max"),
+                        model_directory=app.state.model_directory,
                         account_skill_loader=getattr(
                             app.state, "maritime_skill_loader", None
                         ),
@@ -302,10 +330,26 @@ def create_app(
     # ASGI transports used by lightweight health probes do not necessarily
     # execute lifespan hooks. Keep the health route safe in that mode.
     app.state.runtime_ready = supplied_service is not None
+    app.state.settings = settings
     app.state.account_service = account_service
     app.state.admin_service = (
         AdminService(account_service.database) if account_service is not None else None
     )
+    app.state.admin_conversation_service = (
+        AdminConversationService(account_service.database)
+        if account_service is not None
+        else None
+    )
+    app.state.model_directory = None
+    app.state.model_directory_admin_service = None
+    if account_service is not None:
+        from backend.infrastructure.model.sqlite_directory import SqliteModelDirectory
+
+        app.state.model_directory = SqliteModelDirectory(account_service.database, settings)
+        app.state.model_directory.ensure_seed()
+        app.state.model_directory_admin_service = ModelDirectoryAdminService(
+            account_service.database
+        )
     app.state.material_service = material_service
     app.state.workspace_service = workspace_service
     app.state.source_repository = CorpusSourceRepository(settings)
@@ -463,6 +507,40 @@ def create_app(
             raise HTTPException(status_code=503, detail="admin_service_unavailable")
         return service_instance
 
+    def admin_conversation_service(request: Request) -> AdminConversationService:
+        service_instance = getattr(
+            request.app.state, "admin_conversation_service", None
+        )
+        if service_instance is None:
+            raise HTTPException(
+                status_code=503, detail="admin_service_unavailable"
+            )
+        return service_instance
+
+    def model_directory(request: Request):
+        directory = getattr(request.app.state, "model_directory", None)
+        if directory is not None:
+            return directory
+        account_service = getattr(request.app.state, "account_service", None)
+        if account_service is None:
+            raise HTTPException(status_code=503, detail="model_directory_unavailable")
+        from backend.infrastructure.model.sqlite_directory import SqliteModelDirectory
+
+        directory = SqliteModelDirectory(account_service.database, settings)
+        directory.ensure_seed()
+        request.app.state.model_directory = directory
+        request.app.state.model_directory_admin_service = ModelDirectoryAdminService(
+            account_service.database
+        )
+        return directory
+
+    def model_directory_admin(request: Request) -> ModelDirectoryAdminService:
+        model_directory(request)
+        service_instance = getattr(request.app.state, "model_directory_admin_service", None)
+        if service_instance is None:
+            raise HTTPException(status_code=503, detail="model_directory_unavailable")
+        return service_instance
+
     def admin_error(exc: AdminServiceError) -> HTTPException:
         if exc.code in {"admin_required"}:
             return HTTPException(status_code=403, detail=exc.code)
@@ -473,8 +551,28 @@ def create_app(
             "invalid_account_role",
             "account_change_required",
             "invalid_audit_limit",
+            "invalid_conversation_mode",
+            "invalid_conversation_limit",
+            "invalid_conversation_cursor",
+            "model_protocol_invalid",
+            "model_auth_style_invalid",
+            "credential_mode_invalid",
+            "model_family_invalid",
+            "thinking_mode_invalid",
+            "thinking_modes_invalid",
+            "endpoint_required",
+            "model_update_field_invalid",
+            "context_tokens_invalid",
+            "max_output_tokens_invalid",
+            "upstream_model_required",
+            "model_label_required",
+            "provider_revision_missing",
         }:
             return HTTPException(status_code=422, detail=exc.code)
+        if exc.code in {"conversation_not_found", "provider_not_found", "profile_not_found"}:
+            return HTTPException(status_code=404, detail=exc.code)
+        if exc.code in {"provider_exists", "profile_exists"}:
+            return HTTPException(status_code=409, detail=exc.code)
         return HTTPException(status_code=409, detail=exc.code)
 
     @app.get("/admin/overview", response_model=AdminOverviewResponse)
@@ -531,6 +629,120 @@ def create_app(
             events=[AdminAuditView(**item) for item in events]
         )
 
+    @app.post(
+        "/admin/model-providers",
+        response_model=AdminProviderView,
+        status_code=201,
+    )
+    async def admin_create_model_provider(
+        body: AdminProviderCreateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = model_directory_admin(request).create_provider(
+                actor_id=principal.id, data=body.model_dump(mode="json")
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminProviderView(**result)
+
+    @app.post(
+        "/admin/models",
+        response_model=AdminModelView,
+        status_code=201,
+    )
+    async def admin_create_model(
+        body: AdminModelCreateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = model_directory_admin(request).create_profile(
+                actor_id=principal.id, data=body.model_dump(mode="json")
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminModelView(**result)
+
+    @app.patch(
+        "/admin/models/{profile_id}",
+        response_model=AdminModelView,
+    )
+    async def admin_update_model(
+        profile_id: str,
+        body: AdminModelUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = model_directory_admin(request).update_profile(
+                actor_id=principal.id,
+                profile_id=profile_id,
+                data=body.model_dump(mode="json", exclude_unset=True),
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminModelView(**result)
+
+    @app.get(
+        "/admin/accounts/{account_id}/conversations",
+        response_model=AdminConversationListResponse,
+    )
+    async def admin_account_conversations(
+        account_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+        query: str = Query(default="", max_length=200),
+        mode: str | None = Query(default=None),
+        archived: bool | None = Query(default=None),
+        cursor: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=100),
+    ):
+        require_admin(request, authorization)
+        try:
+            result = admin_conversation_service(request).list_conversations(
+                account_id=account_id,
+                query=query,
+                mode=mode,
+                archived=archived,
+                cursor=cursor,
+                limit=limit,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminConversationListResponse(**result)
+
+    @app.get(
+        "/admin/accounts/{account_id}/conversations/{conversation_id}",
+        response_model=AdminConversationDetailResponse,
+    )
+    async def admin_account_conversation_detail(
+        account_id: str,
+        conversation_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+        request_id: str | None = Header(default=None, alias="X-Request-ID"),
+        cursor: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=100),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = admin_conversation_service(request).conversation_detail(
+                actor_id=principal.id,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                cursor=cursor,
+                limit=limit,
+                request_id=request_id,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminConversationDetailResponse(**result)
+
     @app.get(settings.application["health_path"])
     async def health(request: Request):
         store = getattr(request.app.state, "run_store", None)
@@ -549,7 +761,7 @@ def create_app(
         require_account(request, authorization)
         from backend.infrastructure.model.registry import ModelRegistry
 
-        return ModelRegistry(settings).catalog_view()
+        return ModelRegistry(settings, directory=model_directory(request)).catalog_view()
 
     def auth_view(result) -> AuthSessionView:
         return AuthSessionView(
@@ -1146,7 +1358,7 @@ def create_app(
         run_facts = resolve_run_facts(request, principal, body.facts, conversation_mode)
         from backend.infrastructure.model.registry import ModelRegistry
 
-        model_registry = ModelRegistry(settings)
+        model_registry = ModelRegistry(settings, directory=model_directory(request))
         selected_profile_id = body.model_profile_id or model_registry.catalog_view().default_profile_id
         try:
             profile = model_registry.get(selected_profile_id)
@@ -1160,6 +1372,9 @@ def create_app(
         model_snapshot = ModelRunSnapshot(
             profile_id=profile.profile_id,
             provider=profile.provider,
+            provider_revision_id=profile.provider_revision_id,
+            profile_revision_id=profile.profile_revision_id,
+            profile_revision=profile.revision,
             model_id=profile.model_id,
             protocol=profile.protocol,
             thinking_mode=selected_thinking,

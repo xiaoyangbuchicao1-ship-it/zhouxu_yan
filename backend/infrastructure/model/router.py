@@ -214,8 +214,8 @@ class RoutedModel:
 
 
 @asynccontextmanager
-async def open_routed_model(*, settings: Settings, events):
-    model = RoutedModel(settings, events)
+async def open_routed_model(*, settings: Settings, events, directory=None):
+    model = RoutedModel(settings, events, registry=ModelRegistry(settings, directory=directory))
     async with model:
         yield model
 

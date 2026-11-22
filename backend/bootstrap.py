@@ -212,6 +212,7 @@ async def open_harnesses(
     events: EventSink,
     modes: tuple[str, ...],
     account_skill_loader: Callable[[str, str, int | None], dict[str, Any]] | None = None,
+    model_directory=None,
 ):
     """Application lifetime: warm the encoder once, then serve multiple runs.
 
@@ -309,7 +310,11 @@ async def open_harnesses(
             selected = settings.model_copy(deep=True)
             selected.model.thinking_mode = mode
             model = await stack.enter_async_context(
-                open_routed_model(settings=selected, events=events)
+                open_routed_model(
+                    settings=selected,
+                    events=events,
+                    directory=model_directory,
+                )
             )
             harnesses[mode] = build_harness(
                 model=model,
