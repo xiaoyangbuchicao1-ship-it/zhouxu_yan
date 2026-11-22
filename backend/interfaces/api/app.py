@@ -575,6 +575,7 @@ def create_app(
         if exc.code in {
             "invalid_account_status",
             "invalid_account_role",
+            "invalid_account_pagination",
             "account_change_required",
             "invalid_audit_limit",
             "invalid_conversation_mode",
@@ -699,12 +700,22 @@ def create_app(
 
     @app.get("/admin/accounts", response_model=AdminAccountsResponse)
     async def admin_accounts(
-        request: Request, authorization: str | None = Header(default=None)
+        request: Request,
+        authorization: str | None = Header(default=None),
+        q: str = Query(default="", max_length=320),
+        status: str | None = Query(default=None),
+        role: str | None = Query(default=None),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
     ):
         require_admin(request, authorization)
-        return AdminAccountsResponse(
-            accounts=[AdminAccountView(**item) for item in admin_service(request).list_accounts()]
-        )
+        try:
+            result = admin_service(request).list_accounts_page(
+                query=q, status=status, role=role, page=page, page_size=page_size
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminAccountsResponse(**result)
 
     @app.patch(
         "/admin/accounts/{account_id}", response_model=AdminAccountView

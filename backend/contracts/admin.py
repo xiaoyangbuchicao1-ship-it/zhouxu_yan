@@ -49,6 +49,13 @@ class AdminAuditView(Contract):
 
 class AdminAccountsResponse(Contract):
     accounts: list[AdminAccountView]
+    query: str = ""
+    status: Literal["active", "disabled"] | None = None
+    role: Literal["user", "admin"] | None = None
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    total: int = Field(default=0, ge=0)
+    total_pages: int = Field(default=1, ge=1)
 
 
 class AdminOverviewResponse(Contract):

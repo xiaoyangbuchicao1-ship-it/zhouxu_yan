@@ -6,7 +6,7 @@ import json
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from backend.infrastructure.database.connection import Database
 from backend.infrastructure.database.models import (
@@ -31,6 +31,58 @@ class AdminService:
                 select(AccountModel).order_by(AccountModel.created_at.desc(), AccountModel.id)
             ).all()
             return [self._account_view(account) for account in accounts]
+
+    def list_accounts_page(
+        self,
+        *,
+        query: str = "",
+        status: str | None = None,
+        role: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict:
+        """Return the administrator's account table as a bounded server page."""
+        if page < 1 or page_size < 1 or page_size > 100:
+            raise AdminServiceError("invalid_account_pagination")
+        if status is not None and status not in {"active", "disabled"}:
+            raise AdminServiceError("invalid_account_status")
+        if role is not None and role not in {"user", "admin"}:
+            raise AdminServiceError("invalid_account_role")
+        with self.database.session() as session:
+            statement = select(AccountModel)
+            count_statement = select(func.count(AccountModel.id))
+            if query.strip():
+                needle = f"%{query.strip().lower()}%"
+                predicate = or_(
+                    func.lower(AccountModel.email).like(needle),
+                    func.lower(AccountModel.display_name).like(needle),
+                )
+                statement = statement.where(predicate)
+                count_statement = count_statement.where(predicate)
+            if status is not None:
+                statement = statement.where(AccountModel.status == status)
+                count_statement = count_statement.where(AccountModel.status == status)
+            if role is not None:
+                statement = statement.where(AccountModel.role == role)
+                count_statement = count_statement.where(AccountModel.role == role)
+            total = int(session.scalar(count_statement) or 0)
+            total_pages = max(1, (total + page_size - 1) // page_size)
+            effective_page = min(page, total_pages)
+            accounts = session.scalars(
+                statement.order_by(AccountModel.created_at.desc(), AccountModel.id)
+                .offset((effective_page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+            return {
+                "accounts": [self._account_view(account) for account in accounts],
+                "query": query,
+                "status": status,
+                "role": role,
+                "page": effective_page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": total_pages,
+            }
 
     def overview(self) -> dict:
         with self.database.session() as session:

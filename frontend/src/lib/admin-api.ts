@@ -26,6 +26,17 @@ export interface AdminDashboardData {
   audit: AdminAuditEvent[];
 }
 
+export interface AdminAccountPage {
+  accounts: AdminAccount[];
+  query: string;
+  status: "active" | "disabled" | null;
+  role: AccountRole | null;
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
 export interface AdminAuditEvent {
   id: string;
   action: string;
@@ -374,7 +385,16 @@ async function request<T>(path: string, token: string, options: RequestInit = {}
 export function createAdminApi(token: string) {
   return {
     overview: (signal?: AbortSignal) => request<{ overview: AdminOverview }>("/admin/overview", token, {}, signal),
-    accounts: (signal?: AbortSignal) => request<{ accounts: AdminAccount[] }>("/admin/accounts", token, {}, signal),
+    accounts: (filters: { query?: string; status?: "active" | "disabled" | "all"; role?: AccountRole | "all"; page?: number; pageSize?: number } = {}, signal?: AbortSignal) => {
+      const query = new URLSearchParams();
+      if (filters.query?.trim()) query.set("q", filters.query.trim());
+      if (filters.status && filters.status !== "all") query.set("status", filters.status);
+      if (filters.role && filters.role !== "all") query.set("role", filters.role);
+      if (filters.page) query.set("page", String(filters.page));
+      if (filters.pageSize) query.set("page_size", String(filters.pageSize));
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return request<AdminAccountPage>(`/admin/accounts${suffix}`, token, {}, signal);
+    },
     audit: async (signal?: AbortSignal) => {
       const result = await request<{ events: AdminAuditEvent[] }>("/admin/audit?limit=80", token, {}, signal);
       for (const event of result.events) {
@@ -424,6 +444,6 @@ export function createAdminApi(token: string) {
 
 export async function loadAdminDashboard(token: string, signal?: AbortSignal): Promise<AdminDashboardData> {
   const api = createAdminApi(token);
-  const [overview, accounts, audit] = await Promise.all([api.overview(signal), api.accounts(signal), api.audit(signal)]);
+  const [overview, accounts, audit] = await Promise.all([api.overview(signal), api.accounts({}, signal), api.audit(signal)]);
   return { overview: overview.overview, accounts: accounts.accounts, audit: audit.events };
 }

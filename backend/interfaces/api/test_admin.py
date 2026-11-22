@@ -80,6 +80,29 @@ class AdminHttpContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(user_login.status_code, 401)
 
+    async def test_accounts_support_server_filters_and_pagination(self):
+        for index in range(24):
+            self.accounts.register(email=f"member-{index:02d}@example.com", password="a-long-user-password")
+        headers = {"Authorization": f"Bearer {(await self.client.post('/auth/admin-login', json={'email': 'admin@example.com', 'password': 'a-long-admin-password'})).json()['session']['token']}"}
+        response = await self.client.get('/admin/accounts?q=member-0&status=active&role=user&page=2&page_size=3', headers=headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['page'], 2)
+        self.assertEqual(payload['page_size'], 3)
+        self.assertEqual(payload['total'], 10)
+        self.assertEqual(payload['total_pages'], 4)
+        self.assertEqual(len(payload['accounts']), 3)
+        self.assertTrue(all('member-0' in row['email'] for row in payload['accounts']))
+
+    async def test_account_mutation_response_is_immediately_reflectable(self):
+        login = await self.client.post('/auth/admin-login', json={'email': 'admin@example.com', 'password': 'a-long-admin-password'})
+        headers = {'Authorization': f"Bearer {login.json()['session']['token']}"}
+        update = await self.client.patch(f'/admin/accounts/{self.user.account.id}', headers=headers, json={'role': 'admin'})
+        self.assertEqual(update.status_code, 200)
+        refreshed = await self.client.get('/admin/accounts?q=user@example.com', headers=headers)
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertEqual(refreshed.json()['accounts'][0]['role'], 'admin')
+
 
 if __name__ == "__main__":
     unittest.main()
