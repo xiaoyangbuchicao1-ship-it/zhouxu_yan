@@ -19,3 +19,18 @@ test("权限拒绝保留真实状态和清楚原因，PATCH成功不依赖后续
   assert.deepEqual(await api.updateAccount("a1", { status: "disabled" }), updated);
   await assert.rejects(loadAdminDashboard("t"), error => error instanceof AdminApiError && error.status === 403 && error.message.includes("管理员"));
 });
+
+test("模型目录只接收公开配置，不接受任何密钥字段", async () => {
+  const { createAdminApi, AdminApiError } = await import("../src/lib/admin-api.ts");
+  globalThis.fetch = async () => Response.json({
+    providers: [{
+      id: "relay", name: "模型服务", preset_type: "custom",
+      default_protocol: "openai_responses", auth_style: "bearer",
+      base_url: "https://models.example.test/v1", credential_mode: "env_ref",
+      credential_ref: "MODEL_API_KEY", credential_configured: true, enabled: true,
+      revision: 2, updated_at: "2026-11-22T00:00:00Z", api_key: "leak",
+    }],
+    models: [],
+  });
+  await assert.rejects(createAdminApi("t").modelDirectory(), error => error instanceof AdminApiError && error.code === "invalid_response");
+});

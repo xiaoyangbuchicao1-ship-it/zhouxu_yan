@@ -130,6 +130,57 @@ export interface AdminHealthItem {
   reason?: string;
 }
 
+export type ModelProtocol = "deepseek_chat_completions" | "openai_chat_completions" | "openai_responses" | "anthropic_messages" | "google_generative_language";
+export type ModelFamily = "deepseek" | "gpt" | "claude" | "gemini" | "glm" | "other";
+export type ThinkingMode = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface AdminModelProvider {
+  id: string;
+  name: string;
+  preset_type: string;
+  default_protocol: ModelProtocol;
+  auth_style: "bearer" | "x-api-key" | "x-goog-api-key" | "none";
+  base_url: string;
+  credential_mode: "env_ref" | "file_ref";
+  credential_ref: string | null;
+  credential_configured: boolean;
+  enabled: boolean;
+  revision: number;
+  updated_at: string;
+}
+
+export interface AdminModelProfile {
+  profile_id: string;
+  provider_id: string;
+  upstream_model_id: string;
+  label: string;
+  family: ModelFamily;
+  protocol_override: ModelProtocol | null;
+  context_tokens: number;
+  max_output_tokens: number;
+  thinking_modes: ThinkingMode[];
+  default_thinking: ThinkingMode;
+  capabilities: Record<string, string>;
+  enabled: boolean;
+  access_scope: string;
+  is_default: boolean;
+  sort_order: number;
+  source: string;
+  checked_on: string | null;
+  revision: number;
+  updated_at: string;
+}
+
+export interface AdminModelDirectory {
+  providers: AdminModelProvider[];
+  models: AdminModelProfile[];
+}
+
+export type AdminProviderCreate = Omit<AdminModelProvider, "credential_configured" | "revision" | "updated_at"> & { extra_headers?: Record<string, string> };
+export type AdminProviderUpdate = Partial<Omit<AdminProviderCreate, "id" | "preset_type">>;
+export type AdminModelCreate = Omit<AdminModelProfile, "revision" | "updated_at" | "capabilities" | "source" | "checked_on"> & { capabilities?: Record<string, string>; source?: string; checked_on?: string };
+export type AdminModelUpdate = Partial<Pick<AdminModelProfile, "upstream_model_id" | "label" | "family" | "protocol_override" | "context_tokens" | "max_output_tokens" | "thinking_modes" | "default_thinking" | "enabled" | "access_scope" | "sort_order" | "capabilities">>;
+
 export interface AdminConversationFilters {
   query?: string;
   mode?: ConversationMode | "all";
@@ -181,6 +232,8 @@ const forbiddenAdminFields = new Set([
   "stack",
   "secret",
   "api_key",
+  "api_key_encrypted",
+  "credential_value",
   "skill_source",
 ]);
 
@@ -222,6 +275,24 @@ function conversationDetail(value: unknown): AdminConversationDetail {
   }
   for (const run of result.runs) {
     if (!run.run_id || typeof run.user_question !== "string" || !run.status) {
+      throw new AdminApiError("invalid_response");
+    }
+  }
+  return result;
+}
+
+function modelDirectory(value: unknown): AdminModelDirectory {
+  rejectPrivateFields(value);
+  if (!value || typeof value !== "object") throw new AdminApiError("invalid_response");
+  const result = value as AdminModelDirectory;
+  if (!Array.isArray(result.providers) || !Array.isArray(result.models)) throw new AdminApiError("invalid_response");
+  for (const provider of result.providers) {
+    if (!provider.id || !provider.name || !provider.default_protocol || !provider.base_url || typeof provider.revision !== "number") {
+      throw new AdminApiError("invalid_response");
+    }
+  }
+  for (const model of result.models) {
+    if (!model.profile_id || !model.provider_id || !model.upstream_model_id || !Array.isArray(model.thinking_modes)) {
       throw new AdminApiError("invalid_response");
     }
   }
@@ -291,6 +362,17 @@ export function createAdminApi(token: string) {
     },
     updateAccount: (id: string, update: AdminAccountUpdate) =>
       request<AdminAccount>(`/admin/accounts/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(update) }),
+    modelDirectory: async (signal?: AbortSignal) => modelDirectory(
+      await request<unknown>("/admin/model-directory", token, {}, signal),
+    ),
+    createProvider: (value: AdminProviderCreate) =>
+      request<AdminModelProvider>("/admin/model-providers", token, { method: "POST", body: JSON.stringify(value) }),
+    updateProvider: (id: string, value: AdminProviderUpdate) =>
+      request<AdminModelProvider>(`/admin/model-providers/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(value) }),
+    createModel: (value: AdminModelCreate) =>
+      request<AdminModelProfile>("/admin/models", token, { method: "POST", body: JSON.stringify(value) }),
+    updateModel: (id: string, value: AdminModelUpdate) =>
+      request<AdminModelProfile>(`/admin/models/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(value) }),
     accountConversations: async (accountId: string, filters: AdminConversationFilters = {}) =>
       conversationList(await request<unknown>(
         `/admin/accounts/${encodeURIComponent(accountId)}/conversations${conversationQuery(filters)}`,

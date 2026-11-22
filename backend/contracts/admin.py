@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from backend.contracts.schemas.core import Contract
 
@@ -108,6 +108,7 @@ class AdminConversationDetailResponse(Contract):
 
 
 class AdminProviderCreateRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=120)
     preset_type: str = Field(default="custom", max_length=32)
@@ -130,10 +131,25 @@ class AdminProviderView(Contract):
     credential_mode: str
     credential_ref: str | None = None
     enabled: bool
+    credential_configured: bool = False
+    revision: int = 1
     updated_at: datetime
 
 
+class AdminProviderUpdateRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    default_protocol: str | None = None
+    auth_style: str | None = None
+    base_url: str | None = None
+    extra_headers: dict[str, str] | None = None
+    credential_mode: Literal["env_ref", "encrypted_db", "file_ref"] | None = None
+    credential_ref: str | None = None
+    enabled: bool | None = None
+
+
 class AdminModelCreateRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
     profile_id: str = Field(min_length=1, max_length=160)
     provider_id: str = Field(min_length=1, max_length=64)
     upstream_model_id: str = Field(min_length=1, max_length=200)
@@ -154,7 +170,11 @@ class AdminModelCreateRequest(Contract):
 
 
 class AdminModelUpdateRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    upstream_model_id: str | None = Field(default=None, min_length=1, max_length=200)
     label: str | None = Field(default=None, min_length=1, max_length=160)
+    family: Literal["deepseek", "gpt", "claude", "gemini", "glm", "other"] | None = None
+    protocol_override: str | None = None
     context_tokens: int | None = Field(default=None, gt=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
     thinking_modes: list[Literal["none", "low", "medium", "high", "xhigh", "max"]] | None = None
@@ -163,6 +183,11 @@ class AdminModelUpdateRequest(Contract):
     enabled: bool | None = None
     access_scope: str | None = None
     sort_order: int | None = None
+
+
+class AdminModelDirectoryResponse(Contract):
+    providers: list[AdminProviderView]
+    models: list["AdminModelView"]
 
 
 class AdminModelView(Contract):
@@ -176,8 +201,13 @@ class AdminModelView(Contract):
     max_output_tokens: int
     thinking_modes: list[str]
     default_thinking: str
+    capabilities: dict[str, str] = Field(default_factory=dict)
     enabled: bool
     access_scope: str
+    is_default: bool = False
+    sort_order: int = 100
+    source: str = "admin"
+    checked_on: str | None = None
     revision: int
     updated_at: datetime
 

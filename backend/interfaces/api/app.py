@@ -41,9 +41,11 @@ from backend.contracts.admin import (
     AdminConversationDetailResponse,
     AdminConversationListResponse,
     AdminModelCreateRequest,
+    AdminModelDirectoryResponse,
     AdminModelUpdateRequest,
     AdminModelView,
     AdminProviderCreateRequest,
+    AdminProviderUpdateRequest,
     AdminProviderView,
     AdminOverviewResponse,
     AdminOverviewView,
@@ -598,6 +600,9 @@ def create_app(
             "capability_change_required",
             "invalid_task_limit",
             "invalid_task_cursor",
+            "credential_ref_required",
+            "credential_ref_invalid",
+            "provider_update_field_invalid",
         }:
             return HTTPException(status_code=422, detail=exc.code)
         if exc.code in {"conversation_not_found", "provider_not_found", "profile_not_found"}:
@@ -751,6 +756,42 @@ def create_app(
         try:
             result = model_directory_admin(request).create_provider(
                 actor_id=principal.id, data=body.model_dump(mode="json")
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminProviderView(**result)
+
+    @app.get(
+        "/admin/model-directory",
+        response_model=AdminModelDirectoryResponse,
+    )
+    async def admin_model_directory(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = model_directory_admin(request).list_directory(actor_id=principal.id)
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminModelDirectoryResponse(**result)
+
+    @app.patch(
+        "/admin/model-providers/{provider_id}",
+        response_model=AdminProviderView,
+    )
+    async def admin_update_model_provider(
+        provider_id: str,
+        body: AdminProviderUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = model_directory_admin(request).update_provider(
+                actor_id=principal.id,
+                provider_id=provider_id,
+                data=body.model_dump(mode="json", exclude_unset=True),
             )
         except AdminServiceError as exc:
             raise admin_error(exc) from None

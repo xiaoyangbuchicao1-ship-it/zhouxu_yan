@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 
@@ -66,8 +67,10 @@ class ModelDirectoryAdminService:
                 created_at=now,
                 updated_at=now,
             )
-            if provider.credential_mode not in {"env_ref", "encrypted_db", "file_ref"}:
+            if provider.credential_mode not in {"env_ref", "file_ref"}:
                 raise AdminServiceError("credential_mode_invalid")
+            if provider.auth_style != "none":
+                self._credential_ref(provider.credential_mode, provider.credential_ref)
             session.add(provider)
             session.add(
                 ProviderRevisionModel(
@@ -79,7 +82,11 @@ class ModelDirectoryAdminService:
                     base_url=base_url,
                     credential_mode=provider.credential_mode,
                     credential_ref=provider.credential_ref,
-                    config_json=json.dumps({}, separators=(",", ":")),
+                    config_json=json.dumps(
+                        {"extra_headers": data.get("extra_headers", {})},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                     created_at=now,
                 )
             )
@@ -93,7 +100,114 @@ class ModelDirectoryAdminService:
                 details={"provider_id": provider_id, "protocol": protocol},
             )
             session.commit()
-            return self._provider_view(provider)
+            return self._provider_view(provider, revision=1)
+
+    def list_directory(self, *, actor_id: str) -> dict:
+        with self.database.session() as session:
+            self._require_admin(session, actor_id)
+            providers = session.scalars(
+                select(ModelProviderModel).order_by(ModelProviderModel.created_at, ModelProviderModel.id)
+            ).all()
+            models = session.scalars(
+                select(ModelProfileModel).order_by(ModelProfileModel.sort_order, ModelProfileModel.profile_id)
+            ).all()
+            provider_map = {provider.id: provider for provider in providers}
+            revisions = {
+                provider.id: self._provider_revision(session, provider.id)
+                for provider in providers
+            }
+            return {
+                "providers": [
+                    self._provider_view(provider, revision=revisions[provider.id].revision)
+                    for provider in providers
+                ],
+                "models": [self._profile_view(model, provider_map[model.provider_id]) for model in models],
+            }
+
+    def update_provider(self, *, actor_id: str, provider_id: str, data: dict) -> dict:
+        allowed = {
+            "name", "default_protocol", "auth_style", "base_url",
+            "extra_headers", "credential_mode", "credential_ref", "enabled",
+        }
+        if set(data) - allowed:
+            raise AdminServiceError("provider_update_field_invalid")
+        with self.database.session() as session:
+            self._require_admin(session, actor_id)
+            provider = session.get(ModelProviderModel, provider_id)
+            if provider is None:
+                raise AdminServiceError("provider_not_found")
+            if "name" in data:
+                provider.name = self._text(data["name"], "provider_name_required", 120)
+            if "default_protocol" in data:
+                if data["default_protocol"] not in _PROTOCOLS:
+                    raise AdminServiceError("model_protocol_invalid")
+                provider.default_protocol = data["default_protocol"]
+            if "auth_style" in data:
+                if data["auth_style"] not in {"bearer", "x-api-key", "x-goog-api-key", "none"}:
+                    raise AdminServiceError("model_auth_style_invalid")
+                provider.auth_style = data["auth_style"]
+            if "base_url" in data:
+                provider.base_url = self._endpoint(data["base_url"])
+            if "extra_headers" in data:
+                provider.extra_headers_json = json.dumps(
+                    data["extra_headers"], ensure_ascii=False, separators=(",", ":")
+                )
+            next_mode = data.get("credential_mode", provider.credential_mode)
+            next_ref = data.get("credential_ref", provider.credential_ref)
+            if next_mode not in {"env_ref", "file_ref"}:
+                raise AdminServiceError("credential_mode_invalid")
+            if provider.auth_style != "none":
+                self._credential_ref(next_mode, next_ref)
+            provider.credential_mode = next_mode
+            provider.credential_ref = next_ref
+            if "enabled" in data:
+                provider.enabled = bool(data["enabled"])
+            current_revision = self._provider_revision(session, provider_id)
+            next_revision = current_revision.revision + 1
+            now = _now()
+            provider.updated_at = now
+            provider_revision = ProviderRevisionModel(
+                id=f"{provider_id}:r{next_revision}",
+                provider_id=provider_id,
+                revision=next_revision,
+                default_protocol=provider.default_protocol,
+                auth_style=provider.auth_style,
+                base_url=provider.base_url,
+                credential_mode=provider.credential_mode,
+                credential_ref=provider.credential_ref,
+                config_json=json.dumps(
+                    {"extra_headers": json.loads(provider.extra_headers_json or "{}")},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                created_at=now,
+            )
+            session.add(provider_revision)
+            profiles = session.scalars(
+                select(ModelProfileModel).where(ModelProfileModel.provider_id == provider_id)
+            ).all()
+            for profile in profiles:
+                profile.current_revision += 1
+                profile.updated_at = now
+                session.add(ModelProfileRevisionModel(
+                    id=f"{profile.profile_id}:r{profile.current_revision}",
+                    profile_id=profile.profile_id,
+                    provider_revision_id=provider_revision.id,
+                    revision=profile.current_revision,
+                    facts_json=json.dumps(self._facts(profile), ensure_ascii=False, separators=(",", ":")),
+                    created_at=now,
+                ))
+            AdminService._add_audit(
+                session,
+                actor_id=actor_id,
+                target_account_id=None,
+                action="model.provider_updated",
+                resource_type="model_provider",
+                resource_id=provider_id,
+                details={"revision": next_revision, "profiles_advanced": len(profiles)},
+            )
+            session.commit()
+            return self._provider_view(provider, revision=next_revision)
 
     def create_profile(self, *, actor_id: str, data: dict) -> dict:
         profile_id = self._required_id(data.get("profile_id"), "profile_id_invalid")
@@ -176,12 +290,22 @@ class ModelDirectoryAdminService:
             provider = session.get(ModelProviderModel, profile.provider_id)
             if provider is None:
                 raise AdminServiceError("provider_not_found")
-            allowed = {"label", "context_tokens", "max_output_tokens", "thinking_modes", "default_thinking", "enabled", "sort_order", "access_scope", "capabilities"}
+            allowed = {"upstream_model_id", "label", "family", "protocol_override", "context_tokens", "max_output_tokens", "thinking_modes", "default_thinking", "enabled", "sort_order", "access_scope", "capabilities"}
             unknown = set(data) - allowed
             if unknown:
                 raise AdminServiceError("model_update_field_invalid")
+            if "upstream_model_id" in data:
+                profile.upstream_model_id = self._text(data["upstream_model_id"], "upstream_model_required", 200)
             if "label" in data:
                 profile.label = self._text(data["label"], "model_label_required", 160)
+            if "family" in data:
+                if data["family"] not in _FAMILIES:
+                    raise AdminServiceError("model_family_invalid")
+                profile.family = data["family"]
+            if "protocol_override" in data:
+                if data["protocol_override"] is not None and data["protocol_override"] not in _PROTOCOLS:
+                    raise AdminServiceError("model_protocol_invalid")
+                profile.protocol_override = data["protocol_override"]
             if "context_tokens" in data:
                 profile.context_tokens = self._positive_int(data["context_tokens"], "context_tokens_invalid")
             if "max_output_tokens" in data:
@@ -260,6 +384,34 @@ class ModelDirectoryAdminService:
         return list(dict.fromkeys(value))
 
     @staticmethod
+    def _credential_ref(mode: str, value) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise AdminServiceError("credential_ref_required")
+        if mode == "env_ref" and not _ID.fullmatch(value.strip()):
+            raise AdminServiceError("credential_ref_invalid")
+        return value.strip()
+
+    @staticmethod
+    def _require_admin(session, actor_id: str) -> None:
+        from backend.infrastructure.database.models import AccountModel
+
+        actor = session.get(AccountModel, actor_id)
+        if actor is None or actor.role != "admin" or actor.status != "active":
+            raise AdminServiceError("admin_required")
+
+    @staticmethod
+    def _provider_revision(session, provider_id: str) -> ProviderRevisionModel:
+        value = session.scalar(
+            select(ProviderRevisionModel)
+            .where(ProviderRevisionModel.provider_id == provider_id)
+            .order_by(ProviderRevisionModel.revision.desc())
+            .limit(1)
+        )
+        if value is None:
+            raise AdminServiceError("provider_revision_missing")
+        return value
+
+    @staticmethod
     def _endpoint(value) -> str:
         if not isinstance(value, str) or not value.strip():
             raise AdminServiceError("endpoint_required")
@@ -274,12 +426,30 @@ class ModelDirectoryAdminService:
         return {
             "context_confirmed": False,
             "profile_id": profile.profile_id,
+            "provider_id": profile.provider_id,
             "model_id": profile.upstream_model_id,
-            "protocol": profile.protocol_override,
+            "label": profile.label,
+            "family": profile.family,
+            "protocol_override": profile.protocol_override,
+            "context_tokens": profile.context_tokens,
+            "max_output_tokens": profile.max_output_tokens,
+            "thinking_modes": json.loads(profile.thinking_modes_json),
+            "default_thinking": profile.default_thinking,
+            "capabilities": json.loads(profile.capabilities_json or "{}"),
+            "access_scope": profile.access_scope,
+            "source": profile.source,
+            "checked_on": profile.checked_on,
         }
 
     @staticmethod
-    def _provider_view(provider: ModelProviderModel) -> dict:
+    def _provider_view(provider: ModelProviderModel, *, revision: int) -> dict:
+        configured = False
+        if provider.auth_style == "none":
+            configured = True
+        elif provider.credential_mode == "env_ref":
+            configured = bool(os.environ.get(provider.credential_ref or "", "").strip())
+        elif provider.credential_mode == "file_ref":
+            configured = bool(provider.credential_ref)
         return {
             "id": provider.id,
             "name": provider.name,
@@ -289,7 +459,9 @@ class ModelDirectoryAdminService:
             "base_url": provider.base_url,
             "credential_mode": provider.credential_mode,
             "credential_ref": provider.credential_ref,
+            "credential_configured": configured,
             "enabled": provider.enabled,
+            "revision": revision,
             "updated_at": provider.updated_at,
         }
 
@@ -306,8 +478,13 @@ class ModelDirectoryAdminService:
             "max_output_tokens": profile.max_output_tokens,
             "thinking_modes": json.loads(profile.thinking_modes_json),
             "default_thinking": profile.default_thinking,
+            "capabilities": json.loads(profile.capabilities_json or "{}"),
             "enabled": profile.enabled,
             "access_scope": profile.access_scope,
+            "is_default": profile.is_default,
+            "sort_order": profile.sort_order,
+            "source": profile.source,
+            "checked_on": profile.checked_on,
             "revision": profile.current_revision,
             "updated_at": profile.updated_at,
         }

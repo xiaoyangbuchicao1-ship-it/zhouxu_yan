@@ -50,6 +50,46 @@ class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx.ASGITransport(app=self.app), base_url="http://test"
         )
 
+    async def create_model(self, *, provider_id: str = "preview-relay", profile_id: str = "preview-relay:gpt-preview"):
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        provider = await self.client.post(
+            "/admin/model-providers",
+            headers=headers,
+            json={
+                "id": provider_id,
+                "name": "预览服务商",
+                "preset_type": "custom",
+                "default_protocol": "openai_chat_completions",
+                "auth_style": "bearer",
+                "base_url": "https://models.example.test/v1",
+                "credential_mode": "env_ref",
+                "credential_ref": self.key_name,
+                "enabled": True,
+            },
+        )
+        self.assertEqual(provider.status_code, 201, provider.text)
+        model = await self.client.post(
+            "/admin/models",
+            headers=headers,
+            json={
+                "profile_id": profile_id,
+                "provider_id": provider_id,
+                "upstream_model_id": "gpt-preview",
+                "label": "GPT 预览",
+                "family": "gpt",
+                "protocol_override": "openai_chat_completions",
+                "context_tokens": 128000,
+                "max_output_tokens": 16000,
+                "thinking_modes": ["none", "low"],
+                "default_thinking": "low",
+                "enabled": True,
+                "access_scope": "all",
+                "sort_order": 20,
+            },
+        )
+        self.assertEqual(model.status_code, 201, model.text)
+        return provider.json(), model.json()
+
     async def asyncTearDown(self):
         await self.client.aclose()
         self.database.close()
@@ -162,6 +202,115 @@ class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(response.status_code, 403)
+
+    async def test_admin_can_list_directory_without_exposing_a_credential_value(self):
+        await self.create_model()
+        response = await self.client.get(
+            "/admin/model-directory",
+            headers={"Authorization": f"Bearer {self.admin_login.token}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        provider = next(item for item in body["providers"] if item["id"] == "preview-relay")
+        self.assertEqual(provider["credential_ref"], self.key_name)
+        self.assertTrue(provider["credential_configured"])
+        self.assertEqual(body["models"][0]["profile_id"], "preview-relay:gpt-preview")
+        serialized = response.text
+        self.assertNotIn("test-only-key", serialized)
+        self.assertNotIn("api_key_encrypted", serialized)
+
+    async def test_provider_change_creates_new_pinned_model_revision(self):
+        _, created = await self.create_model()
+        old_revision_id = f'{created["profile_id"]}:r{created["revision"]}'
+        directory = self.app.state.model_directory
+        old = directory.resolve(created["profile_id"], profile_revision_id=old_revision_id)
+
+        response = await self.client.patch(
+            "/admin/model-providers/preview-relay",
+            headers={"Authorization": f"Bearer {self.admin_login.token}"},
+            json={
+                "name": "预览服务商新版",
+                "default_protocol": "openai_responses",
+                "base_url": "https://responses.example.test/v2",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["revision"], 2)
+
+        current = directory.resolve(created["profile_id"])
+        pinned = directory.resolve(created["profile_id"], profile_revision_id=old_revision_id)
+        self.assertNotEqual(current.profile_revision_id, old_revision_id)
+        self.assertEqual(current.profile.protocol, "openai_chat_completions")
+        self.assertIn("responses.example.test", current.endpoint)
+        self.assertEqual(pinned.profile.model_id, old.profile.model_id)
+        self.assertEqual(pinned.endpoint, old.endpoint)
+        self.assertEqual(pinned.provider_revision_id, old.provider_revision_id)
+
+    async def test_model_change_keeps_the_old_revision_exactly_unchanged(self):
+        _, created = await self.create_model()
+        profile_id = created["profile_id"]
+        old_revision_id = f'{profile_id}:r{created["revision"]}'
+        directory = self.app.state.model_directory
+        before = directory.resolve(profile_id, profile_revision_id=old_revision_id)
+
+        changed = await self.client.patch(
+            "/admin/models/preview-relay%3Agpt-preview",
+            headers={"Authorization": f"Bearer {self.admin_login.token}"},
+            json={
+                "upstream_model_id": "gpt-preview-2",
+                "label": "GPT 预览 2",
+                "protocol_override": "openai_responses",
+                "context_tokens": 256000,
+                "max_output_tokens": 32000,
+                "thinking_modes": ["low", "medium", "high"],
+                "default_thinking": "medium",
+                "sort_order": 5,
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()["revision"], 2)
+
+        current = directory.resolve(profile_id)
+        pinned = directory.resolve(profile_id, profile_revision_id=old_revision_id)
+        self.assertEqual(current.profile.model_id, "gpt-preview-2")
+        self.assertEqual(current.profile.protocol, "openai_responses")
+        self.assertEqual(current.profile.context_tokens, 256000)
+        self.assertEqual(current.profile.thinking_modes, ["low", "medium", "high"])
+        self.assertEqual(pinned.profile.model_dump(mode="json"), before.profile.model_dump(mode="json"))
+        self.assertEqual(pinned.endpoint, before.endpoint)
+
+    async def test_plaintext_api_key_is_rejected_at_the_http_boundary(self):
+        response = await self.client.post(
+            "/admin/model-providers",
+            headers={"Authorization": f"Bearer {self.admin_login.token}"},
+            json={
+                "id": "unsafe",
+                "name": "不安全",
+                "default_protocol": "openai_chat_completions",
+                "base_url": "https://models.example.test/v1",
+                "credential_mode": "env_ref",
+                "credential_ref": self.key_name,
+                "api_key": "must-not-be-accepted",
+            },
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+
+    async def test_public_provider_does_not_require_a_credential_reference(self):
+        response = await self.client.post(
+            "/admin/model-providers",
+            headers={"Authorization": f"Bearer {self.admin_login.token}"},
+            json={
+                "id": "public-models",
+                "name": "公开服务",
+                "default_protocol": "openai_chat_completions",
+                "auth_style": "none",
+                "base_url": "https://models.example.test/v1",
+                "credential_mode": "env_ref",
+                "enabled": True,
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertTrue(response.json()["credential_configured"])
 
 
 if __name__ == "__main__":

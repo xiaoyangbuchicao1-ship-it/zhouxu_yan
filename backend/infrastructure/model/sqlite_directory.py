@@ -133,7 +133,23 @@ class SqliteModelDirectory:
                             created_at=now,
                         )
                     )
-                facts = item.model_dump(mode="json")
+                facts = {
+                    "context_confirmed": item.context_confirmed,
+                    "profile_id": item.profile_id,
+                    "provider_id": provider_id,
+                    "model_id": item.model_id,
+                    "label": item.label,
+                    "family": item.family,
+                    "protocol_override": item.protocol,
+                    "context_tokens": item.context_tokens or 32768,
+                    "max_output_tokens": item.max_generation_tokens or 8192,
+                    "thinking_modes": item.thinking_modes,
+                    "default_thinking": item.default_thinking_mode,
+                    "capabilities": item.capabilities.model_dump(mode="json"),
+                    "access_scope": "all",
+                    "source": item.source,
+                    "checked_on": item.checked_on,
+                }
                 profile = ModelProfileModel(
                     profile_id=item.profile_id,
                     provider_id=provider_id,
@@ -193,6 +209,8 @@ class SqliteModelDirectory:
             return self._revision_from_row(session, row, historical=profile_revision_id is not None, revision=revision)
 
     def credential(self, revision: RuntimeModelRevision) -> SecretStr:
+        if revision.auth_style == "none":
+            return SecretStr("")
         if revision.credential_mode == "env_ref":
             name = revision.credential_ref
             value = os.environ.get(name or "", "").strip()
@@ -231,12 +249,12 @@ class SqliteModelDirectory:
         if provider is None or provider_revision is None:
             raise RuntimeError("model_provider_revision_missing")
         facts = _json(revision.facts_json, {})
-        protocol = row.protocol_override or provider_revision.default_protocol
-        capabilities = _json(row.capabilities_json, {})
-        modes = _json(row.thinking_modes_json, ["none"])
+        protocol = facts.get("protocol_override") or provider_revision.default_protocol
+        capabilities = facts["capabilities"]
+        modes = facts["thinking_modes"]
         if not isinstance(modes, list) or not modes:
-            modes = ["none"]
-        configured = self._configured(provider, provider_revision)
+            raise RuntimeError("model_profile_revision_invalid")
+        configured = self._configured(provider, provider_revision, historical=historical)
         current = not historical and row.enabled and provider.enabled
         profile = ModelProfile(
             profile_id=row.profile_id,
@@ -244,23 +262,24 @@ class SqliteModelDirectory:
             provider_revision_id=provider_revision.id,
             profile_revision_id=revision.id,
             revision=revision.revision,
-            family=row.family,
-            label=row.label,
-            model_id=row.upstream_model_id,
+            family=facts["family"],
+            label=facts["label"],
+            model_id=facts["model_id"],
             protocol=protocol,
-            endpoint=_endpoint_for(provider_revision.base_url, protocol, row.upstream_model_id),
-            context_tokens=row.context_tokens,
-            max_generation_tokens=row.max_output_tokens,
+            endpoint=_endpoint_for(provider_revision.base_url, protocol, facts["model_id"]),
+            context_tokens=facts["context_tokens"],
+            max_generation_tokens=facts["max_output_tokens"],
             context_confirmed=bool(facts.get("context_confirmed", False)),
             thinking_modes=modes,
-            default_thinking_mode=row.default_thinking if row.default_thinking in modes else modes[0],
+            default_thinking_mode=facts["default_thinking"],
             capabilities=ModelCapabilityFlags.model_validate(capabilities),
             configured=configured,
-            available=bool(current and configured),
+            available=bool((current or historical) and configured),
             availability_note="已配置" if configured else "需要配置模型凭证",
-            source=row.source or "数据库模型目录",
-            checked_on=row.checked_on or "2026-11-22",
+            source=facts["source"],
+            checked_on=facts["checked_on"],
         )
+        provider_config = _json(provider_revision.config_json, {})
         return RuntimeModelRevision(
             profile=profile,
             provider_revision_id=provider_revision.id,
@@ -269,12 +288,18 @@ class SqliteModelDirectory:
             auth_style=provider_revision.auth_style,
             credential_mode=provider_revision.credential_mode,
             credential_ref=provider_revision.credential_ref,
-            credential_file=(self.settings.model.credential_file if provider.preset_type == "deepseek" else None),
-            extra_headers=_json(provider.extra_headers_json, {}),
+            credential_file=(
+                self.settings.model.credential_file
+                if provider.preset_type == "deepseek"
+                else provider_revision.credential_ref if provider_revision.credential_mode == "file_ref" else None
+            ),
+            extra_headers=provider_config.get("extra_headers", {}),
         )
 
-    def _configured(self, provider: ModelProviderModel, revision: ProviderRevisionModel) -> bool:
-        if not provider.enabled:
+    def _configured(self, provider: ModelProviderModel, revision: ProviderRevisionModel, *, historical: bool) -> bool:
+        if revision.auth_style == "none":
+            return True
+        if not provider.enabled and not historical:
             return False
         if revision.credential_mode == "env_ref":
             return bool(os.environ.get(revision.credential_ref or "", "").strip())
@@ -282,7 +307,11 @@ class SqliteModelDirectory:
             if provider.preset_type == "deepseek":
                 load_key(self.settings)
             else:
-                load_relay_config(self.settings.model.credential_file)
+                load_relay_config(
+                    revision.credential_ref
+                    if revision.credential_mode == "file_ref"
+                    else self.settings.model.credential_file
+                )
         except (ValueError, OSError, PortError):
             return False
         return True
