@@ -7,7 +7,11 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import AuthPage from "./pages/Auth";
 import AdminLogin from "./pages/AdminLogin";
-import AdminDashboard from "./pages/AdminDashboard";
+import AdminLayout from "./pages/admin/AdminLayout";
+import AdminOverviewPage from "./pages/admin/AdminOverviewPage";
+import AdminAccountsPage from "./pages/admin/AdminAccountsPage";
+import AdminAccountConversationsPage from "./pages/admin/AdminAccountConversationsPage";
+import AdminConversationDetailPage from "./pages/admin/AdminConversationDetailPage";
 import { lazy, Suspense } from "react";
 
 const Workspace = lazy(() => import("./pages/Workspace"));
@@ -26,7 +30,13 @@ const App = () => (
           <Route path="/register" element={<AuthPage mode="register" />} />
           <Route path="/account" element={<AuthPage mode="account" />} />
           <Route path="/admin/login" element={<AdminLogin />} />
-          <Route path="/admin" element={<AdminDashboard />} />
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<AdminOverviewPage />} />
+            <Route path="overview" element={<AdminOverviewPage />} />
+            <Route path="accounts" element={<AdminAccountsPage />} />
+            <Route path="accounts/:accountId/conversations" element={<AdminAccountConversationsPage />} />
+            <Route path="accounts/:accountId/conversations/:conversationId" element={<AdminConversationDetailPage />} />
+          </Route>
           <Route path="/workspace/*" element={<Suspense fallback={<div role="status" style={{ minHeight: "100dvh", display: "grid", placeItems: "center", background: "#080c10", fontSize: 16 }}>正在打开工作台…</div>}><Workspace /></Suspense>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />

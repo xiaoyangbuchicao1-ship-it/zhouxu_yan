@@ -37,6 +37,69 @@ export interface AdminAuditEvent {
   created_at: string;
 }
 
+export type ConversationMode = "chat" | "work";
+
+export interface AdminConversationSummary {
+  id: string;
+  account_id: string;
+  title: string;
+  mode: ConversationMode;
+  archived: boolean;
+  run_count: number;
+  latest_status: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminConversationNode {
+  id: string;
+  label: string;
+  status: string;
+  elapsed_ms?: number | null;
+}
+
+export interface AdminConversationRun {
+  run_id: string;
+  user_question: string;
+  public_answer: string | null;
+  status: string;
+  model: string | null;
+  provider: string | null;
+  protocol: string | null;
+  thinking_mode: string | null;
+  error_code: string | null;
+  created_at: string;
+  first_event_at?: string | null;
+  first_delta_at?: string | null;
+  completed_at?: string | null;
+  elapsed_ms: number | null;
+  nodes: AdminConversationNode[];
+}
+
+export interface AdminConversationDetail {
+  conversation: Omit<AdminConversationSummary, "run_count" | "last_status">;
+  runs: AdminConversationRun[];
+  next_cursor: string | null;
+}
+
+export interface AdminConversationList {
+  conversations: AdminConversationSummary[];
+  next_cursor: string | null;
+}
+
+export interface AdminConversationFilters {
+  query?: string;
+  mode?: ConversationMode | "all";
+  archived?: "active" | "archived" | "all";
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface AdminConversationDetailFilters {
+  cursor?: string | null;
+  limit?: number;
+}
+
 export class AdminApiError extends Error {
   constructor(public code: string, public status = 0) {
     super(adminErrorMessage(code));
@@ -61,6 +124,79 @@ export function adminErrorMessage(code: string): string {
 const runtimeEnv: Record<string, string | undefined> =
   (import.meta as ImportMeta & { env?: Record<string, string> }).env ?? {};
 const apiBase = (runtimeEnv.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+
+const forbiddenAdminFields = new Set([
+  "attachments",
+  "attachment_content",
+  "disk_path",
+  "storage_key",
+  "payload_json",
+  "system_prompt",
+  "hidden_reasoning",
+  "raw_frames",
+  "tool_receipts",
+  "stack",
+  "secret",
+  "api_key",
+  "skill_source",
+]);
+
+function rejectPrivateFields(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(rejectPrivateFields);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (forbiddenAdminFields.has(key)) throw new AdminApiError("invalid_response");
+    rejectPrivateFields(child);
+  }
+}
+
+function conversationList(value: unknown): AdminConversationList {
+  rejectPrivateFields(value);
+  if (!value || typeof value !== "object" || !Array.isArray((value as AdminConversationList).conversations)) {
+    throw new AdminApiError("invalid_response");
+  }
+  for (const item of (value as AdminConversationList).conversations) {
+    const fields = item as AdminConversationSummary & Record<string, unknown>;
+    if (!fields.id || !fields.account_id || !fields.title || !fields.mode || typeof fields.run_count !== "number") {
+      throw new AdminApiError("invalid_response");
+    }
+    if (["question", "user_question", "answer", "public_answer", "partial_answer", "runs"].some(key => key in fields)) {
+      throw new AdminApiError("invalid_response");
+    }
+  }
+  return value as AdminConversationList;
+}
+
+function conversationDetail(value: unknown): AdminConversationDetail {
+  rejectPrivateFields(value);
+  if (!value || typeof value !== "object") throw new AdminApiError("invalid_response");
+  const result = value as AdminConversationDetail;
+  if (!result.conversation?.id || !result.conversation.account_id || !Array.isArray(result.runs)) {
+    throw new AdminApiError("invalid_response");
+  }
+  for (const run of result.runs) {
+    if (!run.run_id || typeof run.user_question !== "string" || !run.status) {
+      throw new AdminApiError("invalid_response");
+    }
+  }
+  return result;
+}
+
+function conversationQuery(filters: AdminConversationFilters | AdminConversationDetailFilters): string {
+  const query = new URLSearchParams();
+  if ("query" in filters && filters.query?.trim()) query.set("query", filters.query.trim());
+  if ("mode" in filters && filters.mode && filters.mode !== "all") query.set("mode", filters.mode);
+  if ("archived" in filters && filters.archived && filters.archived !== "all") {
+    query.set("archived", filters.archived === "archived" ? "true" : "false");
+  }
+  if (filters.cursor) query.set("cursor", filters.cursor);
+  if (filters.limit) query.set("limit", String(filters.limit));
+  const value = query.toString();
+  return value ? `?${value}` : "";
+}
 
 async function request<T>(path: string, token: string, options: RequestInit = {}, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
@@ -112,6 +248,19 @@ export function createAdminApi(token: string) {
     },
     updateAccount: (id: string, update: AdminAccountUpdate) =>
       request<AdminAccount>(`/admin/accounts/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(update) }),
+    accountConversations: async (accountId: string, filters: AdminConversationFilters = {}) =>
+      conversationList(await request<unknown>(
+        `/admin/accounts/${encodeURIComponent(accountId)}/conversations${conversationQuery(filters)}`,
+        token,
+      )),
+    conversationDetail: async (
+      accountId: string,
+      conversationId: string,
+      filters: AdminConversationDetailFilters = {},
+    ) => conversationDetail(await request<unknown>(
+      `/admin/accounts/${encodeURIComponent(accountId)}/conversations/${encodeURIComponent(conversationId)}${conversationQuery(filters)}`,
+      token,
+    )),
   };
 }
 
