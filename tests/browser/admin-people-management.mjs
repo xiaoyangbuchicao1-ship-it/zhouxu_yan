@@ -26,7 +26,7 @@ try {
   await page.getByRole('option', { name: '正常', exact: true }).click();
   const card = page.locator('.admin-account-card').filter({ hasNotText: email }).first();
   await card.waitFor();
-  const accountEmail = await card.locator('p').first().innerText();
+  const accountEmail = await card.locator('p').count() ? await card.locator('p').first().innerText() : await card.locator('h2').innerText();
   await card.getByRole('button', { name: '停用', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '确认', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '已更新' }).waitFor();

@@ -34,8 +34,7 @@ export default function AdminAccountsPage() {
       setSelected(null); setSuccess(`已更新 ${updated.email}`);
       await accountsQuery.refetch();
     } catch (cause) {
-      if (cause instanceof AdminApiError && (cause.status === 401 || cause.status === 403)) throw cause;
-      setMutationError(cause instanceof Error ? cause.message : "这次调整没有完成。");
+      setMutationError(cause instanceof AdminApiError ? cause.message : cause instanceof Error ? cause.message : "这次调整没有完成。");
     } finally { setMutating(false); }
   }
   return <div className="admin-route-page">
