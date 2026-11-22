@@ -1,6 +1,6 @@
 import { ThinkingModeSelect } from "./ThinkingModeSelect";
 import { ModelSelect } from "./ModelSelect";
-import { Fragment, memo, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
