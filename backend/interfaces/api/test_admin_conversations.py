@@ -228,6 +228,43 @@ class AdminConversationHttpContractTests(unittest.IsolatedAsyncioTestCase):
         ids = [item["run_id"] for item in first.json()["runs"] + second.json()["runs"]]
         self.assertEqual(len(ids), len(set(ids)))
 
+    async def test_admin_receives_complete_public_answer_and_partial_output(self):
+        """The admin log must show the actual public text, not a short summary."""
+        long_answer = "\n\n".join(
+            f"第 {index} 段：这是模型已经交付给用户的公开回答正文。"
+            for index in range(180)
+        )
+        partial = "\n\n".join(
+            f"暂停前已生成的第 {index} 段公开正文。"
+            for index in range(80)
+        )
+        self.workspace.record_run(
+            account_id=self.user_a.account.id,
+            conversation_id=self.conversation_a.id,
+            run_id="run-alice-long-answer",
+            question="请完整整理这份资料",
+            status="succeeded",
+            answer=long_answer,
+        )
+        self.workspace.record_run(
+            account_id=self.user_a.account.id,
+            conversation_id=self.conversation_a.id,
+            run_id="run-alice-long-paused",
+            question="继续整理并保留进度",
+            status="paused",
+            partial_output=partial,
+        )
+        admin_headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        detail = await self.client.get(
+            f"/admin/accounts/{self.user_a.account.id}/conversations/{self.conversation_a.id}?limit=50",
+            headers=admin_headers,
+        )
+        self.assertEqual(detail.status_code, 200, detail.text)
+        runs = {item["run_id"]: item for item in detail.json()["runs"]}
+        self.assertEqual(runs["run-alice-long-answer"]["public_answer"], long_answer)
+        self.assertEqual(runs["run-alice-long-paused"]["public_answer"], partial)
+        _assert_no_forbidden_keys(self, detail.json())
+
 
 if __name__ == "__main__":
     unittest.main()
