@@ -53,9 +53,13 @@ try {
   await page.getByRole('link', { name: '人员', exact: true }).click();
   await page.waitForURL(/\/admin\/accounts$/);
   await page.getByRole('searchbox', { name: '搜索账户' }).fill(selected.email);
-  await page.getByRole('link', { name: '查看会话', exact: true }).click();
+  const accountConversationsLink = page.locator(`a[href="/admin/accounts/${selected.id}/conversations"]`);
+  await accountConversationsLink.waitFor();
+  await accountConversationsLink.click();
   await page.waitForURL(new RegExp(`/admin/accounts/${selected.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/conversations$`));
-  await page.getByRole('link', { name: selectedLogs.conversations[0].title, exact: true }).click();
+  const conversationCard = page.locator('.admin-conversation-card').filter({ hasText: selectedLogs.conversations[0].title });
+  await conversationCard.waitFor();
+  await conversationCard.click();
   await page.waitForURL(/\/conversations\//);
   await page.getByRole('heading', { name: selectedLogs.conversations[0].title, exact: true }).waitFor();
   const detailResponse = await api(`/admin/accounts/${encodeURIComponent(selected.id)}/conversations/${encodeURIComponent(selectedLogs.conversations[0].id)}?limit=50`, token);
@@ -65,8 +69,17 @@ try {
   assert.ok(await page.getByText(detail.runs[0].user_question, { exact: true }).count() > 0);
   if (detail.runs[0].public_answer) assert.ok(await page.getByText(detail.runs[0].public_answer, { exact: true }).count() > 0);
   assert.equal(await page.locator('body').evaluate(body => /payload_json|system_prompt|hidden_reasoning|api_key|disk_path|skill_source/.test(body.innerText)), false);
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.getByRole('heading', { name: selectedLogs.conversations[0].title, exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '桌面详情页出现横向溢出');
   assert.deepEqual(errors, []);
   await page.screenshot({ path: path.join(output, 'admin-conversation-detail.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.getByRole('heading', { name: selectedLogs.conversations[0].title, exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '手机详情页出现横向溢出');
+  await page.screenshot({ path: path.join(output, 'admin-conversation-detail-mobile.png'), fullPage: true });
+  assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, account_id: selected.id, conversation_id: detail.conversation.id, runs: detail.runs.length, output }));
 } catch (error) {
   console.error(`未通过：${error.message}`);
