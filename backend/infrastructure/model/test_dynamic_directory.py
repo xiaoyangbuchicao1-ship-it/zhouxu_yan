@@ -78,6 +78,7 @@ class _Adapter:
         self.name = settings.model.name
         self.endpoint = settings.model.endpoint
         self.closed = []
+        self.client = SimpleNamespace(headers={"Authorization": "Bearer initial"})
 
     def close_run(self, run_id):
         self.closed.append(run_id)
@@ -142,6 +143,8 @@ class DynamicDirectoryRoutingTests(unittest.TestCase):
             self.assertEqual(new_adapter.endpoint, "https://new.example/v1/responses")
             self.assertIsNot(old_adapter, new_adapter)
             self.assertEqual(len(router._adapters), 3)  # default DeepSeek + two revisions
+            self.assertEqual(old_adapter.client.headers["Authorization"], "Bearer old-secret")
+            self.assertEqual(new_adapter.client.headers["Authorization"], "Bearer new-secret")
 
 
 if __name__ == "__main__":

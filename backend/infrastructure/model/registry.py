@@ -164,9 +164,16 @@ class ModelRegistry:
                         family=family, label=FAMILY_LABELS[family], models=entries
                     )
                 )
+        default_profile_id = "deepseek-flash"
+        if self.directory is not None:
+            configured_default = getattr(self.directory, "default_profile_id", None)
+            if callable(configured_default):
+                configured_default = configured_default()
+            if isinstance(configured_default, str) and configured_default:
+                default_profile_id = configured_default
         return ModelCatalogView(
             groups=groups,
-            default_profile_id="deepseek-flash",
+            default_profile_id=default_profile_id,
         )
 
     def get(self, profile_id: str) -> ModelProfile:
@@ -233,7 +240,7 @@ class ModelRegistry:
         """Return an isolated settings snapshot for one available profile."""
         revision = self.resolve(profile_id, profile_revision_id=profile_revision_id)
         profile = revision.profile
-        if not profile.available:
+        if not profile.available and profile_revision_id is None:
             raise PortError(self.settings.error("model_profile_invalid"))
         selected = self.settings.model_copy(deep=True)
         model = selected.model
@@ -245,6 +252,11 @@ class ModelRegistry:
         model.protocol = profile.protocol
         model.name = profile.model_id
         model.endpoint = revision.endpoint or profile.endpoint or ""
+        if self.directory is not None:
+            hostname = urllib.parse.urlparse(model.endpoint).hostname
+            if not hostname:
+                raise PortError(self.settings.error("invalid_endpoint"))
+            model.allowed_hosts = [hostname]
         if profile.provider != "deepseek":
             facts = self.relay_capabilities.get(profile.model_id, {})
             if model.thinking_mode not in profile.thinking_modes:

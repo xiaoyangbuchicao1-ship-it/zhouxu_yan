@@ -10,10 +10,37 @@ from backend.contracts.modules.loop import DecisionProposal, ReasoningInput, Too
 from backend.contracts.modules.perception import ContextItem
 from backend.contracts.schemas.core import Error, ModuleRequest, PortError
 from backend.infrastructure.model.deepseek import DeepSeekModel
-from backend.infrastructure.model.directory import RuntimeModelRevision
 from backend.infrastructure.model.protocols import adapter_for
 from backend.infrastructure.model.registry import ModelRegistry
 from backend.infrastructure.model.relay_config import load_relay_config
+
+
+_BLOCKED_CUSTOM_HEADERS = {
+    "authorization", "x-api-key", "x-goog-api-key", "host", "content-length",
+    "transfer-encoding", "connection", "cookie", "proxy-authorization",
+}
+
+
+def _apply_provider_headers(adapter, revision, key) -> None:
+    """Apply one immutable provider revision without leaking auth across it."""
+
+    headers = adapter.client.headers
+    for name in ("Authorization", "x-api-key", "x-goog-api-key"):
+        if name in headers:
+            del headers[name]
+    secret = key.get_secret_value()
+    if revision.auth_style == "bearer":
+        headers["Authorization"] = "Bearer " + secret
+    elif revision.auth_style == "x-api-key":
+        headers["x-api-key"] = secret
+    elif revision.auth_style == "x-goog-api-key":
+        headers["x-goog-api-key"] = secret
+    elif revision.auth_style != "none":
+        raise ValueError("model_auth_style_invalid")
+    for name, value in revision.extra_headers.items():
+        if name.lower() in _BLOCKED_CUSTOM_HEADERS:
+            raise ValueError("model_extra_header_forbidden")
+        headers[name] = value
 
 
 class RoutedModel:
@@ -128,6 +155,8 @@ class RoutedModel:
                 else load_relay_config(selected.model.credential_file).key
             )
         adapter = adapter_for(selected, key, self.events)
+        if revision is not None and hasattr(adapter, "client"):
+            _apply_provider_headers(adapter, revision, key)
         self._adapters[cache_key] = adapter
         return adapter
 
