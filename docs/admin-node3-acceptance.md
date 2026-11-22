@@ -50,7 +50,7 @@
 - 仍有 8 条既有组件热更新提示和既有大文件体积提醒，不影响本轮构建；没有把它们写成已优化。
 - 最终前后端镜像已更新，网站健康检查返回 200。
 
-浏览器入口：`node tests/browser/admin-console.mjs`，通过本次进程环境提供 `ZHOUXU_TEST_ADMIN_EMAIL`、`ZHOUXU_TEST_ADMIN_PASSWORD`；脚本不保存凭证。安装和可选 Chrome 路径见 `tests/browser/README.md`。
+历史单页管理台验收脚本已删除。当前拆分后的管理台使用 `node tests/browser/admin-conversation-log.mjs`、`node tests/browser/admin-long-answer-layout.mjs` 和 `node tests/browser/admin-login-error-layout.mjs`；这些入口只覆盖当前已经接通的登录、账户会话、公开回答和响应式页面。账户停用、角色筛选、分页与业务记录的旧验收内容待接回新管理台后另行补测。
 
 ```powershell
 docker run --rm zhouxu-api:local python -m unittest -v backend.application.accounts.test_admin_roles backend.application.test_admin backend.interfaces.api.test_admin backend.infrastructure.database.test_admin_role_migration backend.infrastructure.persistence.test_orphan_account_records backend.infrastructure.persistence.test_business_audit_migration backend.interfaces.api.test_event_stream_authorization

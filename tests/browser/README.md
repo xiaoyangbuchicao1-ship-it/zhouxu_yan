@@ -1,6 +1,6 @@
 # 第一步真实验收
 
-管理员入口与人员管理：`node tests/browser/admin-console.mjs`。通过本次进程环境 `ZHOUXU_TEST_ADMIN_EMAIL`、`ZHOUXU_TEST_ADMIN_PASSWORD` 提供已获授权的管理员凭证；脚本不保存密码或 Token。可设 `ZHOUXU_CHROME_PATH` 使用本机 Chrome，`ZHOUXU_TEST_OUTPUT` 指定截图过程目录。五组检查覆盖真实登录、普通用户拒绝、搜索筛选/20条分页、测试账户停用启用与角色往返、业务记录、网络失败重试和桌面/390px/320px排版。测试自行注册专用账户，结束时恢复为正常普通用户并保留服务端记录；只修改这个账户，不清用户历史，不调用付费模型。网络故障由浏览器明确模拟，正常修改和登录均走真实 HTTP 服务。
+管理员会话日志：`node tests/browser/admin-conversation-log.mjs`。登录、账户选择、会话列表、公开回答和运行详情均走真实 HTTP；桌面和手机会检查刷新、横向溢出、敏感字段和页面错误。长回答展开/收起：`node tests/browser/admin-long-answer-layout.mjs`。登录错误位置：`node tests/browser/admin-login-error-layout.mjs`。三个脚本都通过本次进程环境 `ZHOUXU_TEST_ADMIN_EMAIL`、`ZHOUXU_TEST_ADMIN_PASSWORD` 提供已获授权的管理员凭证；不保存密码或 Token。
 
 技能 ZIP 页面验收：`node tests/browser/skill-packages.mjs`。使用 `tests/fixtures/skills/expense-summary` 现成包，验证内置/我的分组、损坏与超大包提示、1.2 MB 包通过网站上传、读取参考资料和模板、刷新保留、工作入口预选、历史聊天模式不变及移除。该脚本不调用模型；实际执行技能与下载成果由技能运行验收另行检查。可用 `ZHOUXU_CHROME_PATH` 指向本机 Chrome。
 
