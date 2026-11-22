@@ -250,9 +250,7 @@ export function LibraryPage({
           ))}
         </ul>
       )}
-      <p className="ws-library-note">
-        资料库属于当前账户。上传不等于已在对话中使用，选择资料也不等于已被回答引用。
-      </p>
+      <p className="ws-library-note">资料库属于当前账户。</p>
     </div>
   );
 }
@@ -346,7 +344,7 @@ export function MaterialsPanel({
               <h3>
                 已选资料<span>{selected.length}</span>
               </h3>
-              <p>可供本对话使用，实际引用以回答中的来源为准。</p>
+              <p>可供本对话使用。</p>
               {selected.length ? (
                 <ul className="ws-panel-files">
                   {selected.map((resource) => (

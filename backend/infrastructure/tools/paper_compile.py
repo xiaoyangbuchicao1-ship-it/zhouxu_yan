@@ -10,12 +10,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import stat
 import sys
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from backend.config.settings import BACKEND_ROOT, Settings
 from backend.contracts.modules.loop import ActionResult, ToolSpec
 from backend.contracts.schemas.core import ModuleRequest, PortError
+from backend.infrastructure.execution.native import NativeProvider
 from backend.infrastructure.execution.workspace import _safe_part
 
 
@@ -25,7 +28,7 @@ def _workspace_root(settings: Settings, request: ModuleRequest) -> Path:
     context = request.context or {}
     account = _safe_part(str(context.get("account_id") or "anonymous"))
     conversation = _safe_part(str(context.get("conversation_id") or request.run_id))
-    return (root.resolve() / account / conversation).resolve()
+    return root.resolve() / account / conversation
 
 
 def _skill_dir(settings: Settings) -> Path:
@@ -37,14 +40,13 @@ def _skill_dir(settings: Settings) -> Path:
             if path.is_absolute()
             else (BACKEND_ROOT.parent / path).resolve()
         )
-    return (
-        BACKEND_ROOT.parent.parent / "技能候选" / "csl-law-paper-generator"
-    ).resolve()
+    return (BACKEND_ROOT / "skills" / "csl-law-paper-generator").resolve()
 
 
 class PaperCompileTool:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.execution = NativeProvider(settings)
 
     @property
     def spec(self) -> ToolSpec:
@@ -94,65 +96,58 @@ class PaperCompileTool:
             raise PortError(self.settings.error("paper_compile_configuration"))
         # Use the existing workspace artifact collector and authenticated
         # download route. Files outside this root are invisible to the user.
-        output_dir = workspace / "papers" / _safe_part(request.run_id)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        child_env = {
-            key: os.environ[key]
-            for key in ("PATH", "SystemRoot", "WINDIR", "LANG", "LC_ALL")
-            if key in os.environ
-        }
-        child_env.update(
-            {
-                "PYTHONIOENCODING": "utf-8",
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "CSL_OUTPUT_DIR": str(output_dir),
-                "HOME": str(workspace / ".native-home"),
-            }
-        )
+        output_dir = (workspace / "papers" / _safe_part(request.run_id)).resolve()
+        if workspace not in output_dir.parents:
+            raise PortError(self.settings.error("execution_invalid_path"))
         try:
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                str(compiler),
-                str(resolved_source),
-                str(output_dir),
-                cwd=str(skill_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=child_env,
-            )
+            with _output_directory(workspace, output_dir) as output_fd:
+                return await self._compile(
+                    request, relative, workspace, resolved_source, skill_dir, output_dir, output_fd,
+                )
         except OSError as exc:
-            raise PortError(
-                self.settings.error("paper_compile_failed", retryable=True)
-            ) from exc
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=self.settings.runtime.action_timeout_seconds or 180,
-            )
-        except asyncio.CancelledError:
-            process.kill()
-            await process.communicate()
-            raise
-        except TimeoutError as exc:
-            process.kill()
-            await process.communicate()
-            for suffix in (".pdf", ".docx"):
-                (output_dir / f"{resolved_source.stem}{suffix}").unlink(missing_ok=True)
-            raise PortError(
-                self.settings.error("paper_compile_failed", retryable=True)
-            ) from exc
+            raise PortError(self.settings.error("execution_invalid_path")) from exc
+
+    async def _compile(self, request, relative, workspace, resolved_source, skill_dir, output_dir, output_fd):
+        compiler = skill_dir / "scripts/compile_paper.py"
         pdf_path = output_dir / f"{resolved_source.stem}.pdf"
         docx_path = output_dir / f"{resolved_source.stem}.docx"
-        if process.returncode != 0 or not all(
-            path.is_file() for path in (pdf_path, docx_path)
+        for path in (pdf_path, docx_path):
+            existing = _output_stat(path, output_fd)
+            if existing is not None and not stat.S_ISREG(existing.st_mode):
+                raise PortError(self.settings.error("execution_invalid_path"))
+        runtime = self.execution._create_runtime(request.run_id, workspace)
+        sandbox_source = Path("/workspace") / resolved_source.relative_to(workspace)
+        sandbox_output = Path("/workspace") / output_dir.relative_to(workspace)
+        # A dedicated invocation shares the same mandatory sandbox as bash.
+        # Cancellation closes its namespace without stopping other Run tools.
+        task = asyncio.create_task(asyncio.to_thread(
+            runtime.exec,
+            [sys.executable, str(compiler), str(sandbox_source), str(sandbox_output)],
+            timeout=self.settings.runtime.compile_timeout_seconds,
+            check=False,
+        ))
+        try:
+            process = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            runtime.close()
+            await asyncio.gather(task, return_exceptions=True)
+            _remove_outputs((pdf_path, docx_path), output_fd)
+            raise
+        except (TimeoutError, OSError, RuntimeError) as exc:
+            _remove_outputs((pdf_path, docx_path), output_fd)
+            raise PortError(
+                self.settings.error("paper_compile_failed", retryable=True)
+            ) from exc
+        finally:
+            runtime.close()
+        stdout, stderr = process.stdout, process.stderr
+        files = [_output_stat(path, output_fd) for path in (pdf_path, docx_path)]
+        if process.returncode != 0 or not _same_directory(output_dir, output_fd) or not all(
+            item is not None and stat.S_ISREG(item.st_mode) and item.st_size > 0 for item in files
         ):
             # A previous/partial successful side must never be exposed as a
             # successful dual delivery after this compilation failed.
-            removed_artifacts = [
-                path.name for path in (pdf_path, docx_path) if path.is_file()
-            ]
-            for path in (pdf_path, docx_path):
-                path.unlink(missing_ok=True)
+            removed_artifacts = _remove_outputs((pdf_path, docx_path), output_fd)
             diagnostic = stderr.decode("utf-8", errors="replace")[-4000:]
             diagnostic = diagnostic.replace(str(skill_dir), "<Skill>").replace(
                 str(workspace), "<workspace>"
@@ -180,8 +175,8 @@ class PaperCompileTool:
             "status": "ok",
             "source_path": relative,
             "artifacts": [
-                _artifact(pdf_path, workspace),
-                _artifact(docx_path, workspace),
+                _artifact(pdf_path, workspace, output_fd),
+                _artifact(docx_path, workspace, output_fd),
             ],
             "compiler": "csl-law-paper-generator/scripts/compile_paper.py",
             "warnings": stderr.decode("utf-8", errors="replace")[-2000:]
@@ -200,10 +195,59 @@ class PaperCompileTool:
         )
 
 
-def _artifact(path: Path, workspace: Path) -> dict[str, str | int]:
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+@contextmanager
+def _output_directory(workspace: Path, output: Path):
+    """Pin the actual directory before compiling; never follow replaced links."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    with ExitStack() as stack:
+        descriptor = os.open(workspace, flags)
+        stack.callback(os.close, descriptor)
+        for part in output.relative_to(workspace).parts:
+            try:
+                os.mkdir(part, dir_fd=descriptor)
+            except FileExistsError:
+                pass  # The following O_NOFOLLOW directory open validates it.
+            descriptor = os.open(part, flags, dir_fd=descriptor)
+            stack.callback(os.close, descriptor)
+        yield descriptor
+
+
+def _output_stat(path: Path, descriptor: int):
+    try:
+        return os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _same_directory(path: Path, descriptor: int) -> bool:
+    try:
+        current = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    opened = os.fstat(descriptor)
+    return (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+
+
+def _remove_outputs(paths: tuple[Path, Path], descriptor: int) -> list[str]:
+    removed = []
+    for path in paths:
+        try:
+            os.unlink(path.name, dir_fd=descriptor)
+            removed.append(path.name)
+        except FileNotFoundError:
+            continue
+    return removed
+
+
+def _artifact(path: Path, workspace: Path, descriptor: int) -> dict[str, str | int]:
+    file_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+    with os.fdopen(file_fd, "rb") as stream:
+        properties = os.fstat(stream.fileno())
+        if not stat.S_ISREG(properties.st_mode):
+            raise OSError("compiler output must be a regular file")
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
     return {
         "path": path.relative_to(workspace).as_posix(),
-        "bytes": path.stat().st_size,
+        "bytes": properties.st_size,
         "sha256": digest,
     }

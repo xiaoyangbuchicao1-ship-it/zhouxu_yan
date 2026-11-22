@@ -19,6 +19,18 @@ export interface MaritimeSkill {
   branches?: string[];
   examples?: string[];
   deliverables?: { key: string; name: string; columns: string[] }[];
+  package?: {
+    sha256: string;
+    name: string;
+    compatibility: string | null;
+    files: { path: string; sha256: string; size_bytes: number }[];
+  };
+}
+export interface SkillResource {
+  path: string;
+  content: string | null;
+  sha256: string;
+  size_bytes: number;
 }
 export interface WorkPackage {
   id: string;
@@ -42,7 +54,7 @@ export interface WorkPackage {
     totals?: Record<string, string>;
   };
 }
-export interface TaskFile { id: string; name: string; size: number; sha256: string; }
+export interface TaskFile { id: string; name: string; size: number; sha256: string; preview_artifact_id?: string | null; }
 export interface CaseEntry {
   id: string;
   case_id: string;
@@ -75,7 +87,8 @@ export interface MaritimeCase {
 }
 export interface CorpusSource {
   id: string;
-  kind: "laws" | "cases";
+  kind: "laws" | "cases" | "information_cards";
+  source_id?: string;
   title: string;
   text: string;
   excerpt?: string;
@@ -109,9 +122,11 @@ export function maritimeApi(token: string) {
         credentials: "omit",
         headers: {
           Authorization: `Bearer ${token}`,
-          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...(body !== undefined && !(body instanceof FormData)
+            ? { "Content-Type": "application/json" }
+            : {}),
         },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        body: body instanceof FormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
       });
       const value = await response.json().catch(() => null);
       if (!response.ok)
@@ -150,19 +165,27 @@ export function maritimeApi(token: string) {
     previewFile: async (runId: string, conversationId: string, file: TaskFile) => {
       const response = await fetch(`${base}/maritime/runs/${encodeURIComponent(runId)}/files/${encodeURIComponent(file.id)}/preview?conversation_id=${encodeURIComponent(conversationId)}`, {cache:'no-store',credentials:'omit',headers:{Authorization:`Bearer ${token}`}});
       if (!response.ok) {
-        const detail = await response.json().catch(() => null);
+        await response.json().catch(() => null);
         throw new WorkbenchError(
           response.status === 503
             ? '在线预览暂不可用，请先下载文件。'
-            : typeof detail?.detail === 'string'
-              ? detail.detail
-              : '文件预览失败，请重试。',
+            : '文件预览失败，请先下载文件。',
           response.status,
         );
       }
       return URL.createObjectURL(await response.blob());
     },
     skills: () => call<{ skills: MaritimeSkill[] }>("/skills"),
+    skill: (id: string) => call<MaritimeSkill>(`/skills/${encodeURIComponent(id)}`),
+    importSkill: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return call<MaritimeSkill>("/skills/import", "POST", form);
+    },
+    removeSkill: (id: string) =>
+      call<{ status: "removed" }>(`/skills/${encodeURIComponent(id)}`, "DELETE"),
+    skillResource: (id: string, path: string, version: number | string) =>
+      call<SkillResource>(`/skills/${encodeURIComponent(id)}/resources?${new URLSearchParams({ path, version: String(version) })}`),
     saveSkill: (
       input: Partial<MaritimeSkill> & { expected_version?: number | string },
       id?: string,
@@ -201,7 +224,7 @@ export function maritimeApi(token: string) {
       call<{ versions: CaseEntry[] }>(
         `/cases/${encodeURIComponent(caseId)}/entries/${encodeURIComponent(entryId)}/versions`,
       ),
-    search: (query: string, kind: "laws" | "cases", current_only: boolean) =>
+    search: (query: string, kind: "laws" | "cases" | "information_cards", current_only: boolean) =>
       call<SearchResult>("/search", "POST", {
         query,
         kind,

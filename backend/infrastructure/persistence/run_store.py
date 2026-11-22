@@ -16,6 +16,27 @@ class RunStoreError(RuntimeError):
     """The scheduler state could not be read or written safely."""
 
 
+@contextmanager
+def run_store_owner(path: Path):
+    """Shared offline-migration and single-service process ownership lock."""
+    handle = path.with_suffix(path.suffix + ".lock").open("a+b")
+    try:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        handle.close()
+
+
 class JsonRunStore:
     """Atomically persist control-plane state in one JSON document.
 
@@ -82,8 +103,8 @@ class JsonRunStore:
 class SQLiteRunStore:
     """Single-service durable checkpoints and public events, behind the same port.
 
-    The previous JSON store is a read-only migration source. Each session is
-    imported once; existing files and user records are never deleted.
+    The runtime only reads SQLite. Retired JSON stores and old SQLite status
+    values must be migrated explicitly before starting the service.
     """
 
     def __init__(self, path: str | Path):
@@ -109,23 +130,11 @@ class SQLiteRunStore:
     @contextmanager
     def owner(self):
         """Only one local service may execute work from this checkpoint store."""
-        handle = self.path.with_suffix(self.path.suffix + ".lock").open("a+b")
-        try:
-            handle.seek(0, 2)
-            if handle.tell() == 0:
-                handle.write(b"0")
-                handle.flush()
-            handle.seek(0)
-            if sys.platform == "win32":
-                import msvcrt
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            yield
-        finally:
-            self.close()
-            handle.close()  # OS releases the lock after a crash as well.
+        with run_store_owner(self.path):
+            try:
+                yield
+            finally:
+                self.close()
 
     def close(self):
         with self._event_lock:
@@ -194,3 +203,21 @@ class SQLiteRunStore:
         with self._connection() as db:
             row = db.execute("SELECT text,sequence FROM run_visible WHERE run_id=?", (run_id,)).fetchone()
         return row if row else ("", 0)
+
+    def progress_events(self, run_id: str) -> list[dict]:
+        # Extract metadata only, never load answer text or checkpoints for the UI clock.
+        with self._connection() as db:
+            rows = db.execute("""
+                WITH items AS (
+                    SELECT sequence, json_extract(body, '$.type') AS type,
+                        json_extract(body, '$.emitted_at') AS emitted_at,
+                        json_extract(body, '$.stage') AS stage,
+                        json_extract(body, '$.label') AS label,
+                        lag(json_extract(body, '$.type')) OVER (ORDER BY sequence) AS previous_type
+                    FROM run_events WHERE run_id=?
+                )
+                SELECT type, emitted_at, stage, label FROM items
+                WHERE type='progress' OR (type='delta' AND previous_type IS NOT 'delta')
+                ORDER BY sequence
+            """, (run_id,)).fetchall()
+        return [dict(zip(("type", "emitted_at", "stage", "label"), row, strict=True)) for row in rows]

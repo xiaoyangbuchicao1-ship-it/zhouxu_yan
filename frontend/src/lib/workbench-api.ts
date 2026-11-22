@@ -31,16 +31,32 @@ export interface Conversation { id: string; title: string; mode: ConversationMod
 export interface Material { id: string; filename: string; status: string; size_bytes?: number; content_type?: string; issue?: string | null; }
 export interface Resource extends Material { chunk_count?: number; conversation_count?: number; created_at: string; updated_at: string; }
 export interface Passage { id: string; ordinal: number; locator?: string; heading_path?: string[] | string; text: string; enabled?: boolean; }
+export interface RunStage { id: string; label: string; elapsed_ms: number | null; active: boolean; details: string[]; }
 export interface Activity { id: string; stage: string; status: string; label: string; detail?: string; }
-export interface SourceReference { source_id: string; kind: "law" | "case"; title: string; locator?: string | null; section?: string | null; version_date?: string | null; version_label?: string | null; }
-export interface SourceDocument extends SourceReference { text: string; source_url?: string | null; notices: string[]; }
+export interface SourceReference { source_id: string; kind: "law" | "case" | "paper"; title: string; locator?: string | null; section?: string | null; version_date?: string | null; version_label?: string | null; authors?: string | null; collection?: string | null; }
+export interface PaperOriginal { document_id: string; sha256: string; size_bytes: number; page?: number | null; page_end?: number | null; page_count: number; content_url: string; }
+export interface SourceDocument extends SourceReference { text: string; source_url?: string | null; notices: string[]; original?: PaperOriginal | null; }
 export interface Artifact { artifact_id: string; name: string; media_type: string; size_bytes: number; sha256: string; version: number; kind: "document" | "preview" | "file"; preview_artifact_id?: string | null; preview_of_artifact_id?: string | null; }
-export interface Message { id: string; role: "user" | "assistant"; content: string; created_at: string; run_id?: string | null; status?: RunStatus | string; error_code?: string | null; recovery?: RunRecovery; materials?: Material[]; updates?: string[]; activity?: Activity[]; sources?: SourceReference[]; artifacts?: Artifact[]; }
+export interface Message { id: string; role: "user" | "assistant"; content: string; created_at: string; run_id?: string | null; model_snapshot?: ModelRunSnapshot | null; status?: RunStatus | string; error_code?: string | null; recovery?: RunRecovery; materials?: Material[]; updates?: string[]; activity?: Activity[]; sources?: SourceReference[]; artifacts?: Artifact[]; node_states?: RunNodeState[]; active_elapsed_ms?: number | null; wall_elapsed_ms?: number | null; stages?: RunStage[]; context_compaction_count?: number; }
 export interface ConversationDetail { conversation: Conversation; messages: Message[]; pending_materials: Material[]; linked_resources: Resource[]; }
-export interface RunPayload { mode: ConversationMode; thinking_mode?: ThinkingMode | null; text: string; facts: Record<string, unknown>; constraints: string[]; material_ids: string[]; attached_material_ids?: string[]; }
+export interface RunPayload { mode: ConversationMode; thinking_mode?: ThinkingMode | null; model_profile_id?: string | null; model_snapshot?: ModelRunSnapshot | null; text: string; facts: Record<string, unknown>; constraints: string[]; material_ids: string[]; attached_material_ids?: string[]; }
 export interface TaskContextFacts { skill_id?: string; case_id?: string; }
-export interface RunEnvelope { run_id: string; conversation_id: string; status: RunStatus; revision: number; payload: RunPayload; pending_request_ids: string[]; answers: Record<string, unknown>; output?: string | null; partial_output?: string | null; error?: { message: string } | null; recovery: RunRecovery; retry_of_run_id?: string | null; completed_units?: number | null; total_units?: number | null; current_unit?: string | null; sources?: SourceReference[]; artifacts?: Artifact[]; created_at?: string; started_at?: string | null; first_event_at?: string | null; first_delta_at?: string | null; completed_at?: string | null; last_sequence?: number; node_states?: RunNodeState[]; active_elapsed_ms?: number | null; wall_elapsed_ms?: number | null; }
-export interface InputRequest { request_id: string; run_id: string; question: string; options: { value: string; label: string }[]; allow_free_text: boolean; required: boolean; status: "pending" | "answered" | "cancelled"; answer?: unknown; }
+export interface RunEnvelope { run_id: string; conversation_id: string; status: RunStatus; revision: number; payload: RunPayload; pending_request_ids: string[]; answers: Record<string, unknown>; output?: string | null; partial_output?: string | null; error?: { message: string } | null; recovery: RunRecovery; retry_of_run_id?: string | null; continuation_guidance?: string[]; completed_units?: number | null; total_units?: number | null; current_unit?: string | null; sources?: SourceReference[]; artifacts?: Artifact[]; created_at?: string; started_at?: string | null; first_event_at?: string | null; first_delta_at?: string | null; completed_at?: string | null; last_sequence?: number; node_states?: RunNodeState[]; active_elapsed_ms?: number | null; wall_elapsed_ms?: number | null; stages?: RunStage[]; context_compaction_count?: number; }
+export type ModelFamily = "deepseek" | "gpt" | "claude" | "gemini" | "glm" | "other";
+export type CapabilityState = "confirmed" | "unsupported" | "unconfirmed";
+export interface ModelProfile {
+  profile_id: string; provider: string; family: ModelFamily; label: string;
+  model_id: string; protocol: string; endpoint?: string | null;
+  context_tokens?: number | null; max_generation_tokens?: number | null;
+  context_confirmed: boolean; thinking_modes: ThinkingMode[]; default_thinking_mode: ThinkingMode;
+  capabilities: { tools: CapabilityState; thinking: CapabilityState; streaming: CapabilityState; structured_output: CapabilityState; vision: CapabilityState };
+  configured: boolean; available: boolean; availability_note: string;
+  source: string; checked_on: string;
+}
+export interface ModelFamilyGroup { family: ModelFamily; label: string; models: ModelProfile[]; }
+export interface ModelCatalog { groups: ModelFamilyGroup[]; default_profile_id: string; }
+export interface ModelRunSnapshot { profile_id: string; provider: string; model_id: string; protocol: string; thinking_mode: ThinkingMode; context_tokens?: number | null; max_generation_tokens?: number | null; capabilities: ModelProfile["capabilities"]; checked_on: string; }
+export interface InputRequest { request_id: string; run_id: string; kind?: string; question: string; options: { value: string; label: string }[]; allow_free_text: boolean; required: boolean; status: "pending" | "answered" | "cancelled"; answer?: unknown; }
 export interface RunCommandResponse { run: RunEnvelope; }
 export interface SessionSnapshot { conversation_id: string; status: "open" | "closed"; active_run_id?: string | null; queued_run_ids: string[]; waiting_run_ids: string[]; runs: RunEnvelope[]; }
 export type StreamEventMeta = { event_type?: "lifecycle" | "node" | "attempt" | "visible" | null; node_id?: string | null; attempt_id?: string | null };
@@ -70,6 +86,7 @@ function messageFor(status: number, detail: unknown) {
   if (status === 404) return "这项内容已不存在，或无法访问。";
   if (status === 413) return "文件超过当前配置允许的大小。";
   if (detail === "conversation_mode_immutable") return "会话模式创建后不能更改；如需另一种模式，请新建会话。";
+  if (typeof detail === "string" && detail.startsWith("paper_")) return status === 409 ? "论文版本或位置已变更，请重新检索后打开。" : "暂时无法读取论文原文，请稍后重试。";
   if (status === 409) return "当前运行状态不允许执行这个操作。";
   if (status >= 500) return "舟序服务暂时无法完成处理，请稍后重试。";
   return "操作未完成，请稍后重试。";
@@ -107,19 +124,54 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
   const artifactUrl = (runId: string, conversationId: string, artifactId: string) => `${base}${runPath(runId)}/artifacts/${segment(artifactId)}?conversation_id=${segment(conversationId)}`;
   const material = (raw: any): Resource => ({ id: raw.material_id, filename: raw.name, status: raw.status, size_bytes: raw.size_bytes, issue: raw.issue ?? null, content_type: raw.media_type, created_at: raw.created_at || new Date().toISOString(), updated_at: raw.updated_at || raw.created_at || new Date().toISOString() });
   const conversation = (raw: any): Conversation => ({ id: raw.conversation_id, title: raw.title, mode: raw.mode === "work" ? "work" : "chat", project_id: raw.project_id ?? null, pinned: raw.pinned, created_at: raw.created_at, updated_at: raw.updated_at, material_count: raw.material_count });
-  const sourceReference = (raw: any): SourceReference => ({ source_id: String(raw.source_id), kind: raw.kind === "case" ? "case" : "law", title: String(raw.title || "来源"), locator: raw.locator ?? null, section: raw.section ?? null, version_date: raw.version_date ?? null, version_label: raw.version_label ?? null });
+  const sourceReference = (raw: any): SourceReference => ({ source_id: String(raw.source_id), kind: raw.kind === "case" ? "case" : raw.kind === "paper" ? "paper" : "law", title: String(raw.title || "来源"), locator: raw.locator ?? null, section: raw.section ?? null, version_date: raw.version_date ?? null, version_label: raw.version_label ?? null, authors: raw.authors ?? null, collection: raw.collection ?? null });
   const artifact = (raw: any): Artifact => ({ artifact_id: String(raw.artifact_id), name: String(raw.name || "文件"), media_type: String(raw.media_type || "application/octet-stream"), size_bytes: Number(raw.size_bytes || 0), sha256: String(raw.sha256 || ""), version: Number(raw.version || 1), kind: raw.kind === "preview" ? "preview" : raw.kind === "document" ? "document" : "file", preview_artifact_id: raw.preview_artifact_id ?? null, preview_of_artifact_id: raw.preview_of_artifact_id ?? null });
   const recovery = (raw: any): RunRecovery => ({ mode: raw?.mode === "checkpoint" ? "checkpoint" : raw?.mode === "fresh_attempt" ? "fresh_attempt" : "none", can_continue: raw?.can_continue === true, can_retry: raw?.can_retry === true, message: typeof raw?.message === "string" ? raw.message : null });
-  const detail = (raw: any): ConversationDetail => ({ conversation: conversation(raw.conversation), messages: (raw.messages || []).map((m: any) => ({ id: m.message_id, role: m.role, content: m.content, created_at: m.created_at, run_id: m.run_id, status: m.status, error_code: m.error_code ?? null, recovery: recovery(m.recovery), materials: (m.materials || []).map(material), updates: m.updates || [], sources: (m.sources || []).map(sourceReference), artifacts: (m.artifacts || []).map(artifact) })), pending_materials: [], linked_resources: (raw.materials || []).map(material) });
-  const sourceDocument = (raw: any): SourceDocument => ({ ...sourceReference(raw), text: String(raw.text || ""), source_url: raw.source_url ?? null, notices: Array.isArray(raw.notices) ? raw.notices.filter((value: unknown): value is string => typeof value === "string") : [] });
+  const detail = (raw: any): ConversationDetail => ({ conversation: conversation(raw.conversation), messages: (raw.messages || []).map((m: any) => ({ id: m.message_id, role: m.role, content: m.content, created_at: m.created_at, run_id: m.run_id, model_snapshot: m.model_snapshot ?? null, context_compaction_count: m.context_compaction_count ?? 0, status: m.status, error_code: m.error_code ?? null, recovery: recovery(m.recovery), materials: (m.materials || []).map(material), updates: m.updates || [], sources: (m.sources || []).map(sourceReference), artifacts: (m.artifacts || []).map(artifact) })), pending_materials: [], linked_resources: (raw.materials || []).map(material) });
+  const sourceDocument = (raw: any): SourceDocument => ({ ...sourceReference(raw), text: String(raw.text || ""), source_url: raw.source_url ?? null, original: raw.original ?? null, notices: Array.isArray(raw.notices) ? raw.notices.filter((value: unknown): value is string => typeof value === "string") : [] });
   return {
     conversations: async (signal?: AbortSignal) => ({ conversations: (await request<any>("/workspace/conversations", {}, signal)).conversations.map(conversation) }),
     create: async (title = "", mode?: ConversationMode) => conversation((await request<any>("/workspace/conversations", { method: "POST", body: JSON.stringify({ title, ...(mode ? { mode } : {}) }) })).conversation),
     update: async (id: string, input: { title?: string; pinned?: boolean; mode?: ConversationMode }) => conversation((await request<any>(conversationPath(id), { method: "PATCH", body: JSON.stringify(input) })).conversation),
     deleteChat: (id: string) => request<void>(conversationPath(id), { method: "DELETE" }),
     pin: (id: string, pinned: boolean) => request<void>(conversationPath(id), { method: "PATCH", body: JSON.stringify({ pinned }) }),
-    detail: async (id: string, signal?: AbortSignal) => detail(await request<any>(conversationPath(id), {}, signal)),
+    detail: async (id: string, signal?: AbortSignal): Promise<ConversationDetail> => {
+      const [raw, snapshot] = await Promise.all([
+        request<any>(conversationPath(id), {}, signal),
+        request<SessionSnapshot>(`${conversationPath(id)}/snapshot`, {}, signal),
+      ]);
+      const conversationDetail = detail(raw);
+      const runs = new Map(snapshot.runs.map(run => [run.run_id, run]));
+      return {
+        ...conversationDetail,
+        messages: conversationDetail.messages.map(message => {
+          const run = message.run_id ? runs.get(message.run_id) : undefined;
+          if (!run) return message;
+          const nextUpdates = message.role === "user" && run.continuation_guidance?.length
+            ? Array.from(new Set([...(message.updates || []), ...run.continuation_guidance]))
+            : message.updates;
+          return {
+            ...message,
+            status: run.status,
+            recovery: message.role === "assistant" ? recovery(run.recovery) : message.recovery,
+            updates: nextUpdates,
+            sources: run.sources === undefined ? message.sources : run.sources.map(sourceReference),
+            artifacts: run.artifacts === undefined ? message.artifacts : run.artifacts.map(artifact),
+            node_states: run.node_states,
+            stages: run.stages,
+            context_compaction_count: run.context_compaction_count,
+            active_elapsed_ms: run.active_elapsed_ms,
+            wall_elapsed_ms: run.wall_elapsed_ms,
+          };
+        }),
+      };
+    },
     source: async (id: string, signal?: AbortSignal) => sourceDocument(await request<any>(`/workspace/sources/${segment(id)}`, {}, signal)),
+    async downloadPaper(id: string, sha256: string, signal?: AbortSignal): Promise<Blob> {
+      const response = await fetch(`${base}/workspace/sources/${segment(id)}/original?sha256=${segment(sha256)}`, { headers: { Authorization: `Bearer ${token}` }, signal, credentials: "omit", cache: "no-store" });
+      if (!response.ok) { const data = await response.json(); throw new WorkbenchError(messageFor(response.status, data.detail), response.status); }
+      return response.blob();
+    },
     projects: async (signal?: AbortSignal): Promise<{ projects: Project[] }> => ({ projects: (await request<any>("/workspace/projects", {}, signal)).projects.map((item: any) => ({ id: item.project_id, name: item.name, conversation_count: item.conversation_count, created_at: item.created_at, updated_at: item.updated_at })) }),
     createProject: async (name: string): Promise<Project> => { const item = await request<any>("/workspace/projects", { method: "POST", body: JSON.stringify({ name }) }); return { id: item.project_id, name: item.name, conversation_count: item.conversation_count, created_at: item.created_at, updated_at: item.updated_at }; },
     updateProject: async (id: string, name: string): Promise<Project> => { const item = await request<any>(`/workspace/projects/${segment(id)}`, { method: "PATCH", body: JSON.stringify({ name }) }); return { id: item.project_id, name: item.name, conversation_count: item.conversation_count, created_at: item.created_at, updated_at: item.updated_at }; },
@@ -132,7 +184,7 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
     uploadMaterial: async (id: string, file: File) => material((await request<any>(`${conversationPath(id)}/materials`, { method: "POST", body: (() => { const f = new FormData(); f.append("file", file, file.name); return f; })() })).material),
     removeMaterial: (id: string, materialId: string) => request<void>(`${conversationPath(id)}/materials/${segment(materialId)}`, { method: "DELETE" }),
     link: (id: string, resourceId: string, remove = false) => request<void>(`${conversationPath(id)}/materials/${segment(resourceId)}`, { method: remove ? "DELETE" : "PUT" }),
-    submit: (id: string, text: string, materialIds: string[] = [], signal?: AbortSignal, clientRequestId: string = createClientRequestId(), retryOfRunId?: string, attachedIds: string[] = [], thinkingMode?: ThinkingMode | null, facts: TaskContextFacts = {}) => request<RunCommandResponse>(`${conversationPath(id)}/runs`, { method: "POST", body: JSON.stringify({ conversation_id: id, client_request_id: clientRequestId, text, facts, constraints: [], material_ids: materialIds, attached_material_ids: attachedIds, retry_of_run_id: retryOfRunId, thinking_mode: thinkingMode ?? undefined }) }, signal),
+    submit: (id: string, text: string, materialIds: string[] = [], signal?: AbortSignal, clientRequestId: string = createClientRequestId(), retryOfRunId?: string, attachedIds: string[] = [], thinkingMode?: ThinkingMode | null, facts: TaskContextFacts = {}, modelProfileId?: string | null) => request<RunCommandResponse>(`${conversationPath(id)}/runs`, { method: "POST", body: JSON.stringify({ conversation_id: id, client_request_id: clientRequestId, text, facts, constraints: [], material_ids: materialIds, attached_material_ids: attachedIds, retry_of_run_id: retryOfRunId, thinking_mode: thinkingMode ?? undefined, model_profile_id: modelProfileId ?? undefined }) }, signal),
     run: (runId: string, conversationId: string, signal?: AbortSignal) => request<RunCommandResponse>(`${runPath(runId)}?conversation_id=${segment(conversationId)}`, {}, signal),
     artifactUrl: (runId: string, conversationId: string, artifactId: string) => `${base}${runPath(runId)}/artifacts/${segment(artifactId)}?conversation_id=${segment(conversationId)}`,
     async downloadArtifact(runId: string, conversationId: string, artifactId: string, signal?: AbortSignal): Promise<Blob> {
@@ -142,10 +194,11 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
     },
     inputRequest: (runId: string, conversationId: string, requestId: string, signal?: AbortSignal) => request<{ request: InputRequest }>(`${runPath(runId)}/input-requests/${segment(requestId)}?conversation_id=${segment(conversationId)}`, {}, signal),
     snapshot: async (id: string, signal?: AbortSignal) => ({ snapshot: await request<SessionSnapshot>(`${conversationPath(id)}/snapshot`, {}, signal) }),
+    models: (signal?: AbortSignal) => request<ModelCatalog>("/workspace/models", {}, signal),
     cancel: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/cancel`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
-    continueRun: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/continue`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
+    continueRun: (runId: string, conversationId: string, guidance?: string, attachedIds: string[] = []) => request<RunCommandResponse>(`${runPath(runId)}/continue`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId, ...(guidance?.trim() ? { guidance: guidance.trim() } : {}), ...(attachedIds.length ? { attached_material_ids: attachedIds } : {}) }) }),
     pause: (runId: string, conversationId: string) => request<RunCommandResponse>(`${runPath(runId)}/pause`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId }) }),
-    resume: (runId: string, conversationId: string, requestId: string, answer: unknown, attachedIds: string[] = []) => request<RunCommandResponse>(`${runPath(runId)}/resume`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId, request_id: requestId, answer, attached_material_ids: attachedIds }) }),
+    resume: (runId: string, conversationId: string, requestId: string, answer: unknown, attachedIds: string[] = [], guidance?: string) => request<RunCommandResponse>(`${runPath(runId)}/resume`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId, request_id: requestId, answer, attached_material_ids: attachedIds, guidance }) }),
     steer: (runId: string, conversationId: string, text: string, materialIds: string[] = [], attachedIds: string[] = [], facts: TaskContextFacts = {}) => request<RunCommandResponse>(`${runPath(runId)}/steer`, { method: "POST", body: JSON.stringify({ conversation_id: conversationId, text, facts, constraints: [], material_ids: materialIds, attached_material_ids: attachedIds }) }),
     async stream(conversationId: string, runId: string, onEvent: (event: StreamEvent) => void, signal: AbortSignal, after = 0) {
       const response = await fetch(`${base}${conversationPath(conversationId)}/events?run_id=${segment(runId)}&after_sequence=${after}`, { headers: { Authorization: `Bearer ${token}` }, signal, credentials: "omit", cache: "no-store" });

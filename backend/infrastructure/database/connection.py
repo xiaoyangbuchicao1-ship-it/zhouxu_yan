@@ -71,6 +71,18 @@ class Database:
     def _migrate_sqlite(self) -> None:
         inspector = inspect(self.engine)
         tables = set(inspector.get_table_names())
+        if "accounts" in tables:
+            account_columns = {
+                column["name"] for column in inspector.get_columns("accounts")
+            }
+            if "role" not in account_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE accounts ADD COLUMN role VARCHAR(16) "
+                            "NOT NULL DEFAULT 'user'"
+                        )
+                    )
         if "conversations" not in tables:
             conversation_columns = set()
         else:

@@ -24,8 +24,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
+        bubblewrap \
         curl \
         fonts-noto-cjk \
+        libseccomp2 \
         libreoffice-calc \
         libreoffice-writer \
         poppler-utils \

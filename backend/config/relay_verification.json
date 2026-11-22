@@ -1,0 +1,258 @@
+{
+  "gpt-6-astra": {
+    "hello": true,
+    "protocol": "openai_responses",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low"
+  },
+  "gpt-5.6": {
+    "hello": true,
+    "protocol": "openai_responses",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-fable-5": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-fable-5-1": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-fable-5-2": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-haiku-5-5": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-opus-4-6": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-opus-4-7": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-opus-4-8": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-opus-5": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-opus-5-5": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-sonnet-4-6": {
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gemini-3.8-flash": {
+    "hello": true,
+    "protocol": "google_generative_language",
+    "tools": true,
+    "streaming": true,
+    "thinking_probe_mode": "low",
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-sonnet-5": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "claude-sonnet-5-5": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "anthropic_messages",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gemini-4-argon": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "google_generative_language",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gemini-4-carbon": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "google_generative_language",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gemini-4-hydrogen": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "google_generative_language",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gpt-5.6-luna": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gpt-5.6-sol": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gpt-5.6-terra": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gpt-6-luna": {
+    "streaming": false,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": false
+  },
+  "gpt-6-sol": {
+    "streaming": false,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": false
+  },
+  "gpt-6.1-sol": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  },
+  "gpt-6.1-terra": {
+    "streaming": false,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": false
+  },
+  "gpt-6.2-astra": {
+    "streaming": false,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "tools": false
+  },
+  "gpt-6.2-sol": {
+    "streaming": true,
+    "hello": true,
+    "protocol": "openai_responses",
+    "thinking_probe_mode": "low",
+    "thinking_probe_modes": ["low", "medium", "high", "xhigh", "max"],
+    "tools": true,
+    "continuation_restored": true,
+    "probe": "hello_tool_roundtrip",
+    "checked_on": "2026-11-21"
+  }
+}

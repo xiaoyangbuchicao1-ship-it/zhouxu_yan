@@ -21,6 +21,7 @@ from backend.contracts.modules.perception import ContextAssembly
 from backend.contracts.ports import EventSink
 from backend.contracts.schemas.core import ModuleRequest, PortError
 from backend.infrastructure.model.budget import BudgetTransport, ModelBudget
+from backend.infrastructure.model.compaction import COMPACT_PROMPT
 from backend.infrastructure.model.decision import DeliveryText
 from backend.infrastructure.model.public_text import PublicText
 from backend.infrastructure.model.reading import reading_view, reference_view
@@ -94,12 +95,12 @@ class DeepSeekModel:
     def export_run_state(self, run_id):
         """Opaque protocol state for private checkpoints, never ordinary memory."""
         state = getattr(self, "_continuations", {}).get(run_id)
-        return {"provider": "deepseek", "model": self.settings.model.name, "state": deepcopy(state)} if state else {}
+        return {"provider": self.settings.model.provider, "model": self.settings.model.name, "state": deepcopy(state)} if state else {}
 
     def restore_run_state(self, run_id, value):
         if not value:
             return
-        if value.get("provider") != "deepseek" or value.get("model") != self.settings.model.name:
+        if value.get("provider") != self.settings.model.provider or value.get("model") != self.settings.model.name:
             raise PortError(self.settings.error("context_configuration"))
         state = value.get("state") or {}
         if not all(isinstance(state.get(k), dict) and all(isinstance(a, str) and isinstance(b, str) for a,b in state[k].items()) for k in ("frames", "tools", "decisions")):
@@ -165,7 +166,7 @@ class DeepSeekModel:
         if value.purpose != "compaction" and any(i.id == "context-inventory" and i.source == "harness" for i in value.perceived.items):
             messages[0]["content"] += "\n" + self.settings.prompts.get("context_inventory", "")
         if value.purpose == "compaction":
-            messages[0]["content"] = self.settings.prompts["compaction"]
+            messages[0]["content"] = COMPACT_PROMPT + "\n" + self.settings.prompts["compaction"]
         elif value.purpose == "finalization":
             messages[0]["content"] += "\n" + self.settings.prompts["finalization"]
         if self._explicit(value.purpose):
@@ -298,6 +299,9 @@ class DeepSeekModel:
                     continue
                 if item.id == "task-continuation-state" and item.source == "harness":
                     continuation_messages.append({"role": "user", "name": "task_continuation_state", "content": json.dumps(body, ensure_ascii=False)})
+                    continue
+                if item.id == "run-continuation-guidance" and item.source == "harness":
+                    continuation_messages.append({"role": "user", "name": "run_continuation_guidance", "content": json.dumps(body, ensure_ascii=False)})
                     continue
                 if item.source == "tool_reference":
                     body = reference_view(body)
@@ -467,11 +471,30 @@ class DeepSeekModel:
                 purpose=request.input.purpose
             ).output_reserved,
             "temperature": cfg.temperature,
-            "thinking": {"type": "enabled" if cfg.thinking_enabled and request.input.purpose != "compaction" else "disabled"},
         }
+        if cfg.provider == "deepseek":
+            packet["thinking"] = {
+                "type": "enabled"
+                if cfg.thinking_enabled and request.input.purpose != "compaction"
+                else "disabled"
+            }
         if self._explicit(request.input.purpose):
             packet["tool_choice"] = "auto"
-        if cfg.thinking_enabled and request.input.purpose != "compaction":
+        if (
+            cfg.provider == "deepseek"
+            and cfg.thinking_enabled
+            and request.input.purpose != "compaction"
+        ):
+            packet["reasoning_effort"] = cfg.thinking_mode
+        elif (
+            cfg.provider == "relay"
+            and cfg.relay_effort_supported
+            and cfg.thinking_enabled
+            and request.input.purpose != "compaction"
+        ):
+            # CC Switch keeps the Chat field separate from Responses'
+            # reasoning.effort. Only an explicitly verified Chat profile may
+            # send this parameter; a model family name is not evidence.
             packet["reasoning_effort"] = cfg.thinking_mode
         return packet
 

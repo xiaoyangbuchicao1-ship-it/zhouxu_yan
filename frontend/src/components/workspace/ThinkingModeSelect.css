@@ -16,6 +16,12 @@
   --thinking-tint: #d8ba8112;
 }
 
+.ws-thinking-trigger[data-mode="max"],
+.ws-thinking-option[data-mode="max"] {
+  --thinking-color: #f0b7a4;
+  --thinking-tint: #e59a7a16;
+}
+
 .ws-thinking-trigger {
   display: inline-flex;
   align-items: center;

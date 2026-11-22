@@ -1,0 +1,305 @@
+# Upstream documentation facts, checked 2026-11-21. No credentials or relay verification claims.
+# protocol is the upstream tool-capable protocol; gateway support must be verified separately.
+# context_tokens is a safe total budgeting ceiling. raw_context_tokens is present only
+# where the upstream explicitly documents a unified context window.
+# Empty thinking_modes means the complete allowed set is UNKNOWN, not disabled thinking.
+# Missing default_thinking_mode means the upstream default was not established.
+# Runtime operating budgets and output reservations belong to runtime policy, not this table.
+
+[models."gpt-5.6"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["none","low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-5.6-sol"]
+checked_on = "2026-11-21"
+
+[models."gpt-5.6-luna"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["none","low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-5.6-luna"]
+checked_on = "2026-11-21"
+
+[models."gpt-5.6-sol"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["none","low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-5.6-sol"]
+checked_on = "2026-11-21"
+
+[models."gpt-5.6-terra"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["none","low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-5.6-terra"]
+checked_on = "2026-11-21"
+
+[models."gpt-6-astra"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["low","medium","high","xhigh","max"]
+source = ["https://developers.openai.com/api/docs/models/gpt-6-astra"]
+checked_on = "2026-11-21"
+notes = "The model page lists five effort levels but does not establish the default."
+
+[models."gpt-6-luna"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["none","low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-6-luna"]
+checked_on = "2026-11-21"
+
+[models."gpt-6-sol"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["none","low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-6-sol"]
+checked_on = "2026-11-21"
+
+[models."gpt-6.1-sol"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-6.1-sol"]
+checked_on = "2026-11-21"
+
+[models."gpt-6.1-terra"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = ["none","low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+source = ["https://developers.openai.com/api/docs/models/gpt-6.1-terra"]
+checked_on = "2026-11-21"
+
+[models."gpt-6.2-astra"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = []
+source = ["https://developers.openai.com/api/docs/models/gpt-6.2-astra"]
+checked_on = "2026-11-21"
+notes = "The model page explicitly rejects none; the complete supported effort set and default remain unknown."
+
+[models."gpt-6.2-sol"]
+protocol = "openai_responses"
+context_tokens = 1050000
+raw_context_tokens = 1050000
+input_limit_tokens = 922000
+max_generation_tokens = 128000
+thinking_modes = []
+source = ["https://developers.openai.com/api/docs/models/gpt-6.2-sol"]
+checked_on = "2026-11-21"
+notes = "The model page explicitly rejects none; the complete supported effort set and default remain unknown."
+
+[models."claude-fable-5"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-fable-5-1"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-fable-5-2"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-haiku-5-5"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-opus-4-6"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = []
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+notes = "Effort max is documented, but the complete per-model effort list was not established; do not infer xhigh from later Opus models."
+
+[models."claude-opus-4-7"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-opus-4-8"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-opus-5"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-opus-5-5"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "medium"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-sonnet-4-6"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-sonnet-5"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."claude-sonnet-5-5"]
+protocol = "anthropic_messages"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 131072
+thinking_modes = ["low","medium","high","xhigh","max"]
+default_thinking_mode = "high"
+thinking_style = "adaptive"
+source = ["https://platform.claude.com/docs/en/models/overview","https://platform.claude.com/docs/en/build-with-claude/effort","https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting"]
+checked_on = "2026-11-21"
+
+[models."gemini-3.8-flash"]
+protocol = "google_generative_language"
+context_tokens = 1048576
+input_limit_tokens = 1048576
+max_generation_tokens = 65536
+thinking_modes = ["low","medium","high"]
+default_thinking_mode = "medium"
+source = ["https://aistudio.google.com/docs/models/gemini-3.8-flash","https://aistudio.google.com/docs/thinking"]
+checked_on = "2026-11-21"
+notes = "Upstream gives independent input and output limits, not a unified total. context_tokens conservatively budgets input plus reserved output within the documented input limit; raw_context_tokens remains unknown."
+
+[models."gemini-4-argon"]
+protocol = "google_generative_language"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 65536
+thinking_modes = ["low","medium","high"]
+default_thinking_mode = "medium"
+source = ["https://aistudio.google.com/docs/models/gemini-4-argon","https://aistudio.google.com/docs/thinking"]
+checked_on = "2026-11-21"
+notes = "The unified context window is shared by input and output. max_generation_tokens is the synchronous API limit; long-decode operation is outside this integration."
+
+[models."gemini-4-carbon"]
+protocol = "google_generative_language"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 65536
+thinking_modes = ["low","medium","high"]
+default_thinking_mode = "medium"
+source = ["https://aistudio.google.com/docs/models/gemini-4-carbon","https://aistudio.google.com/docs/thinking"]
+checked_on = "2026-11-21"
+notes = "The unified context window is shared by input and output. max_generation_tokens is the synchronous API limit; long-decode operation is outside this integration."
+
+[models."gemini-4-hydrogen"]
+protocol = "google_generative_language"
+context_tokens = 1048576
+raw_context_tokens = 1048576
+max_generation_tokens = 65536
+thinking_modes = ["low","medium","high","xhigh"]
+default_thinking_mode = "high"
+source = ["https://aistudio.google.com/docs/models/gemini-4-hydrogen","https://aistudio.google.com/docs/thinking"]
+checked_on = "2026-11-21"
+notes = "The unified context window is shared by input and output. max_generation_tokens is the synchronous API limit; long-decode operation is outside this integration."
+

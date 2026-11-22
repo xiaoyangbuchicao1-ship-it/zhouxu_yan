@@ -125,7 +125,6 @@ const SelectedWorks = () => {
         <div id="roadmap" className="mt-16 md:mt-24 px-2">
           <span className="text-xs text-muted tracking-[0.25em]">PRODUCT ROADMAP</span>
           <h3 className="font-editorial text-2xl md:text-3xl mt-4">八个方向，一条工作脉络。</h3>
-          <p className="text-sm text-muted leading-[1.9] mt-4 max-w-2xl">以下为后续建设规划，不代表各模块已经开放使用。配图沿用原模板，仅作视觉表达，不是案件实图或产品输出。</p>
           <div className="grid md:grid-cols-2 gap-x-12 mt-8">
             {plannedModules.map((module, i) => (
               <article key={module.id} id={module.id} className="border-t border-stroke py-6">

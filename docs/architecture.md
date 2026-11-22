@@ -49,7 +49,7 @@ flowchart TD
 
 ## 模型、上下文与工具
 
-生产模型固定 DeepSeek Flash。`model.thinking_mode` 选择 none / low / high，生成预留分别为 8192 / 16384 / 32768 Token；review 与 compaction 关闭思考。工厂拒绝旧供应商路由配置。
+生产模型支持官方 DeepSeek Flash / Pro。`model.thinking_mode` 选择 none / low / high / max，生成预留分别为 8192 / 16384 / 32768 Token；review 与 compaction 关闭思考。工厂拒绝旧供应商路由配置。
 
 主模型使用 auto 工具选择。可直接交付完整最终正文；必要补充通过 `request_user_input`，阶段交付与系统受阻通过显式交付控制。控制在模型适配层解释，业务工具进入 Action；普通问题可以一次调用完成。
 

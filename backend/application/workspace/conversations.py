@@ -166,6 +166,31 @@ class WorkspaceService:
         finally:
             session.close()
 
+    def upgrade_mode(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        mode: ConversationMode = "work",
+    ) -> ConversationModel:
+        session = self.database.session()
+        try:
+            conversation = session.scalar(
+                select(ConversationModel).where(
+                    ConversationModel.id == conversation_id,
+                    ConversationModel.account_id == account_id,
+                    ConversationModel.archived_at.is_(None),
+                )
+            )
+            if conversation is None:
+                raise WorkspaceError("conversation_not_found")
+            conversation.mode = mode
+            conversation.updated_at = self._now()
+            session.commit()
+            return conversation
+        finally:
+            session.close()
+
     def list_projects(self, *, account_id: str) -> list[ProjectModel]:
         session = self.database.session()
         try:
@@ -482,6 +507,16 @@ class WorkspaceService:
             except json.JSONDecodeError:
                 payload = {}
             extras = {key: payload[key] for key in ("facts", "constraints") if isinstance(payload, dict) and payload.get(key)}
+            progress = {}
+            try:
+                progress = json.loads(run.progress_json or "{}")
+            except json.JSONDecodeError:
+                progress = {}
+            guidance = progress.get("continuation_guidance")
+            if isinstance(guidance, list) and guidance:
+                extras["continuation_guidance"] = [
+                    item for item in guidance if isinstance(item, str)
+                ]
             records.append(MemoryRecord(
                 record_id=f"history:{run.run_id}:user", session_id=conversation_id,
                 run_id=run.run_id, source="user", retention="session",
@@ -589,6 +624,10 @@ class WorkspaceService:
                     record.retry_of_run_id = retry_of_run_id
                 if status in {"succeeded", "failed", "cancelled"}:
                     record.completed_at = record.completed_at or completed_at or now
+            if payload is not None and payload.get("mode") == "work":
+                # Project the accepted durable Run; never elevate a conversation
+                # before its pending confirmation has been consumed.
+                conversation.mode = "work"
             conversation.updated_at = now
             try:
                 session.commit()

@@ -1,5 +1,6 @@
 """Account-scoped application store with append-only versions and audit receipts."""
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -8,6 +9,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.application.maritime.catalog import builtin_skills, historical_builtin
+from backend.skills.packages import (
+    PackageError,
+    create_package_schema,
+    read_package,
+    safe_resource_path,
+)
 from backend.skills.registry import default_skill_registry
 
 
@@ -56,6 +63,12 @@ class MaritimeOffice:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
+            existing = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='skills'").fetchone()
+            if existing:
+                required = {"skill_packages", "skill_package_files", "skill_installations"}
+                tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if not required.issubset(tables):
+                    raise RuntimeError("skill_package_migration_required: run backend.infrastructure.persistence.migrate_skill_packages before starting")
             db.executescript("""
               CREATE TABLE IF NOT EXISTS skills(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
                 name TEXT NOT NULL, summary TEXT NOT NULL, instructions TEXT NOT NULL,
@@ -78,6 +91,8 @@ class MaritimeOffice:
                 actor_id TEXT NOT NULL, action TEXT NOT NULL, object_id TEXT NOT NULL,
                 created_at TEXT NOT NULL);
             """)
+            if not existing:
+                create_package_schema(db)
 
     @contextmanager
     def connection(self):
@@ -94,9 +109,10 @@ class MaritimeOffice:
     def skills(self, account_id):
         with self.connection() as db:
             custom = [
-                dict(r)
+                self._with_package(db, dict(r))
                 for r in db.execute(
-                    "SELECT * FROM skills WHERE owner_id=? OR visibility='community' ORDER BY updated_at DESC",
+                    "SELECT s.* FROM skills s LEFT JOIN skill_installations i ON i.skill_id=s.id "
+                    "WHERE (s.owner_id=? OR s.visibility='community') AND (i.active IS NULL OR i.active=1) ORDER BY s.updated_at DESC",
                     (account_id,),
                 )
             ]
@@ -118,8 +134,10 @@ class MaritimeOffice:
                 raise MaritimeError("技能版本不存在", 404) from None
         with self.connection() as db:
             row = db.execute(
-                "SELECT * FROM skills WHERE id=? AND (owner_id=? OR visibility='community')",
-                (skill_id, account_id),
+                "SELECT s.* FROM skills s LEFT JOIN skill_installations i ON i.skill_id=s.id "
+                "WHERE s.id=? AND (s.owner_id=? OR s.visibility='community') "
+                "AND (? IS NOT NULL OR i.active IS NULL OR i.active=1)",
+                (skill_id, account_id, version),
             ).fetchone()
             if row and version is not None:
                 if row["owner_id"] != account_id and version != row["version"]:
@@ -129,11 +147,89 @@ class MaritimeOffice:
                     (skill_id, version),
                 ).fetchone()
                 if old:
-                    return json.loads(old["snapshot"])
+                    return self._with_package(db, json.loads(old["snapshot"]))
                 row = None
             if not row:
                 raise MaritimeError("技能不存在或无权使用", 404)
-            return dict(row)
+            return self._with_package(db, dict(row))
+
+    @staticmethod
+    def _with_package(db, row):
+        package = db.execute("SELECT manifest FROM skill_packages WHERE skill_id=? AND version=?", (row["id"], row["version"])).fetchone()
+        if package:
+            row["package"] = json.loads(package["manifest"])
+        return row
+
+    def import_skill_package(self, account_id, filename, data):
+        try:
+            package = read_package(filename, data)
+        except PackageError as exc:
+            raise MaritimeError(str(exc)) from exc
+        row = dict(
+            id=uuid4().hex, owner_id=account_id, name=package.metadata.name,
+            summary=package.metadata.description, instructions=package.instructions,
+            version=1, visibility="private", parent_id=None, created_at=now(), updated_at=now(),
+        )
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO skills VALUES (:id,:owner_id,:name,:summary,:instructions,:version,:visibility,:parent_id,:created_at,:updated_at)", row)
+            db.execute("INSERT INTO skill_versions VALUES (?,?,?)", (row["id"], 1, json.dumps(row, ensure_ascii=False)))
+            db.execute("INSERT INTO skill_packages VALUES (?,?,?)", (row["id"], 1, json.dumps(package.manifest, ensure_ascii=False)))
+            db.executemany("INSERT INTO skill_package_files VALUES (?,?,?,?,?)", [
+                (row["id"], 1, path, content, hashlib.sha256(content).hexdigest())
+                for path, content in package.files.items()
+            ])
+            db.execute("INSERT INTO skill_installations VALUES (?,1)", (row["id"],))
+        return {**row, "package": package.manifest}
+
+    def package_files(self, account_id, skill_id, version=None):
+        selected = self.skill(account_id, skill_id, version)
+        if "package" not in selected:
+            return {}
+        with self.connection() as db:
+            rows = db.execute("SELECT path,content,sha256 FROM skill_package_files WHERE skill_id=? AND version=? ORDER BY path", (skill_id, selected["version"])).fetchall()
+        files = {}
+        expected = {item["path"]: item for item in selected["package"]["files"]}
+        for row in rows:
+            content = bytes(row["content"])
+            if row["path"] not in expected or hashlib.sha256(content).hexdigest() != expected[row["path"]]["sha256"] or len(content) != expected[row["path"]]["size_bytes"]:
+                raise MaritimeError("技能包文件校验失败，请重新上传", 409)
+            files[row["path"]] = content
+        if files.keys() != expected.keys():
+            raise MaritimeError("技能包文件不完整，请重新上传", 409)
+        return files
+
+    def skill_resource(self, account_id, skill_id, path, version=None):
+        try:
+            safe_resource_path(path)
+        except PackageError as exc:
+            raise MaritimeError(str(exc)) from exc
+        selected = self.skill(account_id, skill_id, version)
+        if selected.get("owner_id") is None:
+            registry = default_skill_registry()
+            from backend.skills.registry import SkillNotFound
+            try:
+                content = registry.read_resource(skill_id, path)
+            except SkillNotFound as exc:
+                raise MaritimeError("技能资源不存在", 404) from exc
+            data = content.encode("utf-8")
+        else:
+            files = self.package_files(account_id, skill_id, selected["version"])
+            if path not in files:
+                raise MaritimeError("技能资源不存在", 404)
+            data = files[path]
+            try:
+                content = data.decode("utf-8") if len(data) <= 128 * 1024 else None
+            except UnicodeError:
+                content = None
+        return {"path": path, "content": content, "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+
+    def remove_skill(self, account_id, skill_id):
+        with self.connection() as db:
+            result = db.execute("UPDATE skill_installations SET active=0 WHERE skill_id IN (SELECT id FROM skills WHERE id=? AND owner_id=?) AND active=1", (skill_id, account_id))
+            if not result.rowcount:
+                raise MaritimeError("技能不存在或无权移除", 404)
+        return {"status": "removed"}
 
     def save_skill(self, account_id, value, skill_id=None):
         fields = {
@@ -153,6 +249,8 @@ class MaritimeOffice:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             if skill_id:
+                if db.execute("SELECT 1 FROM skill_installations WHERE skill_id=?", (skill_id,)).fetchone():
+                    raise MaritimeError("请重新上传完整技能包，不支持只改包内说明", 409)
                 old = db.execute(
                     "SELECT * FROM skills WHERE id=? AND owner_id=?",
                     (skill_id, account_id),

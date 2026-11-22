@@ -10,7 +10,7 @@
 | --- | --- |
 | 前端 | React 18、TypeScript、Vite、Tailwind CSS、Radix UI、Framer Motion |
 | 后端 | Python **3.11**、FastAPI、Pydantic v2、httpx、SQLAlchemy |
-| 智能体 | 自研 Harness、DeepSeek Flash，none / low / high 三档 |
+| 智能体 | 自研 Harness、DeepSeek Flash / Pro，none / low / high / max 四档 |
 | 检索 | OpenSearch 2.19、BGE-M3、BM25 与向量混合检索 |
 | 存储 | SQLite 业务库与 RunStore；本地持久文件目录 |
 | 任务执行 | 共享文件工具；应用通过 Docker Compose 统一运行 |

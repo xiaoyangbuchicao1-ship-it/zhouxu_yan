@@ -34,6 +34,7 @@ export function Modal({
   description,
   children,
   side,
+  className,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -41,6 +42,7 @@ export function Modal({
   description?: string;
   children: ReactNode;
   side?: "left" | "right";
+  className?: string;
 }) {
   const returnFocus = useRef<HTMLElement | null>(null);
   return (
@@ -48,7 +50,7 @@ export function Modal({
       <Dialog.Portal>
         <Dialog.Overlay className="ws-overlay" />
         <Dialog.Content
-          className={`ws-dialog ${side ? `ws-sheet ws-sheet-${side}` : ""}`}
+          className={`ws-dialog ${side ? `ws-sheet ws-sheet-${side}` : ""} ${className ?? ""}`}
           onOpenAutoFocus={() => {
             returnFocus.current =
               document.activeElement instanceof HTMLElement

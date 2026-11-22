@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowUpRight,
   BookOpen,
-  Compass,
   ChevronLeft,
   Download,
   FileText,
@@ -12,22 +11,23 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   maritimeApi,
   downloadDraft,
-  type MaritimeSkill,
   type MaritimeCase,
   type CaseEntry,
   type SearchResult,
   type CorpusSource,
 } from "@/lib/maritime-api";
 import { Modal, Loading } from "./Primitives";
+import Skills from "./Skills";
+import { workbenchApi } from "@/lib/workbench-api";
+import { SourcePreview } from "./SourcePreview";
 import "./maritime.css";
 
 export type OfficePage = "skills" | "research" | "cases";
 const labelFor = {
-  skills: "技能工坊",
+  skills: "技能",
   research: "海事检索",
   cases: "案件协作",
 };
@@ -50,11 +50,12 @@ export default function MaritimeDesk({
   accountId: string;
 }) {
   const api = useMemo(() => maritimeApi(token), [token]);
+  const sourceApi = useMemo(() => workbenchApi(token), [token]);
   const [error, setError] = useState("");
   useEffect(() => setError(""), [page]);
   return (
     <section className="maritime-desk" aria-label={labelFor[page]}>
-      {error && (
+      {error && page !== "skills" && (
         <div className="md-error" role="alert">
           {error}
           <button onClick={() => setError("")} aria-label="关闭提示">
@@ -71,7 +72,7 @@ export default function MaritimeDesk({
         />
       )}
       {page === "research" && (
-        <Research api={api} onError={setError} error={error} />
+        <Research api={api} sourceApi={sourceApi} accountId={accountId} onError={setError} error={error} />
       )}
       {page === "cases" && <Cases api={api} onError={setError} error={error} />}
     </section>
@@ -80,245 +81,9 @@ export default function MaritimeDesk({
 type Api = ReturnType<typeof maritimeApi>;
 type Props = { api: Api; onError: (text: string) => void; error?: string };
 
-function Skills({
-  api,
-  accountId,
-  onError,
-  error,
-}: Props & { accountId: string }) {
-  const navigate = useNavigate();
-  const client = useQueryClient();
-  const query = useQuery({
-    queryKey: ["maritime", accountId, "skills"],
-    queryFn: api.skills,
-  });
-  const [filter, setFilter] = useState("all");
-  const [selected, setSelected] = useState<MaritimeSkill | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState("");
-  const [summary, setSummary] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [visibility, setVisibility] = useState<"private" | "community">(
-    "private",
-  );
-  const [busy, setBusy] = useState(false);
-  function edit(skill: MaritimeSkill | null) {
-    setSelected(skill);
-    setName(skill?.name || "");
-    setSummary(skill?.summary || "");
-    setInstructions(skill?.instructions || "");
-    setVisibility(
-      skill?.owner_id === accountId && skill.visibility === "community"
-        ? "community"
-        : "private",
-    );
-    setEditing(true);
-  }
-  async function save() {
-    setBusy(true);
-    onError("");
-    try {
-      const own = selected?.owner_id === accountId;
-      const saved = await api.saveSkill(
-        {
-          name,
-          summary,
-          instructions,
-          visibility,
-          ...(own
-            ? { expected_version: selected.version }
-            : { parent_id: selected?.id }),
-        },
-        own ? selected.id : undefined,
-      );
-      setSelected(saved);
-      setEditing(false);
-      await client.invalidateQueries({
-        queryKey: ["maritime", accountId, "skills"],
-      });
-    } catch (e) {
-      onError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  const rows = (query.data?.skills || []).filter(
-    (s) =>
-      filter === "all" ||
-      (filter === "mine"
-        ? s.owner_id === accountId
-        : s.visibility === "community"),
-  );
-  return (
-    <>
-      <div className="md-heading">
-        <div>
-          <span className="md-eyebrow">你的专业方法，可以成为下一项能力</span>
-          <h1>把海事经验，写成技能。</h1>
-          <p>
-            选择一种处理方式开始，或创建一套属于自己的工作方式。
-          </p>
-        </div>
-        <button className="ws-primary-button" onClick={() => edit(null)}>
-          <Plus size={17} />
-          创建技能
-        </button>
-      </div>
-      <div className="md-tabs" role="group" aria-label="技能范围">
-        {[
-          ["all", "全部技能"],
-          ["mine", "我的技能"],
-          ["community", "社区分享"],
-        ].map(([v, t]) => (
-          <button
-            key={v}
-            aria-pressed={filter === v}
-            onClick={() => setFilter(v)}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
-      {query.isPending ? (
-        <Loading />
-      ) : query.isError ? (
-        <div className="md-empty">
-          <p>技能暂时无法载入。</p>
-          <button
-            className="ws-text-button"
-            onClick={() => void query.refetch()}
-          >
-            重新载入
-          </button>
-        </div>
-      ) : (
-        <div className={`md-skill-list ${!rows.length ? "is-empty" : ""}`}>
-          {rows.map((s, i) => (
-            <article className="md-skill" key={s.id}>
-              <div className="md-skill-number">
-                {String(i + 1).padStart(2, "0")}
-              </div>
-              <div>
-                <div className="md-row">
-                  <h2>{s.name}</h2>
-                  {s.visibility !== "builtin" && (
-                    <span className="md-tag">
-                      {s.owner_id === accountId ? "我的技能" : "社区作者"}
-                    </span>
-                  )}
-                </div>
-                <p>{s.summary}</p>
-                <div className="md-skill-actions">
-                  {s.owner_id === accountId && (
-                    <button
-                      className="ws-text-button"
-                      onClick={() => edit(s)}
-                    >
-                      编辑
-                    </button>
-                  )}
-                  <button
-                    className="ws-text-button"
-                    onClick={() =>
-                      navigate(`/workspace?skill=${encodeURIComponent(s.id)}`)
-                    }
-                  >
-                    开始任务
-                    <ArrowUpRight size={15} />
-                  </button>
-                </div>
-              </div>
-            </article>
-          ))}
-          {!rows.length && (
-            <div className="md-empty md-skill-empty">
-              <span className="md-empty-mark" aria-hidden="true"><Compass size={23} /></span>
-              <p>这里还没有技能。你可以创建自己的处理方式。</p>
-              <button className="ws-secondary-button" onClick={() => edit(null)}>
-                <Plus size={15} />
-                创建第一项技能
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      <Modal
-        open={editing}
-        onOpenChange={(open) => {
-          if (!busy) {
-            setEditing(open);
-            if (!open) setSelected(null);
-          }
-        }}
-        title={selected?.owner_id === accountId ? "编辑技能" : "创建你的技能"}
-        description="写清使用场景、处理步骤和交付结果。"
-      >
-        <p role={error ? "alert" : undefined} className="md-form-error">
-          {error}
-        </p>
-        <form
-          className="md-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void save();
-          }}
-        >
-          <label>
-            技能名称
-            <input
-              required
-              maxLength={80}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
-          <label>
-            一句话介绍
-            <input
-              required
-              maxLength={500}
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-            />
-          </label>
-          <label>
-            处理说明
-            <textarea
-              required
-              rows={10}
-              maxLength={20000}
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              placeholder="使用场景、需要的材料、处理步骤、交付结果、异常时怎样处理…"
-            />
-          </label>
-          <label>
-            可见范围
-            <select
-              value={visibility}
-              onChange={(e) =>
-                setVisibility(e.target.value as typeof visibility)
-              }
-            >
-              <option value="private">仅我自己</option>
-              <option value="community">分享给平台注册用户</option>
-            </select>
-          </label>
-          <p className="md-footnote">
-            分享前请移除客户信息、案件细节和任何凭证。每次保存都会保留版本。
-          </p>
-          <button disabled={busy} className="ws-primary-button">
-            {busy ? "正在保存…" : "保存技能"}
-          </button>
-        </form>
-      </Modal>
-    </>
-  );
-}
-
-function Research({ api, onError }: Props) {
+function Research({ api, sourceApi, accountId, onError }: Props & { sourceApi: ReturnType<typeof workbenchApi>; accountId: string }) {
   const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<"laws" | "cases">("laws");
+  const [kind, setKind] = useState<"laws" | "cases" | "information_cards">("laws");
   const [current, setCurrent] = useState(true);
   const [result, setResult] = useState<SearchResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -341,7 +106,7 @@ function Research({ api, onError }: Props) {
         <div>
           <span className="md-eyebrow">依据先于结论</span>
           <h1>回到真实的海事资料。</h1>
-          <p>检索自研法规与案例库，先读完整原文，再作判断。</p>
+          <p>检索法规、案例与论文，查看原文。</p>
         </div>
         <BookOpen size={28} strokeWidth={1.2} />
       </div>
@@ -373,6 +138,7 @@ function Research({ api, onError }: Props) {
           >
             海事案例
           </button>
+          <button type="button" aria-pressed={kind === "information_cards"} onClick={() => { setKind("information_cards"); setResult(null); }}>论文资料</button>
         </div>
         <label className="md-search-field">
           <Search size={20} />
@@ -386,7 +152,7 @@ function Research({ api, onError }: Props) {
             placeholder={
               kind === "laws"
                 ? "例如：承运人 货损 责任限制"
-                : "例如：提单 货损 无单放货"
+                : kind === "cases" ? "例如：提单 货损 无单放货" : "例如：海上保险 代位求偿"
             }
           />
           <button className="ws-primary-button" disabled={busy}>
@@ -422,7 +188,7 @@ function Research({ api, onError }: Props) {
           {result.items.map((item) => (
             <article className="md-result" key={item.id}>
               <span className={"md-result-kind " + (kind === "laws" ? "is-law" : "is-case")}>
-                {kind === "laws" ? "法规" : "案例"}
+                {kind === "laws" ? "法规" : kind === "cases" ? "案例" : "论文"}
               </span>
               <div className="md-result-copy">
                 <h2>{item.title}</h2>
@@ -447,7 +213,7 @@ function Research({ api, onError }: Props) {
         </>
       )}
       <Modal
-        open={!!source}
+        open={!!source && source.kind !== "information_cards"}
         onOpenChange={(open) => {
           if (!open) setSource(null);
         }}
@@ -456,6 +222,7 @@ function Research({ api, onError }: Props) {
       >
         <div className="md-source-text">{source?.text}</div>
       </Modal>
+      <SourcePreview api={sourceApi} scope={["maritime", accountId]} sourceId={source?.source_id ?? null} onClose={() => setSource(null)} />
     </>
   );
 }
@@ -714,9 +481,6 @@ function Cases({ api, onError, error }: Props) {
             </div>
             <aside className="md-audit">
               <h2>操作记录</h2>
-              <p className="md-footnote">
-                保存动作留痕；复核状态由案件成员确认，不代表法律效力认证。
-              </p>
               {active.audit.map((a) => (
                 <div key={a.id}>
                   <span>

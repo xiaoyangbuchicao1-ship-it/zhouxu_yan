@@ -86,16 +86,32 @@ services:
       ZHOUXU_RUNTIME_ENV_FILE: /app/runtime.env
       ZHOUXU_OPENSEARCH_CREDENTIAL_FILE: /app/runtime.env
       ZHOUXU_CAPABILITY_CARDS_DIR: /app/runtime-resources/capability_cards
-      ZHOUXU_CSL_PAPER_SKILL_DIR: /app/runtime-resources/skills/csl-law-paper-generator
+      ZHOUXU_CSL_PAPER_SKILL_DIR: /app/backend/skills/csl-law-paper-generator
+      ZHOUXU_PAPER_ORIGINALS_DIR: /app/runtime-resources/papers
       # The API already runs inside Docker. Run workspace commands there,
       # rather than requiring a second Docker daemon/socket inside the image.
       ZHOUXU_EXECUTION_PROVIDER: native
+    security_opt:
+      # Bubblewrap creates the per-command user/PID/network namespaces. The
+      # profile starts from Docker's default deny list and permits only the
+      # namespace setup syscalls; it is never unconfined or privileged.
+      - seccomp=./seccomp-execution.json
+      - no-new-privileges:true
+    # These are API-container totals, not per-Run aggregate quotas. Per-command
+    # memory/CPU rlimits and timeouts are additionally enforced by the runtime.
+    mem_limit: ${ZHOUXU_API_MEMORY_LIMIT:-6g}
+    cpus: ${ZHOUXU_API_CPUS:-2}
+    pids_limit: ${ZHOUXU_API_PIDS_LIMIT:-512}
     volumes:
       - ${ZHOUXU_DATA_DIR:-../../data}:/app/data
-      - ${ZHOUXU_RUN_STATE_DIR:-../../data/runtime}:/app/backend/.runtime
+      # SQLite WAL must stay inside Linux; Windows bind mounts are not a
+      # shared-memory/locking boundary suitable for live runtime databases.
+      - runtime-state:/app/backend/.runtime
+      - ${ZHOUXU_RUN_STATE_DIR:-../../data/runtime}:/app/legacy-runtime:ro
       - ${ZHOUXU_OPENSEARCH_DIR:-../../opensearch}:/app/opensearch:ro
       - ${ZHOUXU_CAPABILITY_CARDS_DIR:-../../../能力卡}:/app/runtime-resources/capability_cards:ro
-      - ${ZHOUXU_CSL_PAPER_SKILL_DIR:-../../../技能候选/csl-law-paper-generator}:/app/runtime-resources/skills/csl-law-paper-generator:ro
+      - ${ZHOUXU_PDF_DIR:-../../../PDF}:/app/runtime-resources/papers/PDF:ro
+      - ${ZHOUXU_MD_DIR:-../../../md}:/app/runtime-resources/papers/md:ro
       # BGE-M3 is pinned and loaded offline at runtime. Keep the model outside
       # the image so the same API image can run with a host-mounted model cache.
       - ${ZHOUXU_HF_CACHE_DIR:-../../models/huggingface}:/root/.cache/huggingface:ro
@@ -106,6 +122,7 @@ services:
         read_only: true
     expose:
       - "8010"
+    command: ["sh", "-c", "python -B /app/start/common/runtime_volume.py check && exec uvicorn backend.interfaces.api.app:app --host 0.0.0.0 --port 8010 --workers 1"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8010/healthz"]
       interval: 10s
@@ -128,3 +145,6 @@ services:
     ports:
       # Keep the app behind ECS Nginx/FRP; only the local host may reach it.
       - "127.0.0.1:${ZHOUXU_WEB_PORT:-8080}:80"
+
+volumes:
+  runtime-state:

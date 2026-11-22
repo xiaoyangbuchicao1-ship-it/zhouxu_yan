@@ -2,6 +2,10 @@
 
 项目运行只保留 Docker Compose 这一条路径。Windows、WSL、Linux 和 ECS 使用同一套容器；宿主机不安装项目 Python、Node、uv 或 CUDA。
 
+启动器会先检查 Docker 服务是否可访问、是否为 Linux 引擎以及 Compose 插件是否可用，再读取部署配置并启动服务。Docker 命令已安装不代表引擎正在运行；Windows 请先打开 Docker Desktop，等待 Linux 引擎就绪。
+
+如果提示访问被拒绝，先在 Docker Desktop 所属用户的普通 PowerShell 中运行 `docker info --format '{{.OSType}}'`。普通终端成功、编程助手失败时，应为助手的该次 Docker 操作申请执行权限；不要修改管道权限或开放 Docker TCP 端口。Linux 同样需要当前账户有权访问 Docker socket，不要用 `chmod 666` 放开权限。启动器不会自动提权、切换 Docker context 或修改服务配置。
+
 ## Windows + Docker Desktop
 
 首次部署：

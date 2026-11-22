@@ -14,9 +14,29 @@ function Invoke-Compose([string[]] $Arguments) {
     }
 }
 
+function Assert-DockerEngine {
+    # Native stderr is data at this external boundary, including in PS 5.1.
+    $ErrorActionPreference = "Continue"
+    $EngineOutput = (& docker info --format "{{.OSType}}" 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        if ($EngineOutput -match "permission denied|access is denied|access denied|E_ACCESSDENIED") {
+            throw "Docker access denied. Run this launcher in a normal terminal under the Docker Desktop user; a restricted sandbox needs explicit Docker access. Do not change the daemon or pipe permissions."
+        }
+        throw "Docker engine is unreachable. Start Docker Desktop, wait for the engine to be ready, then retry. Docker reported: $EngineOutput"
+    }
+    if ($EngineOutput -ne "linux") {
+        throw "Docker is using '$EngineOutput' containers. Switch Docker Desktop to Linux containers, then retry."
+    }
+    & docker compose version *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker Compose plugin is unavailable. Update Docker Desktop or install the Compose plugin, then retry."
+    }
+}
+
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw "docker is required; install Docker Desktop and start it first"
 }
+Assert-DockerEngine
 if (-not (Test-Path -LiteralPath $ComposeFile)) {
     throw "missing Compose file: $ComposeFile"
 }

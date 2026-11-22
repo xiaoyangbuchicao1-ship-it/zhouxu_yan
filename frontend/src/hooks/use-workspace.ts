@@ -5,14 +5,16 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { saveSession } from "@/lib/auth-session";
 import { createClientRequestId } from "@/lib/client-request-id";
+import { modelLabel, type ModelSwitchEvent } from "@/lib/model-selection";
 import type { AuthSession } from "@/lib/auth";
-import { workbenchApi, WorkbenchError, acceptStreamSequence, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunNodeState, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
+import { workbenchApi, WorkbenchError, acceptStreamSequence, type ModelProfile, type ModelCatalog, type ModelRunSnapshot, type RunStage, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunNodeState, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
 
-export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; materials: Material[]; updates: string[]; activities: Activity[]; nodes: RunNodeState[]; activeElapsedMs?: number | null; wallElapsedMs?: number | null; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "waiting" | "succeeded" | "failed" | "cancelled" | "paused"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; question: string }; }
+export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; modelSnapshot?: ModelRunSnapshot | null; contextCompactionCount?: number; materials: Material[]; updates: string[]; activities: Activity[]; stages?: RunStage[]; observedAt?: number; nodes: RunNodeState[]; activeElapsedMs?: number | null; wallElapsedMs?: number | null; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "pausing" | "waiting" | "succeeded" | "failed" | "cancelled" | "paused"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; kind?: string; question: string; options: { value: string; label: string }[]; allowFreeText: boolean }; }
 export interface Upload { key: string; conversationId: string; file: File; error?: string; }
 const terminal = new Set<RunStatus>(["succeeded", "failed", "cancelled", "paused"]);
 const stateFor = (status: RunStatus): PendingTurn["state"] => {
   if (status === "waiting_user") return "waiting";
+  if (status === "pausing") return "pausing";
   if (status === "failed") return "failed";
   if (status === "cancelled") return "cancelled";
   if (status === "paused") return "paused";
@@ -23,6 +25,7 @@ const stateFor = (status: RunStatus): PendingTurn["state"] => {
 export interface WorkspaceTaskContext {
   skillId?: string;
   caseId?: string;
+  initialMode?: ConversationMode;
 }
 
 export function useWorkspace(session: AuthSession, id?: string, taskContext: WorkspaceTaskContext = {}) {
@@ -33,13 +36,16 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const scope = useMemo(() => ["workbench", session.account.id], [session.account.id]);
   const attachmentKey = `zhouxu.attachments.v1.${session.account.id}`;
   const thinkingKey = `zhouxu.thinking.v1.${session.account.id}`;
+  const modelKey = `zhouxu.model.v1.${session.account.id}`;
   const suppressedRunsKey = `zhouxu.suppressed-runs.v1.${session.account.id}`;
   const [thinkingMode, updateThinkingMode] = useState<ThinkingMode>(() => readThinkingMode(thinkingKey));
-  const [draftConversationMode, setDraftConversationMode] = useState<ConversationMode>("chat");
-  const setThinkingMode = (mode: ThinkingMode) => {
+  const [modelProfileId, setModelProfileId] = useState(() => sessionStorage.getItem(modelKey) || "deepseek-flash");
+  const [modelSwitchEvents, setModelSwitchEvents] = useState<Record<string, ModelSwitchEvent>>({});
+  const [draftConversationMode, setDraftConversationMode] = useState<ConversationMode>(taskContext.initialMode || "chat");
+  const setThinkingMode = useCallback((mode: ThinkingMode) => {
     updateThinkingMode(mode);
     try { sessionStorage.setItem(thinkingKey, mode); } catch { /* Keep the in-memory choice. */ }
-  };
+  }, [thinkingKey]);
   const [notice, setNotice] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<Record<string, Material[]>>(() => {
@@ -67,10 +73,48 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const projects = useQuery({ queryKey: [...scope, "projects"], queryFn: () => api.projects(), retry: false });
   const history = useQuery({ queryKey: [...scope, "history"], queryFn: ({ signal }) => api.conversations(signal), retry: false });
   const resources = useQuery({ queryKey: [...scope, "resources"], queryFn: ({ signal }) => api.resources(signal), retry: false });
+  const modelCatalog = useQuery<ModelCatalog>({ queryKey: [...scope, "models"], queryFn: ({ signal }) => api.models(signal), retry: false });
   const detail = useQuery({ queryKey: [...scope, "chat", id], queryFn: ({ signal }) => api.detail(id!, signal), enabled: Boolean(id), retry: false });
   const conversationMode: ConversationMode = detail.data?.conversation.mode || (id ? "chat" : draftConversationMode);
+  const setModelProfile = useCallback((profile: ModelProfile, announce = true) => {
+    const previousId = modelProfileId;
+    setModelProfileId(profile.profile_id);
+    try { sessionStorage.setItem(modelKey, profile.profile_id); } catch { /* Keep the in-memory choice. */ }
+    if (!profile.thinking_modes.includes(thinkingMode)) setThinkingMode(profile.default_thinking_mode);
+    if (announce && previousId !== profile.profile_id) {
+      const conversationId = id || "new";
+      const latestRun = [
+        ...(detail.data?.messages.filter(message => message.role === "user") ?? []).map(message => ({ runId: message.run_id, createdAt: message.created_at, modelSnapshot: message.model_snapshot })),
+      ].sort((left, right) => (left.createdAt || "").localeCompare(right.createdAt || "")).at(-1);
+      setModelSwitchEvents(current => {
+        const previousEvent = current[conversationId];
+        const fromProfileId = previousEvent?.fromProfileId ?? latestRun?.modelSnapshot?.profile_id ?? previousId;
+        const next = { ...current };
+        if (fromProfileId === profile.profile_id) {
+          delete next[conversationId];
+        } else {
+          next[conversationId] = {
+            id: createClientRequestId(), conversationId, createdAt: new Date().toISOString(),
+            afterRunId: latestRun?.runId ?? null, fromProfileId, toProfileId: profile.profile_id,
+            fromLabel: modelLabel(fromProfileId), toLabel: profile.label,
+          };
+        }
+        return next;
+      });
+    }
+  }, [detail.data, id, modelKey, modelProfileId, setThinkingMode, thinkingMode]);
+  useEffect(() => {
+    const profiles = modelCatalog.data?.groups.flatMap(group => group.models) || [];
+    const current = profiles.find(profile => profile.profile_id === modelProfileId);
+    if (current?.available) {
+      if (!current.thinking_modes.includes(thinkingMode)) setThinkingMode(current.default_thinking_mode);
+      return;
+    }
+    const fallback = profiles.find(profile => profile.available);
+    if (fallback) setModelProfile(fallback, false);
+  }, [modelCatalog.data, modelProfileId, thinkingMode, setModelProfile, setThinkingMode]);
   const currentCards = Object.values(cards).filter(c => c.conversationId === id);
-  const turn = currentCards.find(c => c.status === "running") || currentCards.find(c => c.status === "queued") || currentCards.find(c => c.status === "waiting_user") || currentCards.at(-1) || null;
+  const turn = currentCards.find(c => ["running", "pausing", "resuming", "retrying"].includes(c.status)) || currentCards.find(c => c.status === "queued") || currentCards.find(c => c.status === "waiting_user") || currentCards.at(-1) || null;
   const queuedRuns = currentCards
     .filter(c => c.status === "queued")
     .sort((left, right) => (left.createdAt || "").localeCompare(right.createdAt || ""));
@@ -79,8 +123,8 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const setDraft = (value: string) => setDrafts(current => ({ ...current, [id || "new"]: value }));
   useEffect(() => {
     if (detail.data?.conversation.mode) setDraftConversationMode(detail.data.conversation.mode);
-    if (!id) setDraftConversationMode("chat");
-  }, [detail.data?.conversation.mode, id]);
+    if (!id) setDraftConversationMode(taskContext.initialMode || "chat");
+  }, [detail.data?.conversation.mode, id, taskContext.initialMode]);
   useEffect(() => { try { sessionStorage.setItem(attachmentKey, JSON.stringify(attachments)); } catch { /* memory state remains usable */ } }, [attachmentKey, attachments]);
   useEffect(() => {
     if (lifetime.signal.aborted) setLifetime(new AbortController());
@@ -118,6 +162,12 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     if (!creation.current) creation.current = (draftConversationMode === "chat" ? api.create(title) : api.create(title, draftConversationMode)).then(chat => {
       if (lifetime.signal.aborted) throw new DOMException("Aborted", "AbortError");
       setDrafts(current => { const next = { ...current, [chat.id]: current.new || current[chat.id] || "" }; delete next.new; return next; });
+      setModelSwitchEvents(current => {
+        if (!current.new) return current;
+        const next = { ...current, [chat.id]: { ...current.new, conversationId: chat.id } };
+        delete next.new;
+        return next;
+      });
       const query = new URLSearchParams();
       if (taskContext.skillId) query.set("skill", taskContext.skillId);
       if (taskContext.caseId) query.set("case", taskContext.caseId);
@@ -140,18 +190,30 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const update = useCallback((runId: string, fn: (card: PendingTurn) => PendingTurn) => setCards(current => current[runId] ? { ...current, [runId]: fn(current[runId]) } : current), []);
   const applyRun = useCallback(async (conversationId: string, run: RunEnvelope, materials?: Material[]) => {
     const recovery: RunRecovery = run.recovery || { mode: "none", can_continue: false, can_retry: false, message: null };
+    const internalConfirmations = new Set([
+      "已确认升级当前会话为工作模式，请继续执行并交付所需文件。",
+      "保持聊天模式，直接输出完整文本正文。",
+    ]);
     setCards(current => {
       const previous = current[run.run_id];
       if (previous && previous.revision > run.revision) return current;
+      const answerUpdates = Object.values({ ...((run.payload.facts.user_answers || {}) as Record<string, unknown>), ...run.answers })
+        .filter((v): v is string => typeof v === "string" && !internalConfirmations.has(v));
       return { ...current, [run.run_id]: {
         conversationId, runId: run.run_id, mode: run.payload.mode || "chat", question: run.payload.text, revision: run.revision,
         answer: (run.last_sequence || 0) >= (sequences.current[run.run_id] || 0) ? (run.output ?? run.partial_output ?? previous?.answer ?? "") : (previous?.answer || ""),
-        materials: [...new Map([...(previous?.materials || []), ...(materials || [])].map(m => [m.id, m])).values()], updates: Object.values({ ...((run.payload.facts.user_answers || {}) as Record<string, unknown>), ...run.answers }).filter((v): v is string => typeof v === "string"), activities: previous?.activities || [],
-        nodes: run.node_states?.length ? run.node_states : previous?.nodes || [],
+        modelSnapshot: run.payload.model_snapshot ?? previous?.modelSnapshot,
+        contextCompactionCount: run.context_compaction_count,
+        materials: [...new Map([...(previous?.materials || []), ...(materials || [])].map(m => [m.id, m])).values()],
+        updates: Array.from(new Set([...(run.continuation_guidance || []), ...answerUpdates])),
+        activities: previous?.activities || [],
+        nodes: run.node_states ?? previous?.nodes ?? [],
+        stages: run.stages,
+        observedAt: Date.now(),
         activeElapsedMs: run.active_elapsed_ms ?? previous?.activeElapsedMs,
         wallElapsedMs: run.wall_elapsed_ms ?? previous?.wallElapsedMs,
-        sources: run.sources?.length ? run.sources : previous?.sources || [],
-        artifacts: run.artifacts?.length ? run.artifacts : previous?.artifacts || [],
+        sources: run.sources ?? previous?.sources ?? [],
+        artifacts: run.artifacts ?? previous?.artifacts ?? [],
         recovery,
         status: run.status, state: stateFor(run.status), error: recovery.message || undefined,
         createdAt: run.created_at || previous?.createdAt,
@@ -160,7 +222,16 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     });
     if (run.status === "waiting_user" && run.pending_request_ids[0]) {
       const value = await api.inputRequest(run.run_id, conversationId, run.pending_request_ids[0]);
-      update(run.run_id, card => card.status === "waiting_user" && card.revision === run.revision ? { ...card, inputRequest: { requestId: value.request.request_id, question: value.request.question } } : card);
+      update(run.run_id, card => card.status === "waiting_user" && card.revision === run.revision ? {
+        ...card,
+        inputRequest: {
+          requestId: value.request.request_id,
+          kind: value.request.kind,
+          question: value.request.question,
+          options: value.request.options || [],
+          allowFreeText: value.request.allow_free_text !== false,
+        },
+      } : card);
     }
   }, [api, update]);
   const follow = useCallback(async (conversationId: string, runId: string, controller: AbortController) => {
@@ -171,9 +242,9 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
           await api.stream(conversationId, runId, event => {
             if (!acceptStreamSequence(sequences.current[runId] || 0, event)) return;
             if (event.type !== "lifecycle") sequences.current[runId] = event.sequence;
-            if (event.type === "delta") update(runId, c => ({ ...c, answer: c.answer + event.text, status: "running", state: "receiving" }));
+            if (event.type === "delta") update(runId, c => ({ ...c, answer: c.answer + event.text }));
             if (event.type === "answer" || event.type === "done") update(runId, c => ({ ...c, answer: event.text }));
-            if (event.type === "progress") update(runId, c => ({ ...c, activities: [...c.activities.filter(a => a.id !== event.activity.id).map(a => ({ ...a, status: "completed" })), event.activity] }));
+            if (event.type === "progress") update(runId, c => ({ ...c, activities: [...c.activities.filter(a => a.id !== event.activity.id), event.activity] }));
             if (event.type === "error") update(runId, c => ({ ...c, error: event.message }));
             if (event.type === "lifecycle") void applyRun(conversationId, event.run).catch(report);
           }, controller.signal, sequences.current[runId] || 0);
@@ -184,7 +255,7 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
         if (terminal.has(run.status) || run.status === "waiting_user") {
           await client.invalidateQueries({ queryKey: [...scope, "chat", conversationId] });
           await client.invalidateQueries({ queryKey: [...scope, "history"] });
-          // The presentation buffer acknowledges completion after its final characters appear.
+          // The persisted detail releases the transient card after its answer catches up.
           return;
         }
         failures = 0;
@@ -224,6 +295,23 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
       }
     } finally { if (controllers.current[runId] === controller) delete controllers.current[runId]; }
   }, [api, applyRun, client, scope, update, report]);
+  useEffect(() => {
+    if (!id || !turn?.runId || !["running", "pausing"].includes(turn.status)) return;
+    const controller = new AbortController();
+    const runId = turn.runId;
+    let pending = false;
+    const timer = window.setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const { run } = await api.run(runId, id, controller.signal);
+        if (!controller.signal.aborted) await applyRun(id, run);
+      } catch (error) {
+        if (!controller.signal.aborted) report(error);
+      } finally { pending = false; }
+    }, 2000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [id, turn?.runId, turn?.status, api, applyRun, report]);
   const observe = useCallback((conversationId: string, runId: string) => {
     if (controllers.current[runId]) return;
     const controller = new AbortController(); controllers.current[runId] = controller;
@@ -234,12 +322,21 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     if (!id) return;
     const controller = new AbortController();
     void api.snapshot(id, controller.signal).then(async ({ snapshot }) => {
-      for (const run of snapshot.runs.filter(r => ["queued", "preparing", "running", "waiting_user", "pausing", "resuming", "retrying"].includes(r.status))) {
+      const activeStatuses = new Set<RunStatus>(["queued", "preparing", "running", "waiting_user", "pausing", "resuming", "retrying"]);
+      const activeRuns = snapshot.runs.filter(r => activeStatuses.has(r.status));
+      const all = detail.data?.linked_resources || [];
+      for (const run of activeRuns) {
         if (controller.signal.aborted) return;
         sequences.current[run.run_id] = run.last_sequence || 0;
-        const all = detail.data?.linked_resources || [];
         await applyRun(id, run, all.filter(m => run.payload.attached_material_ids?.includes(m.id)));
-        observe(id, run.run_id);
+        if (run.status !== "waiting_user") observe(id, run.run_id);
+      }
+      if (activeRuns.length === 0 && snapshot.runs.length > 0 && !controller.signal.aborted) {
+        const latest = snapshot.runs[snapshot.runs.length - 1];
+        if (latest.status === "paused" || (latest.status === "failed" && latest.recovery?.can_continue)) {
+          sequences.current[latest.run_id] = latest.last_sequence || 0;
+          await applyRun(id, latest, all.filter(m => latest.payload.attached_material_ids?.includes(m.id)));
+        }
       }
     }).catch(error => { if (!controller.signal.aborted) report(error); });
     return () => { controller.abort(); Object.values(controllers.current).forEach(c => c.abort()); controllers.current = {}; };
@@ -254,21 +351,37 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   async function send(mode: "queue" | "steer" = "queue") {
     const question = draft.trim();
     const selectedMode = thinkingMode;
-    if (!question || submitLock.current || uploads.some(u => !u.error) || question.length > 50000) return;
+    const selectedProfileId = modelProfileId;
+    const selectionEventId = modelSwitchEvents[id || "new"]?.id;
+    if (!question || submitLock.current || preparing || turn?.state === "pausing" || uploads.some(u => !u.error) || question.length > 50000) return;
+    if (turn?.state === "waiting" && turn.inputRequest?.kind === "mode_upgrade") {
+      setNotice("补充要求已保留，请点击上方选项确认是否升级工作模式。");
+      return;
+    }
     submitLock.current = true; setNotice("");
     try {
       const conversationId = await ensureConversation(conversationTitle(question)); const sent = [...draftMaterials];
       let run: RunEnvelope;
-      if (mode === "steer" && turn?.runId && turn.status === "running") {
+      const canContinueWithGuidance = mode === "queue" && turn?.runId &&
+        (turn.status === "paused" || (turn.status === "failed" && turn.recovery.can_continue));
+      if (canContinueWithGuidance) {
+        controllers.current[turn.runId!]?.abort();
+        delete controllers.current[turn.runId!];
+        run = (await api.continueRun(turn.runId!, conversationId, question, sent.map(m => m.id))).run;
+      } else if (mode === "steer" && turn?.runId && turn.status === "running") {
         run = (await api.steer(turn.runId, conversationId, question, [], sent.map(m => m.id), taskFacts)).run;
         controllers.current[run.run_id]?.abort(); delete controllers.current[run.run_id];
       } else if (turn?.state === "waiting" && turn.runId && turn.inputRequest) {
         run = (await api.resume(turn.runId, conversationId, turn.inputRequest.requestId, question, sent.map(m => m.id))).run;
       } else {
         const key = createClientRequestId();
-        const submit = () => api.submit(conversationId, question, [], lifetime.signal, key, undefined, sent.map(m => m.id), selectedMode, taskFacts);
+        const submit = () => api.submit(conversationId, question, [], lifetime.signal, key, undefined, sent.map(m => m.id), selectedMode, taskFacts, selectedProfileId);
         try { run = (await submit()).run; }
         catch (e) { if (e instanceof WorkbenchError && e.status === 0 && !lifetime.signal.aborted) run = (await submit()).run; else throw e; }
+        setModelSwitchEvents(current => {
+          if (current[conversationId]?.id !== selectionEventId) return current;
+          const next = { ...current }; delete next[conversationId]; return next;
+        });
       }
       consumeDraft(conversationId, question, sent);
       await applyRun(conversationId, run, sent);
@@ -349,19 +462,73 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     if (await act(() => api.removeMaterial(id, material.id))) stageMaterial(id, material, true);
   }
   async function reloadTurn(runId = turn?.runId) { await refresh(); if (runId && id) { controllers.current[runId]?.abort(); delete controllers.current[runId]; const { run } = await api.run(runId, id); await applyRun(id, run); sequences.current[run.run_id] = run.last_sequence || 0; if (!terminal.has(run.status)) observe(id, run.run_id); } }
-  async function continueRun(runId = turn?.runId) {
-    if (!id || !runId) return;
-    try { const { run } = await api.continueRun(runId, id); await applyRun(id, run); sequences.current[runId] = run.last_sequence || 0; observe(id, runId); } catch (e) { report(e); }
+  async function continueRun(runId = turn?.runId, guidance?: string) {
+    if (!id || !runId || submitLock.current) return;
+    if (preparing || uploads.some(u => u.conversationId === id && !u.error)) {
+      setNotice("附件仍在上传，请等待上传完成后继续。");
+      return;
+    }
+    submitLock.current = true;
+    setNotice("");
+    try {
+      const typedGuidance = guidance !== undefined ? guidance.trim() : draft.trim();
+      const sent = [...draftMaterials];
+      const attached = (typedGuidance || sent.length > 0) ? sent.map(material => material.id) : [];
+      controllers.current[runId]?.abort();
+      delete controllers.current[runId];
+      const { run } = await api.continueRun(runId, id, typedGuidance || undefined, attached);
+      if (typedGuidance || sent.length > 0) consumeDraft(id, draft.trim(), sent);
+      await applyRun(id, run, sent.length > 0 ? sent : undefined);
+      sequences.current[runId] = run.last_sequence || 0;
+      observe(id, runId);
+      void client.invalidateQueries({ queryKey: [...scope, "chat", id] });
+      void client.invalidateQueries({ queryKey: [...scope, "history"] });
+    } catch (e) { report(e); }
+    finally { submitLock.current = false; }
+  }
+  async function answerInputRequest(answerValue: string, runId = turn?.runId) {
+    const card = runId ? cards[runId] : turn;
+    if (!id || !runId || !card?.inputRequest || submitLock.current) return;
+    if (preparing || uploads.some(u => u.conversationId === id && !u.error)) {
+      setNotice("附件仍在上传，请等待上传完成后确认。");
+      return;
+    }
+    submitLock.current = true;
+    setNotice("");
+    try {
+      const sent = [...draftMaterials];
+      const typedExtra = draft.trim();
+      controllers.current[runId]?.abort();
+      delete controllers.current[runId];
+      const { run } = await api.resume(runId, id, card.inputRequest.requestId, answerValue, sent.map(m => m.id), card.inputRequest.kind === "mode_upgrade" ? typedExtra : undefined);
+      if (card.inputRequest.kind === "mode_upgrade") {
+        setNotice(run.payload.mode === "work" ? "已切换为工作模式" : "已保持聊天模式");
+      }
+      if (typedExtra || sent.length > 0) consumeDraft(id, typedExtra, sent);
+      await applyRun(id, run, sent.length > 0 ? sent : undefined);
+      sequences.current[runId] = run.last_sequence || 0;
+      observe(id, run.run_id);
+      await client.invalidateQueries({ queryKey: [...scope, "chat", id] });
+      await client.invalidateQueries({ queryKey: [...scope, "history"] });
+    } catch (e) { report(e); }
+    finally { submitLock.current = false; }
   }
   async function retryTurn(runId = turn?.runId) {
     if (!id || !runId || submitLock.current) return;
     submitLock.current = true;
-    try { const source = (await api.run(runId, id)).run; if (source.status === "waiting_user") { const cancelled = await api.cancel(runId, id); await applyRun(id, cancelled.run); } const retryFacts: TaskContextFacts = { skill_id: typeof source.payload.facts.skill_id === "string" ? source.payload.facts.skill_id : taskFacts.skill_id, case_id: typeof source.payload.facts.case_id === "string" ? source.payload.facts.case_id : taskFacts.case_id }; const { run } = await api.submit(id, source.payload.text, source.payload.material_ids, lifetime.signal, createClientRequestId(), runId, source.payload.attached_material_ids, source.payload.thinking_mode, retryFacts); await applyRun(id, run); observe(id, run.run_id); await refresh(); }
+    try { const source = (await api.run(runId, id)).run; if (source.status === "waiting_user") { const cancelled = await api.cancel(runId, id); await applyRun(id, cancelled.run); } const retryFacts: TaskContextFacts = { skill_id: typeof source.payload.facts.skill_id === "string" ? source.payload.facts.skill_id : taskFacts.skill_id, case_id: typeof source.payload.facts.case_id === "string" ? source.payload.facts.case_id : taskFacts.case_id }; const { run } = await api.submit(id, source.payload.text, source.payload.material_ids, lifetime.signal, createClientRequestId(), runId, source.payload.attached_material_ids, source.payload.thinking_mode, retryFacts, source.payload.model_profile_id); setCards(current => { const next = { ...current }; delete next[runId]; return next; }); await applyRun(id, run); observe(id, run.run_id); await refresh(); }
     catch (e) { report(e); } finally { submitLock.current = false; }
   }
   async function control(cancelRequested = false) {
     if (!turn?.runId || !id) return;
-    try { const { run } = await (cancelRequested ? api.cancel : api.pause)(turn.runId, id); controllers.current[run.run_id]?.abort(); delete controllers.current[run.run_id]; await applyRun(id, run); await refresh(); }
+    try {
+      const { run } = await (cancelRequested ? api.cancel : api.pause)(turn.runId, id);
+      controllers.current[run.run_id]?.abort();
+      delete controllers.current[run.run_id];
+      await applyRun(id, run);
+      if (!cancelRequested && run.status === "pausing") observe(id, run.run_id);
+      await refresh();
+    }
     catch (e) { report(e); }
   }
   async function deleteConversation(conversationId: string) {
@@ -379,12 +546,23 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     setCards(current => Object.fromEntries(Object.entries(current).filter(([, card]) => card.conversationId !== conversationId)));
     setDrafts(current => { const next = { ...current }; delete next[conversationId]; return next; });
     setAttachments(current => { const next = { ...current }; delete next[conversationId]; return next; });
+    setModelSwitchEvents(current => { const next = { ...current }; delete next[conversationId]; return next; });
   }
-  const finishPresentation = useCallback(async (runId: string) => {
-    if (!id) return;
-    await client.invalidateQueries({ queryKey: [...scope, "chat", id] });
-    setCards(current => { if (current[runId]?.status !== "succeeded") return current; const next = { ...current }; delete next[runId]; return next; });
-  }, [client, id, scope]);
+  useEffect(() => {
+    // Release transient data only after the persisted answer has caught up.
+    // Conversation keeps the same keyed Answer across this handoff.
+    setCards(current => {
+      const completed = (detail.data?.messages ?? []).filter(message =>
+        message.role === "assistant" && message.status === "succeeded" &&
+        current[message.run_id!]?.status === "succeeded" &&
+        current[message.run_id!].answer === message.content,
+      );
+      if (!completed.length) return current;
+      const next = { ...current };
+      for (const message of completed) delete next[message.run_id!];
+      return next;
+    });
+  }, [detail.data, cards]);
   const downloadArtifact = useCallback(async (runId: string, artifactId: string, name: string) => {
     if (!id) return;
     const blob = await api.downloadArtifact(runId, id, artifactId);
@@ -395,5 +573,10 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [api, id]);
-  return { deleteConversation, thinkingMode, setThinkingMode, conversationMode, setConversationMode, modeChanging: false, visibleRuns: currentCards, suppressedRunIds, finishPresentation, downloadArtifact, api, scope, notice, setNotice, busy: turn?.state === "receiving", projects, history, resources, detail, act, refresh, report, projectFilter, setProjectFilter, draft, setDraft, draftMaterials, turn, queuedRuns, send, steerQueued, reloadTurn, retryTurn, continueRun, pause: () => control(false), cancel: () => control(true), steer: () => send("steer"), ensureConversation, uploads, uploadFiles, uploadOne, stageMaterial, removeDraftMaterial, dismissUpload: (key: string) => setUploads(current => current.filter(u => u.key !== key)) };
+  const dismissContinuation = useCallback(() => {
+    if (!turn?.runId) return;
+    if (turn.status !== "paused" && turn.status !== "failed") return;
+    setCards(current => { const next = { ...current }; delete next[turn.runId!]; return next; });
+  }, [turn]);
+  return { uploadBusy: preparing || uploads.some(u => u.conversationId === id && !u.error), deleteConversation, thinkingMode, setThinkingMode, modelProfileId, modelCatalog: modelCatalog.data, setModelProfile, pendingModelSwitch: modelSwitchEvents[id || "new"]?.toProfileId === modelProfileId ? modelSwitchEvents[id || "new"] : undefined, conversationMode, setConversationMode, modeChanging: false, visibleRuns: currentCards, suppressedRunIds, downloadArtifact, api, scope, notice, setNotice, busy: turn?.state === "receiving" || turn?.state === "pausing", projects, history, resources, detail, act, refresh, report, projectFilter, setProjectFilter, draft, setDraft, draftMaterials, turn, queuedRuns, send, steerQueued, reloadTurn, retryTurn, continueRun, answerInputRequest, dismissContinuation, pause: () => control(false), cancel: () => control(true), steer: () => send("steer"), ensureConversation, uploads, uploadFiles, uploadOne, stageMaterial, removeDraftMaterial, dismissUpload: (key: string) => setUploads(current => current.filter(u => u.key !== key)) };
 }

@@ -1196,6 +1196,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "pyyaml" },
     { name = "sqlalchemy" },
     { name = "uvicorn" },
 ]
@@ -1237,6 +1238,7 @@ requires-dist = [
     { name = "python-docx", marker = "extra == 'materials'", specifier = ">=1.1,<2" },
     { name = "python-dotenv", specifier = ">=1,<2" },
     { name = "python-multipart", specifier = ">=0.0.9,<1" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "torch", marker = "extra == 'rag'", specifier = ">=2.4,<3" },
     { name = "transformers", marker = "extra == 'rag'", specifier = ">=4.44,<5" },

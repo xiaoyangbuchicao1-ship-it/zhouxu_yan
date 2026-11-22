@@ -21,6 +21,7 @@ class _DockerContainer:
     name: str
     workspace: Path
     settings: Settings
+    packages_root: Path | None = None
     started: bool = False
 
     def _run(
@@ -54,6 +55,10 @@ class _DockerContainer:
         except OSError:
             pass
         cfg = self.settings.execution
+        mounts = []
+        if self.packages_root is not None:
+            self.packages_root.mkdir(parents=True, exist_ok=True)
+            mounts = ["--mount", f"type=bind,source={self.packages_root},target=/workspace/.skills,readonly"]
         self._run(
             [
                 "docker",
@@ -90,6 +95,7 @@ class _DockerContainer:
                 "PYTHONIOENCODING=utf-8",
                 "--mount",
                 f"type=bind,source={self.workspace},target=/workspace",
+                *mounts,
                 "--workdir",
                 "/workspace",
                 cfg.image,
@@ -164,6 +170,7 @@ class DockerProvider(WorkspaceExecutionProvider):
             name=f"zhouxu-work-{_safe_part(run_id)[:48]}",
             workspace=root,
             settings=self.settings,
+            packages_root=self.package_root_for(root),
         )
 
 

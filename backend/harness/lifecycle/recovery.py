@@ -147,6 +147,7 @@ def recovery_for_state(
     code = error_code
     checkpoint = bool(
         partial_output
+        or (execution_state or {}).get("has_checkpoint")
         or (execution_state or {}).get("records")
         or (execution_state or {}).get("tool_results")
         or (execution_state or {}).get("delivered_stages")

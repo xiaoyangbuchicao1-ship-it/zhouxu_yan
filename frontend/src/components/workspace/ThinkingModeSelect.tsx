@@ -1,14 +1,15 @@
 import { useState } from "react";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { Brain, Check, ChevronDown, Sparkles, Zap } from "lucide-react";
+import { Brain, Check, ChevronDown, Flame, Sparkles, Zap } from "lucide-react";
 import { THINKING_MODES, type ThinkingMode } from "@/lib/thinking-modes";
 import "./ThinkingModeSelect.css";
 
-const icons = { none: Zap, low: Sparkles, high: Brain };
+const icons = { none: Zap, low: Sparkles, medium: Brain, high: Brain, xhigh: Flame, max: Flame };
 
-export function ThinkingModeSelect({ value, onChange }: {
+export function ThinkingModeSelect({ value, modes, onChange }: {
   value: ThinkingMode;
+  modes?: ThinkingMode[];
   onChange: (value: ThinkingMode) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -17,15 +18,18 @@ export function ThinkingModeSelect({ value, onChange }: {
   const [menuKeyboard, setMenuKeyboard] = useState(false);
   const prefersReducedMotion = useReducedMotion();
   const reduced = prefersReducedMotion || keyboard;
-  const selected = THINKING_MODES.find(mode => mode.value === value)!;
-  const Icon = icons[value];
+  const availableModes = THINKING_MODES.filter(mode => !modes || modes.includes(mode.value));
+  const selected = availableModes.find(mode => mode.value === value) || availableModes[0];
+  if (!selected || availableModes.length < 2) return null;
+  const selectedValue = selected.value;
+  const Icon = icons[selectedValue];
   return (
     <Dropdown.Root open={open} onOpenChange={setOpen}>
       <Dropdown.Trigger asChild>
         <button
           type="button"
           className="ws-thinking-trigger"
-          data-mode={value}
+          data-mode={selectedValue}
           data-motion={reduced ? "reduced" : "full"}
           aria-label={`思考档位：${selected.label}`}
           title="选择思考程度"
@@ -35,7 +39,7 @@ export function ThinkingModeSelect({ value, onChange }: {
           <span className="ws-thinking-trigger-content">
             <AnimatePresence initial={false} mode="popLayout">
               <motion.span
-                key={value}
+                key={selectedValue}
                 className="ws-thinking-trigger-choice"
                 initial={reduced ? false : { opacity: 0, transform: "translateY(5px) scale(.96)" }}
                 animate={{ opacity: 1, transform: "translateY(0) scale(1)" }}
@@ -62,8 +66,8 @@ export function ThinkingModeSelect({ value, onChange }: {
           onKeyDownCapture={() => setKeyboard(true)}
           onPointerMove={() => setKeyboard(false)}
         >
-          <Dropdown.RadioGroup value={value} onValueChange={next => onChange(next as ThinkingMode)}>
-            {THINKING_MODES.map(mode => {
+          <Dropdown.RadioGroup value={selectedValue} onValueChange={next => onChange(next as ThinkingMode)}>
+            {availableModes.map(mode => {
               const ModeIcon = icons[mode.value];
               return (
                 <Dropdown.RadioItem

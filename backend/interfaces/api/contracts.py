@@ -18,6 +18,7 @@ from backend.contracts.harness.lifecycle import (
     RunRecovery,
     SessionSnapshot,
 )
+from backend.contracts.model_profiles import ModelRunSnapshot
 from backend.contracts.modules.loop import ConversationMode, RunInput, ThinkingMode
 from backend.contracts.modules.materials import StoredMaterialRef
 from backend.contracts.modules.sources import SourceDocument, SourceReference
@@ -39,6 +40,8 @@ class WorkbenchRunPayload(Contract):
     text: str = Field(min_length=1)
     mode: ConversationMode = "chat"
     thinking_mode: ThinkingMode | None = None
+    model_profile_id: str | None = Field(default=None, min_length=1)
+    model_snapshot: ModelRunSnapshot | None = None
     facts: dict[str, Any] = Field(default_factory=dict)
     constraints: list[str] = Field(default_factory=list)
     material_ids: list[str] = Field(default_factory=list)
@@ -52,6 +55,7 @@ class WorkbenchSubmitRunRequest(Contract):
     # Queue and steer validate that text at the route boundary.
     text: str = ""
     thinking_mode: ThinkingMode | None = None
+    model_profile_id: str | None = Field(default=None, min_length=1)
     facts: dict[str, Any] = Field(default_factory=dict)
     constraints: list[str] = Field(default_factory=list)
     material_ids: list[str] = Field(default_factory=list)
@@ -69,6 +73,14 @@ class WorkbenchErrorView(Contract):
     """A deliberately small public error projection."""
 
     message: str
+
+
+class WorkbenchStageView(Contract):
+    id: str
+    label: str
+    elapsed_ms: int | None = None
+    active: bool = False
+    details: list[str] = Field(default_factory=list)
 
 
 class WorkbenchRunView(Contract):
@@ -104,8 +116,11 @@ class WorkbenchRunView(Contract):
     runtime_policy: RunPolicy = Field(default_factory=RunPolicy)
     paused_at: datetime | None = None
     resumed_at: datetime | None = None
+    continuation_guidance: list[str] = Field(default_factory=list)
     active_elapsed_ms: int = 0
     wall_elapsed_ms: int = 0
+    context_compaction_count: int = Field(default=0, ge=0)
+    stages: list[WorkbenchStageView] = Field(default_factory=list)
 
 
 class WorkbenchRunCommandResponse(Contract):
@@ -125,11 +140,14 @@ class WorkbenchResumeRequest(Contract):
     conversation_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     answer: Any
+    guidance: str | None = Field(default=None, max_length=50000)
     attached_material_ids: list[str] = Field(default_factory=list)
 
 
 class WorkbenchRunControlRequest(Contract):
     conversation_id: str = Field(min_length=1)
+    guidance: str | None = Field(default=None, max_length=50000)
+    attached_material_ids: list[str] = Field(default_factory=list)
 
 
 class WorkbenchSteerRequest(Contract):
@@ -186,6 +204,7 @@ class AccountView(Contract):
     id: str
     email: str
     display_name: str
+    role: Literal["user", "admin"] = "user"
 
 
 class AuthSessionView(Contract):
@@ -287,6 +306,7 @@ class WorkspaceMessageView(Contract):
     content: str
     created_at: datetime
     run_id: str | None = None
+    model_snapshot: ModelRunSnapshot | None = None
     status: str | None = None
     error_code: str | None = None
     recovery: RunRecovery = Field(default_factory=RunRecovery)
@@ -294,6 +314,7 @@ class WorkspaceMessageView(Contract):
     updates: list[str] = Field(default_factory=list)
     sources: list[SourceReference] = Field(default_factory=list)
     artifacts: list[ArtifactReference] = Field(default_factory=list)
+    context_compaction_count: int = Field(default=0, ge=0)
 
 
 class WorkspaceConversationDetailResponse(Contract):
@@ -320,6 +341,7 @@ class WorkbenchStreamEvent(Contract):
 class WorkbenchInputRequestView(Contract):
     request_id: str
     run_id: str
+    kind: str = "clarification"
     question: str
     options: list[dict[str, str]] = Field(default_factory=list)
     allow_free_text: bool = True

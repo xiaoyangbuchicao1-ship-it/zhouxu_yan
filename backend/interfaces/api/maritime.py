@@ -1,10 +1,19 @@
-"""Authenticated maritime product endpoints; no executable skill uploads."""
+"""Authenticated maritime product endpoints, including standard Skill package import."""
 
 import hashlib
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -13,8 +22,11 @@ from backend.application.accounts.service import AccountError
 from backend.application.maritime.calculator import calculate_claim
 from backend.application.maritime.catalog import COMMON
 from backend.application.maritime.service import MaritimeError, MaritimeOffice
+from backend.contracts.schemas.core import PortError
 from backend.infrastructure.database.models import AccountModel
 from backend.infrastructure.search.maritime_corpus import MaritimeCorpus
+from backend.infrastructure.sources import _paper_reference
+from backend.skills.packages import MAX_UPLOAD_BYTES
 
 
 class Input(BaseModel):
@@ -52,7 +64,7 @@ class EntryInput(Input):
 
 class SearchInput(Input):
     query: str = Field(min_length=2, max_length=500)
-    kind: Literal["laws", "cases"] = "laws"
+    kind: Literal["laws", "cases", "information_cards"] = "laws"
     current_only: bool = True
     limit: int = Field(default=8, ge=1, le=10)
 
@@ -111,7 +123,11 @@ def attach_maritime(app, settings):
         from backend.skills.registry import SkillNotFound
 
         try:
-            return get_office().skill(account_id, skill_id, version)
+            office = get_office()
+            selected = office.skill(account_id, skill_id, version)
+            if "package" in selected:
+                selected["_package_files"] = office.package_files(account_id, skill_id, selected["version"])
+            return selected
         except MaritimeError as exc:
             raise SkillNotFound("skill_not_found") from exc
 
@@ -279,6 +295,7 @@ def attach_maritime(app, settings):
                 "size": item["size_bytes"],
                 "sha256": item["sha256"],
                 "kind": item.get("kind", "file"),
+                "preview_artifact_id": item.get("preview_artifact_id"),
             }
             for item in raw_artifacts
             if isinstance(item, dict)
@@ -352,6 +369,32 @@ def attach_maritime(app, settings):
     def skills(request: Request, user=Depends(account)):
         return {"skills": office(request).skills(user.id)}
 
+    @router.post("/skills/import", status_code=201)
+    async def import_skill_package(
+        request: Request,
+        file: UploadFile = File(...),
+        user=Depends(account),
+    ):
+        filename = file.filename or "skill.zip"
+        data = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "技能包不能超过 20 MB")
+        return invoke(office(request).import_skill_package, user.id, filename, data)
+
+    @router.get("/skills/{skill_id}/resources")
+    def skill_resource(
+        skill_id: str,
+        request: Request,
+        path: str = Query(min_length=1, max_length=240),
+        version: str | None = None,
+        user=Depends(account),
+    ):
+        return invoke(office(request).skill_resource, user.id, skill_id, path, version)
+
+    @router.delete("/skills/{skill_id}")
+    def remove_skill(skill_id: str, request: Request, user=Depends(account)):
+        return invoke(office(request).remove_skill, user.id, skill_id)
+
     @router.post("/skills", status_code=201)
     def create_skill(body: SkillInput, request: Request, user=Depends(account)):
         return invoke(office(request).save_skill, user.id, body.model_dump())
@@ -372,9 +415,24 @@ def attach_maritime(app, settings):
         return invoke(office(request).skill, user.id, skill_id, version)
 
     @router.post("/search")
-    async def search(body: SearchInput, user=Depends(account)):
+    async def search(body: SearchInput, request: Request, user=Depends(account)):
         try:
+            if body.kind == "information_cards":
+                retriever = getattr(request.app.state, "information_card_retriever", None)
+                if retriever is None:
+                    raise LookupError("paper_search_unavailable")
+                result = await retriever.search(body.query, limit=body.limit)
+                items = []
+                for card in result["items"]:
+                    reference = _paper_reference(card)
+                    if reference is None:
+                        raise ValueError("paper_reference_invalid")
+                    items.append({**reference, "id": card["card_id"], "kind": "information_cards",
+                                  "text": "", "current": None, "version": reference.get("version_date")})
+                return {"items": items}
             return await MaritimeCorpus().search(**body.model_dump())
+        except PortError:
+            raise HTTPException(503, "论文检索暂时不可用，请稍后重试。") from None
         except LookupError:
             raise HTTPException(503, "暂时没有可用的海事资料，请稍后再试。") from None
         except ValueError as exc:

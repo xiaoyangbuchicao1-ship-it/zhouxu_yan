@@ -1,0 +1,45 @@
+# Public model catalog.  This file intentionally contains no credentials.
+# Relay model names were observed from its /v1/models response on 2026-11-21.
+
+[providers.deepseek]
+label = "DeepSeek"
+protocol = "deepseek_chat_completions"
+endpoint = "https://api.deepseek.com/chat/completions"
+credential_names = ["DEEPSEEK_API_KEY", "DEEPSEEK_KEY", "OPENAI_API_KEY", "API_KEY"]
+source = "DeepSeek API documentation"
+
+[providers.relay]
+label = "其他模型"
+protocol = "openai_chat_completions"
+endpoint = ""
+credential_names = ["ZHOUXU_RELAY_API_KEY", "RELAY_API_KEY", "OPENAI_API_KEY"]
+source = "Configured relay /v1/models catalog"
+
+[models]
+deepseek = ["deepseek-flash", "deepseek-v4-pro"]
+relay = [
+  "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2",
+  "claude-haiku-5-5", "claude-opus-4-6", "claude-opus-4-7",
+  "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5",
+  "claude-sonnet-4-6", "claude-sonnet-5", "claude-sonnet-5-5",
+  "gemini-3.7-flash", "gemini-3.8-flash",
+  "gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-neon",
+  "gpt-4o", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+  "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra",
+  "gpt-6.2-astra", "gpt-6.2-sol", "glm-5-2-260617", "glm-5-3-flash-260828"
+]
+
+# One minimal "你好" request was accepted by each of these profiles on
+# 2026-11-21.  This proves chat reachability only; it does not prove tools,
+# vision, or hidden reasoning support.
+verified_relay_models = [
+  "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+  "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol",
+  "gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol",
+  "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2",
+  "claude-haiku-5-5", "claude-opus-4-6", "claude-opus-4-7",
+  "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5",
+  "claude-sonnet-4-6", "claude-sonnet-5", "claude-sonnet-5-5",
+  "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon",
+  "gemini-4-hydrogen"
+]

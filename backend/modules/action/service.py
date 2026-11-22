@@ -26,10 +26,6 @@ class RegisteredAction:
                 result = await executor.execute(request.input)
         except PortError as exc:
             return self._failure(request.input, exc.error, executor=executor)
-        except Exception:
-            return self._failure(
-                request.input, self.settings.error("tool_failed"), executor=executor
-            )
         if (
             result.action_id != request.input.action_id
             or result.tool_name != request.input.tool_name

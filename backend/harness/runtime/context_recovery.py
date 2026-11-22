@@ -1,11 +1,29 @@
 """Budget-pressure recovery, independent of the domain and retrieval algorithm."""
 
 import json
+import logging
 from uuid import uuid4
 
 from backend.contracts.modules.loop import PerceivedContext, ReasoningInput
 from backend.contracts.modules.perception import ContextAssembly, ContextItem
 from backend.contracts.schemas.core import ModuleRequest, PortError
+from backend.infrastructure.model.compaction import compaction_incomplete_reason
+
+
+def compaction_succeeded(summary: str) -> bool:
+    """Return whether a recovery result is a real semantic summary.
+
+    Reference-only fallbacks deliberately keep the complete originals but do
+    not claim that their facts were condensed. The UI must not announce those
+    fallbacks as a successful compaction.
+    """
+    try:
+        payload = json.loads(summary)
+    except json.JSONDecodeError:
+        return True
+    return not (
+        isinstance(payload, dict) and payload.get("status") == "reference_only"
+    )
 
 
 def exchange_groups(items):
@@ -107,8 +125,22 @@ class ContextRecovery:
                     ),
                 )
             )
-            if decision.kind != "answer" or not decision.answer or decision.incomplete:
-                raise ValueError("invalid_compaction_answer")
+            if (
+                decision.kind != "answer"
+                or not decision.answer
+                or decision.incomplete
+                or decision.finish_reason in {
+                    "length",
+                    "max_tokens",
+                    "content_filter",
+                    "refusal",
+                    "sensitive",
+                }
+            ):
+                return self._reference(chosen, run_id, "invalid_compaction_answer")
+            incomplete_reason = compaction_incomplete_reason(decision.finish_reason)
+            if incomplete_reason:
+                return self._reference(chosen, run_id, incomplete_reason)
             # A summary that expands its input cannot be a successful recovery.
             if len(decision.answer.encode()) >= len(
                 json.dumps(
@@ -116,58 +148,23 @@ class ContextRecovery:
                     ensure_ascii=False,
                 ).encode()
             ):
-                raise ValueError("expanded_compaction_answer")
+                return self._reference(chosen, run_id, "expanded_compaction_answer")
             return decision.answer, [item.id for item in chosen]
-        except Exception:
-            # A compaction model is an optimization.  A provider hiccup or an
-            # overlong summary must not turn a recoverable context pressure
-            # event into a dead Run.  The deterministic projection retains
-            # identities and bounded observations and is explicitly marked as
-            # a reference summary so it cannot be mistaken for fresh evidence.
-            return self._deterministic_summary(chosen), [item.id for item in chosen]
+        except PortError as exc:
+            logging.getLogger(__name__).warning("compaction unavailable run=%s code=%s", run_id, exc.error.code)
+            return self._reference(chosen, run_id, exc.error.code)
 
-    def _deterministic_summary(self, items: list[ContextItem]) -> str:
-        """Build a bounded, source-preserving fallback without model guesses."""
-
-        budget = self.context.context_budget()
-        limit = max(1200, min(12000, budget.target * 2))
-        chunks = ["历史上下文摘要（自动整理，仅覆盖所列记录）："]
-        used = len(chunks[0])
-        for item in items:
-            body = item.body if isinstance(item.body, dict) else {}
-            payload = {
-                "record_id": item.id,
-                "source": item.source,
-                "kind": item.kind,
-                "content": self._bounded(body, max(240, min(1600, limit // 4))),
-            }
-            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            if used + len(text) + 1 > limit:
-                break
-            chunks.append(text)
-            used += len(text) + 1
-        return "\n".join(chunks)
-
-    @classmethod
-    def _bounded(cls, value, limit: int):
-        if isinstance(value, str):
-            if len(value) <= limit:
-                return value
-            head = max(80, limit // 2)
-            return value[:head] + "…" + value[-max(40, limit - head - 1):]
-        if isinstance(value, list):
-            result = []
-            for item in value:
-                if len(json.dumps(result, ensure_ascii=False)) >= limit:
-                    break
-                result.append(cls._bounded(item, max(80, limit // 3)))
-            return result
-        if isinstance(value, dict):
-            result = {}
-            for key, item in value.items():
-                candidate = cls._bounded(item, max(80, limit // 3))
-                result[str(key)] = candidate
-                if len(json.dumps(result, ensure_ascii=False)) >= limit:
-                    break
-            return result
-        return value
+    def _reference(self, items, run_id, reason):
+        """Retain every original record instead of claiming a truncated summary."""
+        ids = [item.id for item in items]
+        key = "context:" + ids[0]
+        self.catalog.bind_text(
+            key, "历史原始记录",
+            json.dumps([item.model_dump(mode="json") for item in items], ensure_ascii=False),
+            run_id=run_id,
+        )
+        return json.dumps({
+            "material_id": key, "covered_record_ids": ids,
+            "status": "reference_only", "reason": reason,
+            "notice": "摘要未完成，所列原始记录已完整保留；需要时用 read_material 回读，不能视为事实已被概括。",
+        }, ensure_ascii=False), ids

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+from backend.application.workspace.task_graph import plan_graph
 from backend.contracts.harness.lifecycle import (
     DispatchResult,
     RunEnvelope,
@@ -43,6 +44,13 @@ class HarnessControlService:
         graph: RunGraph | None = None,
         runtime_policy: RunPolicy | None = None,
     ) -> tuple[DispatchResult, RunEnvelope]:
+        # Plan only the smallest graph that this node can execute safely.
+        # Explicit graphs are validated before they enter the scheduler;
+        # ordinary tool-capable requests remain on the mature Harness loop.
+        try:
+            graph = plan_graph(payload, requested=graph)
+        except ValueError as exc:
+            raise SchedulerCommandError(str(exc)) from exc
         dispatch = await self.scheduler.submit(
             session_id=session_id,
             payload=payload,
@@ -65,8 +73,13 @@ class HarnessControlService:
             session_id=session_id, run_id=run_id, partial_output=partial_output
         )
 
-    async def continue_run(self, *, session_id: str, run_id: str):
-        dispatch = await self.scheduler.continue_run(session_id=session_id, run_id=run_id)
+    async def continue_run(
+        self, *, session_id: str, run_id: str, guidance: str | None = None,
+        payload: RunInput | None = None,
+    ):
+        dispatch = await self.scheduler.continue_run(
+            session_id=session_id, run_id=run_id, guidance=guidance, payload=payload
+        )
         return dispatch, await self.scheduler.get_run(session_id=session_id, run_id=run_id)
 
     async def resume(

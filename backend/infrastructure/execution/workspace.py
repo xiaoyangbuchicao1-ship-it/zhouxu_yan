@@ -6,8 +6,11 @@ import asyncio
 import hashlib
 import json
 import mimetypes
+import os
 import re
+import sqlite3
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -142,7 +145,7 @@ class WorkspaceExecutionProvider:
             ),
             "write": ToolSpec(
                 name="write",
-                description="在当前工作区创建文本文件或脚本。默认不覆盖已有文件；需要修改已有文本时使用edit。",
+                description="在当前工作区创建或分段追加文本文件。默认不覆盖已有文件；长文件可传 append=true 分章追加写入，局部修改已有文本请使用 edit。",
                 kind="execution",
                 parameters={
                     "type": "object",
@@ -150,6 +153,7 @@ class WorkspaceExecutionProvider:
                         "path": {"type": "string"},
                         "content": {"type": "string"},
                         "overwrite": {"type": "boolean"},
+                        "append": {"type": "boolean"},
                         "expected_sha256": {"type": "string"},
                     },
                     "required": ["path", "content"],
@@ -202,14 +206,42 @@ class WorkspaceExecutionProvider:
             for name, spec in self._specs.items()
         }
 
+    def workspace_root_for(
+        self,
+        *,
+        account_id: str | None = None,
+        conversation_id: str | None = None,
+        run_id: str,
+    ) -> Path:
+        account = _safe_part(str(account_id or "anonymous"))
+        conversation = _safe_part(str(conversation_id or run_id))
+        return self.root / account / conversation
+
+    def snapshot_baseline(
+        self,
+        run_id: str,
+        *,
+        account_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> dict[str, str]:
+        return self._snapshot(
+            self.workspace_root_for(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
+            )
+        )
+
     def _workspace_for(self, run_id: str, context: dict | None = None) -> _RunWorkspace:
         existing = self._runs.get(run_id)
         if existing is not None:
             return existing
         context = context or {}
-        account = _safe_part(str(context.get("account_id") or "anonymous"))
-        conversation = _safe_part(str(context.get("conversation_id") or run_id))
-        root = self.root / account / conversation
+        root = self.workspace_root_for(
+            account_id=context.get("account_id"),
+            conversation_id=context.get("conversation_id"),
+            run_id=run_id,
+        )
         value = _RunWorkspace(
             run_id=run_id,
             root=root,
@@ -222,6 +254,45 @@ class WorkspaceExecutionProvider:
     def _create_runtime(self, run_id: str, root: Path) -> CommandRuntime:
         raise NotImplementedError
 
+    def package_root_for(self, workspace_root: Path) -> Path:
+        """Private API-owned storage, exposed read-only inside the runtime."""
+        relative = workspace_root.relative_to(self.root)
+        return self.root / ".skill-packages" / relative
+
+    async def install_skill_package(
+        self, request: ModuleRequest, skill_id: str, version: int, files: dict[str, bytes]
+    ) -> str:
+        from backend.skills.packages import safe_resource_path
+
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", skill_id) or type(version) is not int or version < 1:
+            raise ValueError("invalid_package_identity")
+        async with self._lock:
+            workspace = self._workspace_for(request.run_id, request.context)
+            package_root = self.package_root_for(workspace.root)
+            parent = package_root / skill_id
+            target = parent / str(version)
+
+            def install():
+                parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    existing = {p.relative_to(target).as_posix(): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+                    if existing != files:
+                        raise RuntimeError("skill_package_identity_changed")
+                    return
+                with tempfile.TemporaryDirectory(prefix=".install-", dir=parent) as temp:
+                    staging = Path(temp) / "package"
+                    staging.mkdir()
+                    for relative, content in files.items():
+                        safe_resource_path(relative)
+                        output = staging / relative
+                        output.parent.mkdir(parents=True, exist_ok=True)
+                        output.write_bytes(content)
+                        output.chmod(0o444)
+                    os.replace(staging, target)
+
+            await asyncio.to_thread(install)
+        return f".skills/{skill_id}/{version}"
+
     @staticmethod
     def _snapshot(root: Path) -> dict[str, str]:
         if not root.exists():
@@ -233,15 +304,13 @@ class WorkspaceExecutionProvider:
                 path.is_symlink()
                 or not path.is_file()
                 or any(part.startswith(".") for part in relative.parts)
+                or (relative.parts and relative.parts[0] == "work")
                 or path.suffix.lower() not in _DELIVERABLE_EXTENSIONS
             ):
                 continue
-            try:
-                result[relative.as_posix()] = hashlib.sha256(
-                    path.read_bytes()
-                ).hexdigest()
-            except OSError:
-                continue
+            result[relative.as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
         return result
 
     @staticmethod
@@ -265,20 +334,22 @@ class WorkspaceExecutionProvider:
             if name == "read":
                 result = await asyncio.to_thread(self._read, workspace, arguments)
             elif name == "write":
-                result = await asyncio.to_thread(self._write, workspace, arguments)
+                result = await asyncio.to_thread(self._write, workspace, arguments, request.input.action_id)
             elif name == "edit":
                 result = await asyncio.to_thread(self._edit, workspace, arguments)
             elif name == "bash":
                 result = await asyncio.to_thread(self._bash, workspace, arguments)
             else:
                 raise ValueError("tool")
+            failed = result.get("status") == "failed"
             return ActionResult(
                 tool_name=request.input.tool_name,
                 action_id=request.input.action_id,
                 result=result,
-                outcome="ok",
+                outcome="error" if failed else "ok",
+                error=self.settings.error("tool_failed") if failed else None,
                 session_summary={
-                    "status": "ok",
+                    "status": "failed" if failed else "ok",
                     "tool": name,
                     "path": result.get("path") if isinstance(result, dict) else None,
                 },
@@ -323,7 +394,7 @@ class WorkspaceExecutionProvider:
             raise ValueError("path")
         if "FileNotFoundError" in message or "No such file" in message:
             raise FileNotFoundError
-        for marker in ("conflict", "exact_match_required"):
+        for marker in ("conflict", "exact_match_required", "file_too_large"):
             if marker in message:
                 raise RuntimeError(marker)
         raise RuntimeError("file_command_failed")
@@ -349,40 +420,96 @@ print(json.dumps({'status':'ok','path':sys.argv[1],'kind':'file','bytes':len(dat
             self._file_command(workspace, code, [relative, str(max_chars)])
         )
 
-    def _write(self, workspace: _RunWorkspace, arguments: dict) -> dict:
+    def _write(self, workspace: _RunWorkspace, arguments: dict, action_id: str) -> dict:
         relative = self._relative(arguments)
         content = arguments.get("content")
         if not isinstance(content, str):
             raise ValueError("content")
         data = content.encode("utf-8")
-        if len(data) > self.settings.execution.max_file_bytes:
+        max_bytes = self.settings.execution.max_file_bytes
+        if len(data) > max_bytes:
             raise RuntimeError("file_too_large")
         expected = str(arguments.get("expected_sha256") or "")
         overwrite = bool(arguments.get("overwrite", False))
+        append = bool(arguments.get("append", False))
         code = """
-import hashlib,pathlib,sys
+import hashlib,json,os,pathlib,sqlite3,sys
 root=pathlib.Path.cwd().resolve()
 p=root/sys.argv[1]
 resolved=p.resolve(strict=False)
 if root != resolved and root not in resolved.parents: raise SystemExit('outside_workspace')
-if p.exists() and sys.argv[2] and hashlib.sha256(p.read_bytes()).hexdigest()!=sys.argv[2]: raise SystemExit('conflict')
-if p.exists() and not sys.argv[3].lower()=='true': raise SystemExit('conflict')
+expected,overwrite,append,max_bytes=sys.argv[2],sys.argv[3]=='true',sys.argv[4]=='true',int(sys.argv[5])
+incoming=sys.stdin.buffer.read()
+identity=sys.argv[6]
+fingerprint=hashlib.sha256(json.dumps(sys.argv[1:6]).encode()+incoming).hexdigest()
+journal=root/'.zhouxu-writes.sqlite3'
+db=sqlite3.connect(journal)
+db.execute('CREATE TABLE IF NOT EXISTS writes (id TEXT PRIMARY KEY, fingerprint TEXT, before_hash TEXT, after_hash TEXT, result TEXT, done INTEGER)')
+db.execute('BEGIN IMMEDIATE')
+prior=db.execute('SELECT fingerprint,before_hash,after_hash,result,done FROM writes WHERE id=?',(identity,)).fetchone()
+existing=p.read_bytes() if p.exists() else None
+current_hash=hashlib.sha256(existing).hexdigest() if existing is not None else None
+if prior:
+    if prior[0]!=fingerprint: raise SystemExit('conflict')
+    if prior[4] or current_hash==prior[2]:
+        db.execute('UPDATE writes SET done=1 WHERE id=?',(identity,)); db.commit()
+        print(prior[3]); raise SystemExit
+    if current_hash!=prior[1]: raise SystemExit('conflict')
+if existing is not None and expected and hashlib.sha256(existing).hexdigest()!=expected: raise SystemExit('conflict')
+if existing is not None and not overwrite and not append: raise SystemExit('conflict')
+final=(existing+incoming) if (existing is not None and append) else incoming
+if len(final)>max_bytes: raise SystemExit('file_too_large')
+result=json.dumps({'bytes':len(final),'sha256':hashlib.sha256(final).hexdigest()},ensure_ascii=False)
+if not prior:
+    db.execute('INSERT INTO writes VALUES (?,?,?,?,?,0)',(identity,fingerprint,current_hash,hashlib.sha256(final).hexdigest(),result))
+db.commit()
 p.parent.mkdir(parents=True,exist_ok=True)
-data=sys.stdin.buffer.read()
 tmp=p.with_name('.'+p.name+'.tmp')
-tmp.write_bytes(data)
+with tmp.open('wb') as f:
+    f.write(final); f.flush(); os.fsync(f.fileno())
 tmp.replace(p)
-print(hashlib.sha256(data).hexdigest())
+directory=os.open(str(p.parent),os.O_RDONLY)
+try: os.fsync(directory)
+finally: os.close(directory)
+db.execute('UPDATE writes SET done=1 WHERE id=?',(identity,)); db.commit(); db.close()
+print(result)
 """.strip()
-        digest = self._file_command(
-            workspace, code, [relative, expected, str(overwrite).lower()], input=data
+        raw = self._file_command(
+            workspace,
+            code,
+            [
+                relative,
+                expected,
+                str(overwrite).lower(),
+                str(append).lower(),
+                str(max_bytes),
+                workspace.run_id + ':' + action_id,
+            ],
+            input=data,
         )
+        written = json.loads(raw)
         return {
             "status": "ok",
             "path": relative,
-            "bytes": len(data),
-            "sha256": digest.strip(),
+            "mode": "append" if append else "write",
+            "bytes": written["bytes"],
+            "appended_bytes": len(data) if append else None,
+            "sha256": written["sha256"],
         }
+
+    async def recover_write(self, request: ModuleRequest[ActionRequest]) -> ActionResult | None:
+        context = request.context or {}
+        root = self.workspace_root_for(account_id=context.get("account_id"),
+            conversation_id=context.get("conversation_id"), run_id=request.run_id)
+        journal = root / ".zhouxu-writes.sqlite3"
+        if not journal.is_file():
+            return None
+        with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
+            exists = db.execute("SELECT 1 FROM writes WHERE id=?",
+                (request.run_id + ':' + request.input.action_id,)).fetchone()
+        if exists is None:
+            return None
+        return await self.execute("write", request)
 
     def _edit(self, workspace: _RunWorkspace, arguments: dict) -> dict:
         relative = self._relative(arguments)
@@ -449,9 +576,10 @@ print(hashlib.sha256(value).hexdigest())
     def _ensure_preview(self, workspace: _RunWorkspace, relative: str):
         target = Path(relative).with_suffix(".pdf").as_posix()
         target_host = workspace.root / target
-        if target_host.exists() and target_host.stat().st_size > 0:
-            if workspace.runtime.exec(["pdfinfo", target], check=False).returncode == 0:
-                return
+        if target_host.is_file() and target_host.stat().st_size >= 5:
+            with target_host.open("rb") as stream:
+                if stream.read(5) == b"%PDF-":
+                    return
         # Relative paths resolve inside the runtime's working directory. Neither
         # file tools nor previews need to know the container's mount location.
         code = """
@@ -478,8 +606,15 @@ shutil.copyfile(result,target)
 
     def _render_previews(self, workspace: _RunWorkspace):
         for path in workspace.root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".docx", ".docm"}:
-                relative = path.relative_to(workspace.root).as_posix()
+            if not path.is_file():
+                continue
+            rel_path = path.relative_to(workspace.root)
+            if any(part.startswith(".") for part in rel_path.parts) or (
+                rel_path.parts and rel_path.parts[0] == "work"
+            ):
+                continue
+            if path.suffix.lower() in {".docx", ".docm"}:
+                relative = rel_path.as_posix()
                 try:
                     check = workspace.runtime.python(
                         "from docx import Document; import sys; Document(sys.argv[1])",
@@ -493,22 +628,25 @@ shutil.copyfile(result,target)
                     # document.  The completed Run still exposes it for
                     # download; the API can report preview unavailable.
                     continue
-        for path in workspace.root.rglob("*.pdf"):
-            if path.is_file():
-                relative = path.relative_to(workspace.root).as_posix()
-                workspace.runtime.exec(["pdfinfo", relative], check=False)
 
-    def _artifact_metadata(self, workspace: _RunWorkspace) -> list[dict]:
-        self._render_previews(workspace)
-        current = self._snapshot(workspace.root)
+    def _artifact_metadata(
+        self,
+        root: Path,
+        baseline: dict[str, str],
+        workspace: _RunWorkspace | None = None,
+        owned_paths: tuple[str, ...] = (),
+    ) -> list[dict]:
+        if workspace is not None:
+            self._render_previews(workspace)
+        current = self._snapshot(root)
         changed = [
             path
             for path, digest in current.items()
-            if workspace.before.get(path) != digest
+            if baseline.get(path) != digest or path in owned_paths
         ]
         artifacts: list[dict] = []
         for relative in sorted(changed):
-            path = workspace.root / relative
+            path = root / relative
             digest = current[relative]
             suffix = path.suffix.lower()
             version_match = _VERSION.search(path.stem)
@@ -534,6 +672,7 @@ shutil.copyfile(result,target)
                 }
             )
         for item in artifacts:
+            rel_parts = Path(item["relative_path"]).parts
             if item["media_type"] == "application/pdf":
                 document = next(
                     (
@@ -547,19 +686,40 @@ shutil.copyfile(result,target)
                     None,
                 )
                 if document and document["kind"] == "document":
-                    item["kind"] = "preview"
+                    # A paper compiler's PDF is a real deliverable, so keep it
+                    # in the file list while also making it the DOCX preview.
+                    # Other generated PDFs remain preview-only as before.
+                    if not rel_parts or rel_parts[0] != "papers":
+                        item["kind"] = "preview"
                     item["preview_of_artifact_id"] = document["artifact_id"]
                     document["preview_artifact_id"] = item["artifact_id"]
         return artifacts
 
-    def collect_artifacts(self, run_id: str, *, completed: bool) -> list[dict]:
+    def collect_artifacts(
+        self,
+        run_id: str,
+        *,
+        completed: bool,
+        account_id: str | None = None,
+        conversation_id: str | None = None,
+        baseline: dict[str, str] | None = None,
+        owned_paths: tuple[str, ...] = (),
+    ) -> list[dict]:
         workspace = self._runs.get(run_id)
-        if workspace is None or not completed:
+        if workspace is not None:
+            root = workspace.root
+            effective_baseline = baseline if baseline is not None else workspace.before
+            return self._artifact_metadata(root, effective_baseline, workspace if completed else None, owned_paths)
+        if baseline is None and account_id is None and conversation_id is None:
             return []
-        try:
-            return self._artifact_metadata(workspace)
-        except (OSError, RuntimeError, TimeoutError):
+        root = self.workspace_root_for(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+        )
+        if not root.exists():
             return []
+        return self._artifact_metadata(root, baseline or {}, None, owned_paths)
 
     async def close_run(self, run_id: str):
         async with self._lock:

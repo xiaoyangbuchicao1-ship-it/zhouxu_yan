@@ -14,7 +14,7 @@ Python 3.11、FastAPI、Pydantic v2、httpx、SQLAlchemy 与自研 Harness。提
 
 统一前后端启动见[项目说明](../README.md)。CLI 为 `python -m backend "问题"`，会调用真实模型；可用 `--config <完整 TOML 路径>` 指定配置。默认参数、提示词和文案在 `config/defaults.toml`，修改后重建 Harness 或重启服务。
 
-模型固定 DeepSeek Flash，none / low / high 三档；review 与 compaction 关闭思考。凭证由配置读取器在运行时获取，不进入 TOML、Trace、公开事件或前端。
+模型支持官方 DeepSeek Flash / Pro，none / low / high / max 四档；review 与 compaction 关闭思考。凭证由配置读取器在运行时获取，不进入 TOML、Trace、公开事件或前端。
 
 `/healthz` 是健康检查，`/auth/*` 是账户接口，认证后的 `/workspace/*` 是产品接口；`/harness/*` 保留内部控制边界。
 
@@ -44,6 +44,8 @@ Python 3.11、FastAPI、Pydantic v2、httpx、SQLAlchemy 与自研 Harness。提
 ## 数据、上下文与恢复
 
 业务 SQLite 保存账户、授权历史和材料信息；SQLiteRunStore 保存私有检查点、公开事件及正文，并限定单服务进程。启动恢复 queued/running，暂停、取消和等待补充不自动恢复；未知副作用不自动重放。旧 JSON 只能通过 `backend.infrastructure.persistence.migrate_json_runs` 显式迁移，启动不会自动读取。
+
+旧 SQLite 中的 Run 状态通过 `backend.infrastructure.persistence.migrate_run_statuses` 显式升级，须先停止 API/Web；只读预检、成对备份和回滚命令见[部署合同的状态升级说明](../docs/deployment.md#旧-run-状态的显式升级与回滚)。
 
 唯一完整请求预算在 `infrastructure/model/budget.py`。材料先给有界预览，再按需 search_material / read_material；解析、当前正文可见和任务完成分别表达。供应商隐藏推理只留在按 Run 隔离的私有协议续接与检查点。
 

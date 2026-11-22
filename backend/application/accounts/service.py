@@ -22,6 +22,7 @@ from backend.infrastructure.database.connection import Database
 from backend.infrastructure.database.models import AccountModel, SessionModel
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+ACCOUNT_ROLES = frozenset({"user", "admin"})
 
 
 class AccountError(Exception):
@@ -37,6 +38,7 @@ class AccountPrincipal:
     id: str
     email: str
     display_name: str
+    role: str = "user"
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ class AccountService:
             display_name=normalized_name,
             password_hash=self.passwords.hash(password),
             status="active",
+            role="user",
             created_at=now,
             updated_at=now,
         )
@@ -85,14 +88,20 @@ class AccountService:
         session.close()
         return result
 
-    def login(self, *, email: str, password: str) -> AuthResult:
+    def login(self, *, email: str, password: str, required_role: str | None = None) -> AuthResult:
+        if required_role is not None and required_role not in ACCOUNT_ROLES:
+            raise ValueError("unsupported_account_role")
         normalized_email = self._normalize_email(email)
         session = self.database.session()
         try:
             account = session.scalar(
                 select(AccountModel).where(AccountModel.email == normalized_email)
             )
-            if account is None or account.status != "active":
+            if (
+                account is None
+                or account.status != "active"
+                or (required_role is not None and account.role != required_role)
+            ):
                 raise AccountError("authentication_failed")
             try:
                 valid = self.passwords.verify(account.password_hash, password)
@@ -107,7 +116,56 @@ class AccountService:
         finally:
             session.close()
 
-    def authenticate(self, token: str) -> AccountPrincipal:
+    def ensure_admin(
+        self, *, email: str, password: str, display_name: str = "管理员"
+    ) -> AccountPrincipal:
+        """Create the deployment administrator once without rotating secrets."""
+
+        normalized_email = self._normalize_email(email)
+        self._validate_password(password)
+        session = self.database.session()
+        try:
+            account = session.scalar(
+                select(AccountModel).where(AccountModel.email == normalized_email)
+            )
+            if account is not None:
+                if account.role != "admin":
+                    raise AccountError("admin_email_conflict")
+                if account.status != "active":
+                    raise AccountError("admin_account_inactive")
+                return self._principal(account)
+            now = self._now()
+            normalized_name = display_name.strip()
+            if len(normalized_name) > 80:
+                raise AccountError("display_name_too_long")
+            account = AccountModel(
+                id=secrets.token_hex(16),
+                email=normalized_email,
+                display_name=normalized_name,
+                password_hash=self.passwords.hash(password),
+                status="active",
+                role="admin",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(account)
+            session.commit()
+            return self._principal(account)
+        except IntegrityError:
+            session.rollback()
+            raise AccountError("admin_email_conflict") from None
+        finally:
+            session.close()
+
+    def admin_login(self, *, email: str, password: str) -> AuthResult:
+        try:
+            return self.login(email=email, password=password, required_role="admin")
+        except AccountError as exc:
+            if exc.code == "authentication_failed":
+                raise AccountError("admin_required") from None
+            raise
+
+    def authenticate(self, token: str, *, update_last_seen: bool = True) -> AccountPrincipal:
         if not token or len(token) > 256:
             raise AccountError("authentication_required")
         token_hash = self._hash_token(token)
@@ -124,8 +182,9 @@ class AccountService:
                 or auth_session.account.status != "active"
             ):
                 raise AccountError("authentication_required")
-            auth_session.last_seen_at = now
-            session.commit()
+            if update_last_seen:
+                auth_session.last_seen_at = now
+                session.commit()
             return self._principal(auth_session.account)
         finally:
             session.close()
@@ -175,7 +234,10 @@ class AccountService:
     @staticmethod
     def _principal(account: AccountModel) -> AccountPrincipal:
         return AccountPrincipal(
-            id=account.id, email=account.email, display_name=account.display_name
+            id=account.id,
+            email=account.email,
+            display_name=account.display_name,
+            role=account.role,
         )
 
     @staticmethod

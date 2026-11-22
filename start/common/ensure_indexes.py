@@ -26,8 +26,8 @@ LAW_ALIAS = "maritime_law_chunks_read"
 LAW_INDEX = "maritime_law_chunks_v2"
 CASE_ALIAS = "maritime_cases_read"
 INFORMATION_ALIAS = "maritime_information_cards_read"
-INFORMATION_INDEX = "maritime_information_cards_v3"
-PREVIOUS_INFORMATION_INDEX = "maritime_information_cards_v2"
+INFORMATION_INDEX = "maritime_information_cards_v4"
+PREVIOUS_INFORMATION_INDEX = "maritime_information_cards_v3"
 DEFAULT_URL = "https://127.0.0.1:19200"
 
 
@@ -275,14 +275,8 @@ def source_status(
     law_count, case_count, snapshot_id, information_count = expected_counts(project_root)
     actual_law = alias_count(client, LAW_ALIAS, LAW_INDEX)
     actual_case = alias_count(client, CASE_ALIAS, snapshot_id)
-    information_aliases = client.get(f"/_alias/{INFORMATION_ALIAS}", missing_ok=True)
-    # A normal restart validates the currently published corpus. Switching a
-    # changed corpus to v3 belongs to its explicit, source-checked release.
-    active_information_index = (
-        PREVIOUS_INFORMATION_INDEX
-        if sorted(information_aliases or {}) == [PREVIOUS_INFORMATION_INDEX]
-        else INFORMATION_INDEX
-    )
+    # Corpus replacement is an explicit offline cutover, never startup compatibility.
+    active_information_index = INFORMATION_INDEX
     actual_information = alias_count(client, INFORMATION_ALIAS, active_information_index)
     if actual_information is not None:
         from opensearch.opensearch_delivery.scripts.information_cards_index import (

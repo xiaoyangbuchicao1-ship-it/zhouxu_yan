@@ -12,6 +12,7 @@ dependencies = [
   "alembic>=1.14,<2",
   "argon2-cffi>=23.1,<26",
   "python-multipart>=0.0.9,<1",
+  "pyyaml>=6.0,<7",
 ]
 
 [project.optional-dependencies]

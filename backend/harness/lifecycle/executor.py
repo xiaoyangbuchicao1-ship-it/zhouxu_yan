@@ -39,6 +39,23 @@ class HarnessRunExecutor:
         if self._harnesses and mode not in self._harnesses:
             raise ValueError("unsupported_thinking_mode")
         recovery = dict(run.execution_state)
+        if recovery and recovery.get("schema_version") != 2:
+            raise RuntimeError("execution_checkpoint_migration_required")
+        baseline = recovery.get("workspace_baseline")
+        if (
+            baseline is None
+            and self._execution_tools is not None
+            and hasattr(self._execution_tools, "snapshot_baseline")
+        ):
+            baseline = await asyncio.to_thread(
+                self._execution_tools.snapshot_baseline,
+                run.run_id,
+                account_id=run.account_id,
+                conversation_id=run.conversation_id or run.session_id,
+            )
+            recovery["workspace_baseline"] = baseline
+        if run.continuation_guidance:
+            recovery["continuation_guidance"] = list(run.continuation_guidance)
         visible = recovery.pop("resume_visible_output", None)
         if visible:
             stages = list(recovery.get("delivered_stages", []))
@@ -118,22 +135,43 @@ class HarnessRunExecutor:
             # stops or fails before producing a final answer, project its deltas
             # into the Run result so the scheduler can persist partial_output.
             if not result.answer and result.status != "succeeded":
-                stream_events = getattr(harness.streams, "stream_events", [])
-                partial = visible_text(
-                    event for event in stream_events if event.run_id == run.run_id
-                )
+                visible_fn = getattr(harness.streams, "visible", None)
+                if callable(visible_fn):
+                    partial, _ = visible_fn(run.run_id)
+                else:
+                    stream_events = getattr(harness.streams, "stream_events", [])
+                    partial = visible_text(
+                        event for event in stream_events if event.run_id == run.run_id
+                    )
                 if partial:
                     result = result.model_copy(update={"answer": partial})
             if self._execution_tools is not None:
+                state = dict(result.execution_state or {})
+                if baseline is not None and state.get("workspace_baseline") is None:
+                    state["workspace_baseline"] = baseline
+                collect_params = inspect.signature(
+                    self._execution_tools.collect_artifacts
+                ).parameters
+                collect_kwargs: dict[str, Any] = {
+                    "completed": result.status == "succeeded",
+                }
+                if "account_id" in collect_params:
+                    collect_kwargs["account_id"] = run.account_id
+                if "conversation_id" in collect_params:
+                    collect_kwargs["conversation_id"] = (
+                        run.conversation_id or run.session_id
+                    )
+                if "baseline" in collect_params:
+                    collect_kwargs["baseline"] = state.get("workspace_baseline")
+                if "owned_paths" in collect_params:
+                    collect_kwargs["owned_paths"] = [item["relative_path"] for item in state.get("artifacts", [])]
                 artifacts = await asyncio.to_thread(
                     self._execution_tools.collect_artifacts,
                     run.run_id,
-                    completed=result.status == "succeeded",
+                    **collect_kwargs,
                 )
-                if artifacts:
-                    state = dict(result.execution_state or {})
-                    state["artifacts"] = artifacts
-                    result = result.model_copy(update={"execution_state": state})
+                state["artifacts"] = artifacts
+                result = result.model_copy(update={"execution_state": state})
             return result
         finally:
             if self._execution_tools is not None:

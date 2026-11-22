@@ -47,7 +47,7 @@ WSL2 是 Docker Desktop 的底层 Linux 环境，不是第三套舟序。当前 
 | `zhouxu-api` | FastAPI + 文档工具 + CPU PyTorch | 只在 Compose 网络监听 `8010` |
 | `opensearch` | OpenSearch 2.19 | 只在 Compose 网络监听 `9200`，数据 bind mount |
 
-`zhouxu-init` 是一次性初始化任务，不是第四个长期服务：它等待 OpenSearch 健康，校验/导入法规、案例和信息卡，成功后退出码为 0。`models/` 保存只读模型缓存与论文模板字体；`data/runtime/` 保存任务记录，避免容器重建丢失任务。
+`zhouxu-init` 是一次性初始化任务，不是第四个长期服务：它等待 OpenSearch 健康，校验/导入法规、案例和信息卡，成功后退出码为 0。`models/` 保存只读模型缓存与论文模板字体；Docker Linux 数据卷 `zhouxu_runtime-state` 保存任务记录和个人 Skill 元数据，避免容器重建丢失任务。`data/runtime/` 仅是旧库导入来源，跨电脑迁移先按 [部署合同](deployment.md#运行库的-linux-数据卷迁移与导出)导出当前卷。
 
 ## 三个逻辑库，一个 OpenSearch
 

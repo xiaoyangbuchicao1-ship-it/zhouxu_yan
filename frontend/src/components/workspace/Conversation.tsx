@@ -1,5 +1,6 @@
 import { ThinkingModeSelect } from "./ThinkingModeSelect";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { ModelSelect } from "./ModelSelect";
+import { Fragment, memo, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,7 +16,6 @@ import {
   Copy,
   Check,
   ArrowUpRight,
-  BriefcaseBusiness,
   Scale,
   ScanText,
   BookOpen,
@@ -23,21 +23,86 @@ import {
   ExternalLink,
   LoaderCircle,
 } from "lucide-react";
-import type { useWorkspace } from "@/hooks/use-workspace";
-import type { Artifact, Message, SourceDocument, SourceReference } from "@/lib/workbench-api";
+import type { PendingTurn, useWorkspace } from "@/hooks/use-workspace";
+import type { Message } from "@/lib/workbench-api";
+import type { Components } from "react-markdown";
 import { mergeRunMessages } from "@/lib/workbench-api";
+import { effectiveModelSwitches, modelLabel, modelSwitchText, type ModelSwitchEvent } from "@/lib/model-selection";
+import { visibleAnswerActions } from "@/lib/answer-actions";
 import { useAuthSession } from "@/lib/auth-session";
 import { maritimeApi, type MaritimeCase } from "@/lib/maritime-api";
 import { IconButton, Menu, MenuItem, Loading, LoadError, Modal } from "./Primitives";
 
 import { RunProgress } from "./RunProgress";
-import { RunTimeline } from "./RunTimeline";
 import { ActivityIndicator } from "./ActivityIndicator";
 import { MaterialCards, MaterialDescription } from "./MaterialCards";
 import { WorkPackages } from "./WorkPackages";
 import { useStreamingText } from "@/hooks/use-streaming-text";
+import { SourceSummary } from "./ResearchPanel";
 
 type Workspace = ReturnType<typeof useWorkspace>;
+
+function ModelSwitchDivider({ event, pending = false }: { event: ModelSwitchEvent; pending?: boolean }) {
+  const reduced = useReducedMotion();
+  return <motion.div
+    className="ws-model-switch-event"
+    role="status"
+    aria-live="polite"
+    data-model-switch-id={event.id}
+    title={pending ? "下一条新消息使用此模型" : undefined}
+    initial={{ opacity: 0, y: reduced ? 0 : 8 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ duration: reduced ? 0 : 0.2 }}
+  >
+    <span aria-hidden="true" />
+    <span>{modelSwitchText(event)}</span>
+    <span aria-hidden="true" />
+  </motion.div>;
+}
+
+function ContextCompactionDivider() {
+  const reduced = useReducedMotion();
+  return <motion.div
+    className="ws-model-switch-event ws-context-compaction-event"
+    role="status"
+    aria-live="polite"
+    initial={{ opacity: 0, y: reduced ? 0 : 8 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ duration: reduced ? 0 : 0.2 }}
+  >
+    <span aria-hidden="true" />
+    <span>已整理较早的对话，继续处理</span>
+    <span aria-hidden="true" />
+  </motion.div>;
+}
+
+function ModeUpgradeChoice({ uploading, onAnswer }: {
+  uploading: boolean;
+  onAnswer: (choice: string) => Promise<void>;
+}) {
+  const [submitting, setSubmitting] = useState<string | null>(null);
+  async function choose(choice: string) {
+    setSubmitting(choice);
+    try {
+      await onAnswer(choice);
+    } finally {
+      setSubmitting(null);
+    }
+  }
+  return (
+    <section className="ws-mode-choice" aria-label="模式确认" aria-busy={submitting !== null}>
+      <p>这项操作需要工作模式</p>
+      <div className="ws-mode-choice-actions">
+        <button type="button" className="ws-primary-button" disabled={uploading || submitting !== null} onClick={() => void choose("upgrade_work")}>
+          {submitting === "upgrade_work" ? "正在切换…" : "升级为工作模式"}
+        </button>
+        <button type="button" className="ws-secondary-button" disabled={uploading || submitting !== null} onClick={() => void choose("keep_chat")}>
+          {submitting === "keep_chat" ? "正在确认…" : "保持聊天模式"}
+        </button>
+      </div>
+    </section>
+  );
+}
 
 const tasks = [
   {
@@ -82,12 +147,7 @@ const tasks = [
   },
 ];
 
-export function Markdown({ content }: { content: string }) {
-  return (
-    <div className="ws-prose">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
+const markdownComponents = {
           a: ({ children, href }) => (
             <a href={href} target="_blank" rel="noopener noreferrer">
               {children}
@@ -109,108 +169,43 @@ export function Markdown({ content }: { content: string }) {
               [图片：{alt || "未加载的外部图片"}]
             </span>
           ),
-        }}
+};
+
+const INTERNAL_ARTIFACT_MARKDOWN = /!?(\[[^\]]*\])\((?:\/api)?\/workspace\/runs\/[^\s)]+\/artifacts\/[^\s)]+\)/gi;
+const INTERNAL_ARTIFACT_URL = /(?:\/api)?\/workspace\/runs\/[^\s<>]+\/artifacts\/[^\s<>]+/gi;
+const INTERNAL_ARTIFACT_PATH_LINE = /^\s*(?:[-*+]\s+)?(?:PDF|Word|DOCX|Excel|文件)?\s*[:：]\s*(?:papers|work)\/[^\s]+\.(?:pdf|docx|docm|xlsx|xlsm|pptx|pptm|csv|txt|md|json)\s*$/i;
+
+function visibleAnswerContent(content: string) {
+  return content
+    .split(/\r?\n/)
+    .filter((line) => !INTERNAL_ARTIFACT_PATH_LINE.test(line))
+    .map((line) => line.replace(INTERNAL_ARTIFACT_MARKDOWN, "$1").replace(INTERNAL_ARTIFACT_URL, "").trimEnd())
+    .filter((line, index, lines) => line.trim() || (index > 0 && lines[index - 1].trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export const Markdown = memo(function Markdown({ content, onSource }: { content: string; onSource?: (id: string) => void }) {
+  const components: Components = { ...markdownComponents, a: ({ children, href }) => {
+    const match = href?.match(/^(?:\/api)?\/workspace\/sources\/(paper-[A-Za-z0-9._-]+)$/);
+    return match && onSource ? <button type="button" className="ws-citation-link" onClick={() => onSource(match[1])}>{children}<BookOpen size={13} aria-hidden="true" /></button> : <a href={href} target="_blank" rel="noopener noreferrer">{children}<ArrowUpRight size={13} aria-hidden="true" /></a>;
+  } };
+  return (
+    <div className="ws-prose">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={components}
       >
         {content}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
-function StreamingAnswer({ text, live, onSettled }: { text: string; live: boolean; onSettled?: () => void }) {
+function StreamingAnswer({ text, live, onSource }: { text: string; live: boolean; onSource: (id: string) => void }) {
   const visible = useStreamingText(text, live);
-  useEffect(() => { if (!live && visible === text) onSettled?.(); }, [live, visible, text, onSettled]);
-  return <div data-testid="stream-answer"><Markdown content={visible} /></div>;
-}
-
-function sourceVersionMeta(source: SourceReference): string[] {
-  const year = source.version_date?.match(/^\d{4}/)?.[0];
-  const status = source.version_label === "现行版本" || source.version_label === "现行有效"
-    ? "现行有效"
-    : source.version_label === "历史版本" || source.version_label === "旧版"
-      ? "旧版"
-      : null;
-  return [year ? `${year}年` : null, status].filter((value): value is string => Boolean(value));
-}
-
-function SourceCards({ sources, onOpen }: { sources?: SourceReference[]; onOpen: (source: SourceReference) => void }) {
-  if (!sources?.length) return null;
-  const unique = [...new Map(sources.map((source) => [source.source_id, source])).values()];
-  return (
-    <section className="ws-source-section" aria-label="回答依据">
-      <div className="ws-source-heading">
-        <span>回答依据</span>
-        <small>相关法规与案例资料</small>
-      </div>
-      <div className="ws-source-list">
-        {unique.map((source) => (
-          <button
-            type="button"
-            className="ws-source-card"
-            key={source.source_id}
-            onClick={() => onOpen(source)}
-          >
-            <span className={`ws-source-kind ${source.kind === "case" ? "is-case" : "is-law"}`}>
-              {source.kind === "case" ? "案例" : "法规"}
-            </span>
-            <span className="ws-source-copy">
-              <span className="ws-source-title">
-                <strong>{source.title}</strong>
-                {sourceVersionMeta(source).map((item) => <span className="ws-source-version" key={item}>{item}</span>)}
-              </span>
-              <small>
-                {[source.locator, source.section]
-                  .filter(Boolean)
-                  .join(" · ") || "已收录来源"}
-              </small>
-            </span>
-            <span className="ws-source-action">
-              查看原文
-              <ExternalLink size={14} aria-hidden="true" />
-            </span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ArtifactCards({ artifacts, onDownload }: { artifacts?: Artifact[]; onDownload: (artifact: Artifact) => void }) {
-  if (!artifacts?.length) return null;
-  const visible = artifacts.filter((artifact) => artifact.kind !== "preview");
-  if (!visible.length) return null;
-  const previewFor = (artifact: Artifact) => artifacts.find((candidate) =>
-    candidate.kind === "preview" && (
-      candidate.artifact_id === artifact.preview_artifact_id ||
-      candidate.preview_of_artifact_id === artifact.artifact_id
-    )
-  );
-  return (
-    <section className="ws-artifact-section" aria-label="工作产物">
-      <div className="ws-source-heading"><span>工作产物</span><small>可编辑文件与预览</small></div>
-      <div className="ws-artifact-list">
-        {visible.map((artifact) => {
-          const preview = previewFor(artifact);
-          return (
-            <div className="ws-artifact-card" key={artifact.artifact_id}>
-              <FileText size={18} aria-hidden="true" />
-              <span className="ws-artifact-copy"><strong>{artifact.name}</strong><small>版本 {artifact.version} · {Math.max(1, Math.round(artifact.size_bytes / 1024))} KB</small></span>
-              <span className="ws-artifact-actions">
-                {preview && (
-                  <button type="button" className="ws-text-button" onClick={() => onDownload(preview)}>
-                    下载 PDF <ArrowUpRight size={14} aria-hidden="true" />
-                  </button>
-                )}
-                <button type="button" className="ws-text-button" onClick={() => onDownload(artifact)}>
-                  下载 <ArrowUpRight size={14} aria-hidden="true" />
-                </button>
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
+  return <div data-testid="stream-answer"><Markdown content={visibleAnswerContent(visible)} onSource={onSource} /></div>;
 }
 
 const MARITIME_SOURCE_URL = /(?:\/api\/)?maritime\/sources\/(?:laws|cases)\/[^\s<>\x29\x5d`"”，。；]+(?:\?[^\s<>\x29\x5d`"”，。；]*)?/;
@@ -309,77 +304,33 @@ function SaveAnswer({ message, onNotice }: { message: Message; onNotice: (text: 
   );
 }
 
-function SourceViewer({
-  reference,
-  document,
-  loading,
-  error,
-  onClose,
-}: {
-  reference: SourceReference;
-  document: SourceDocument | null;
-  loading: boolean;
-  error: string | null;
-  onClose: () => void;
-}) {
-  const title = document?.title || reference.title;
-  const locator = document?.locator || reference.locator;
-  return (
-    <>
-      <div className="ws-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} />
-      <section className="ws-dialog ws-source-dialog" role="dialog" aria-modal="true" aria-labelledby="source-viewer-title">
-        <div className="ws-dialog-heading">
-          <div>
-            <span className="ws-source-dialog-kind">{reference.kind === "case" ? "案例原文" : "法规原文"}</span>
-            <h2 id="source-viewer-title">{title}</h2>
-          </div>
-          <IconButton label="关闭原文" onClick={onClose}><X size={18} /></IconButton>
-        </div>
-        <div className="ws-source-dialog-meta">
-          {[locator, document?.section || reference.section, ...sourceVersionMeta(document || reference)]
-            .filter(Boolean)
-            .map((item) => <span key={item}>{item}</span>)}
-        </div>
-        {loading ? (
-          <div className="ws-source-loading" role="status"><LoaderCircle size={17} className="ws-source-spinner" />正在读取原文…</div>
-        ) : error ? (
-          <div className="ws-source-error" role="alert">{error}</div>
-        ) : document ? (
-          <>
-            <pre className="ws-source-text">{document.text}</pre>
-            {document.source_url && (
-              <a className="ws-source-publisher-link" href={document.source_url} target="_blank" rel="noopener noreferrer">
-                打开发布页 <ExternalLink size={14} aria-hidden="true" />
-              </a>
-            )}
-          </>
-        ) : null}
-      </section>
-    </>
-  );
-}
-
 function Answer({
   message,
+  card,
+  onAnswerInputRequest,
   onNotice,
   onContinue,
+  uploading = false,
   onRetry,
-  onOpenSource,
-  onDownloadArtifact,
+  onOpenSources,
 }: {
   message: Message;
+  card?: PendingTurn;
+  onAnswerInputRequest: (choice: string) => Promise<void>;
   onNotice: (message: string) => void;
   onContinue?: () => void;
+  uploading?: boolean;
   onRetry?: () => void;
-  onOpenSource: (source: SourceReference) => void;
-  onDownloadArtifact: (artifact: Artifact) => void;
+  onOpenSources: (sourceId?: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>();
+  const visibleContent = visibleAnswerContent(message.content);
+  const actions = visibleAnswerActions({ ...message, content: visibleContent }, card?.status);
   useEffect(() => () => clearTimeout(timer.current), []);
   async function copy() {
     try {
-      await navigator.clipboard.writeText(message.content);
+      await navigator.clipboard.writeText(visibleContent);
       setCopied(true);
       clearTimeout(timer.current);
       timer.current = setTimeout(() => setCopied(false), 1800);
@@ -388,21 +339,63 @@ function Answer({
     }
   }
   return (
-    <article className="ws-answer">
+    <article className="ws-answer" aria-busy={card?.state === "receiving"}>
       <div className="ws-answer-byline">
         <span className="ws-answer-mark" aria-hidden="true">
           Z.
         </span>
         <span>舟序</span>
+        {message.model_snapshot && <span className="ws-answer-model" title="本次任务使用的模型">{modelLabel(message.model_snapshot.profile_id)}</span>}
       </div>
-      <RunProgress activities={message.activity} />
-      <Markdown content={message.content} />
-      <SourceCards sources={message.sources} onOpen={onOpenSource} />
-      <ArtifactCards artifacts={message.artifacts} onDownload={onDownloadArtifact} />
-      <WorkPackages
-        runId={message.run_id || undefined}
-        renderText={(text) => <Markdown content={text} />}
+      <RunProgress
+        activities={message.activity}
+        stages={message.stages}
+        nodes={message.node_states}
+        status={message.status}
+        elapsedMs={message.active_elapsed_ms}
+        wallElapsedMs={message.wall_elapsed_ms}
+        live={card?.state === "receiving"}
+        observedAt={card?.observedAt}
       />
+      {message.status === "paused" && message.content && <span className="ws-incomplete-label">未完成 · 已保留正文</span>}
+      <StreamingAnswer text={message.content} live={card?.state === "receiving"} onSource={onOpenSources} />
+      <SourceSummary sources={message.sources} onOpen={onOpenSources} />
+      {(!card || card.status === "succeeded") && <WorkPackages
+        runId={message.run_id || undefined}
+        renderText={(text) => <Markdown content={text} onSource={onOpenSources} />}
+      />}
+      {card?.state === "waiting" && card.inputRequest && (
+        card.inputRequest.kind === "mode_upgrade" ? (
+          <ModeUpgradeChoice uploading={uploading} onAnswer={onAnswerInputRequest} />
+        ) : (
+        <div className="ws-run-status ws-run-status-waiting" role="status">
+          <p>{card.inputRequest.question}</p>
+          {card.inputRequest.options.length > 0 && (
+            <div className="ws-waiting-options">
+              {card.inputRequest.options.map((opt, idx) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={uploading}
+                  className={idx === 0 ? "ws-primary-button ws-waiting-option-primary" : "ws-text-button ws-waiting-option-secondary"}
+                  onClick={() => void onAnswerInputRequest(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="ws-muted">
+            {card.inputRequest.options.length > 0
+              ? "可直接点击上方选项确认，或在下方补充具体要求后发送。"
+              : "请在下方输入补充信息后发送。"}
+          </p>
+          <button className="ws-text-button" onClick={onRetry}>重新处理本任务</button>
+        </div>
+        )
+      )}
+
+      {message.status === "pausing" && <div className="ws-run-status" role="status">正在保存当前进度，请稍候…</div>}
       {message.status === "cancelled" && (
         <div className="ws-run-status ws-run-status-cancelled" role="status">
           已取消
@@ -418,33 +411,51 @@ function Answer({
           {message.recovery?.message || "处理未完成，已保留已生成内容。"}
         </div>
       )}
-      <div className="ws-answer-tools">
-        {(message.recovery?.can_continue || message.recovery?.can_retry) && (
+      {(actions.answer || actions.recovery) && <div className="ws-answer-tools">
+        {actions.recovery && (
           <div className="ws-answer-action-group" aria-label="恢复操作">
-            {message.recovery?.can_continue && <button className="ws-text-button" onClick={onContinue}>继续处理</button>}
+            {message.recovery?.can_continue && <button className="ws-text-button" disabled={uploading} onClick={onContinue}>继续处理</button>}
             {message.recovery?.can_retry && <button className="ws-text-button" onClick={onRetry}>重新做</button>}
           </div>
         )}
-        <div className="ws-answer-action-group ws-answer-action-group-secondary" aria-label="回答操作">
+        {actions.answer && <div className="ws-answer-action-group ws-answer-action-group-secondary" aria-label="回答操作">
           <button className="ws-text-button" onClick={() => void copy()}>
             {copied ? <Check size={15} /> : <Copy size={15} />}
             {copied ? "已复制" : "复制回答"}
           </button>
-          <SaveAnswer message={message} onNotice={onNotice} />
-        </div>
-      </div>
+          <SaveAnswer message={{ ...message, content: visibleContent }} onNotice={onNotice} />
+        </div>}
+      </div>}
     </article>
   );
+}
+
+function cardMessage(card: PendingTurn, role: Message["role"], persisted?: Message): Message {
+  return {
+    ...persisted,
+    id: `${card.runId}:${role}`, role, run_id: card.runId,
+    created_at: card.createdAt ?? persisted?.created_at ?? "",
+    content: role === "user" ? card.question : card.answer,
+    model_snapshot: card.modelSnapshot,
+    context_compaction_count: card.contextCompactionCount,
+    materials: card.materials, updates: card.updates,
+    status: card.status, recovery: card.recovery,
+    activity: card.activities, stages: card.stages,
+    node_states: card.nodes, active_elapsed_ms: card.activeElapsedMs,
+    wall_elapsed_ms: card.wallElapsedMs, sources: card.sources, artifacts: card.artifacts,
+  };
 }
 
 export default function Conversation({
   ws,
   id,
   openMaterials,
+  openSources,
 }: {
   ws: Workspace;
   id?: string;
   openMaterials: () => void;
+  openSources: (runId?: string, sourceId?: string) => void;
 }) {
   const reduced = useReducedMotion();
   const reader = useRef<HTMLDivElement>(null);
@@ -454,18 +465,39 @@ export default function Conversation({
   const previousId = useRef(id);
   const [showLatest, setShowLatest] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [sourceReference, setSourceReference] = useState<SourceReference | null>(null);
-  const [sourceDocument, setSourceDocument] = useState<SourceDocument | null>(null);
-  const [sourceLoading, setSourceLoading] = useState(false);
-  const [sourceError, setSourceError] = useState<string | null>(null);
   const dragDepth = useRef(0);
   const detail = ws.detail.data;
+  // One keyed list and one answer component for streaming and persisted messages.
+  // Replacing the data source must never replace the reader's DOM nodes.
+  const cardsByRun = new Map(ws.visibleRuns.map(card => [card.runId, card]));
+  const messages = mergeRunMessages(detail?.messages ?? [], ws.suppressedRunIds).flatMap(message => {
+    const card = cardsByRun.get(message.run_id);
+    if (!card) return [message];
+    if (card.status === "queued" || message.role === "assistant") return [];
+    // A running task may have only its question persisted so far.
+    return [cardMessage(card, "user", message), cardMessage(card, "assistant")];
+  });
+  const persistedRuns = new Set(detail?.messages.map(message => message.run_id));
+  for (const card of ws.visibleRuns) {
+    if (card.status !== "queued" && !persistedRuns.has(card.runId)) {
+      messages.push(cardMessage(card, "user"), cardMessage(card, "assistant"));
+    }
+  }
+  const modelSwitches = effectiveModelSwitches(messages, id || "new");
+
   const turn = ws.turn?.conversationId === id ? ws.turn : null;
   const receiving = turn?.status === "running";
+  const continuationMode = Boolean(
+    turn &&
+    (turn.status === "paused" || (turn.status === "failed" && turn.recovery.can_continue)),
+  );
+  const selectedModel = ws.modelCatalog?.groups
+    .flatMap(group => group.models)
+    .find(model => model.profile_id === ws.modelProfileId && model.available);
   const empty = !detail?.messages.length && !turn;
   const materials = ws.draftMaterials;
   const uploads = ws.uploads.filter((u) => u.conversationId === id);
-  const uploading = uploads.some((u) => !u.error);
+  const uploading = ws.uploadBusy;
   const scrollLatest = useCallback(
     (smooth = false) => {
       const el = reader.current;
@@ -517,24 +549,6 @@ export default function Conversation({
     ws.setDraft(tasks[index].prompt);
     requestAnimationFrame(() => input.current?.focus());
   };
-  const openSource = useCallback(async (reference: SourceReference) => {
-    setSourceReference(reference);
-    setSourceDocument(null);
-    setSourceError(null);
-    setSourceLoading(true);
-    try {
-      setSourceDocument(await ws.api.source(reference.source_id));
-    } catch {
-      setSourceError("原文暂时无法打开，请稍后再试。");
-    } finally {
-      setSourceLoading(false);
-    }
-  }, [ws.api]);
-  const downloadArtifact = useCallback((runId: string | null | undefined, artifact: Artifact) => {
-    if (!runId) return;
-    void ws.downloadArtifact(runId, artifact.artifact_id, artifact.name).catch(() => ws.setNotice("文件暂时无法下载，请稍后再试。"));
-  }, [ws]);
-
   if (id && ws.detail.isPending && !turn)
     return (
       <div className="ws-center-state">
@@ -596,6 +610,8 @@ export default function Conversation({
         ref={reader}
         tabIndex={0}
         aria-label="对话内容"
+        onWheel={(event) => { if (event.deltaY < 0) atEnd.current = false; }}
+        onTouchMove={() => { atEnd.current = false; }}
         onScroll={() => {
           const el = reader.current;
           if (el) {
@@ -624,85 +640,35 @@ export default function Conversation({
             </motion.div>
           ) : (
             <motion.div key="thread" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .18 }}>
-              {mergeRunMessages(detail?.messages || [], [...ws.visibleRuns.map(r => r.runId), ...ws.suppressedRunIds]).map((message) =>
+              {messages.map((message) => <Fragment key={message.run_id ? `${message.run_id}:${message.role}` : message.id}>
+                {modelSwitches.has(message.id) && <ModelSwitchDivider event={modelSwitches.get(message.id)!} />}
+                {message.role === "assistant" && (message.context_compaction_count ?? 0) > 0 && <ContextCompactionDivider />}
+                {
                 message.role === "user" ? (
-                  <article className="ws-question" key={message.id}>
+                  <article className="ws-question" key={message.run_id ? `${message.run_id}:user` : message.id}>
                     <div>{message.content}</div>
                     <MaterialCards materials={message.materials} />
                     {message.updates?.map((text, index) => <div className="ws-user-update" key={index}><small>补充要求</small><p>{text}</p></div>)}
                   </article>
                 ) : (
                   <Answer
-                    key={message.id}
+                    key={message.run_id ? `${message.run_id}:assistant` : message.id}
                     message={message}
+                    card={cardsByRun.get(message.run_id)}
+                    onAnswerInputRequest={(choice) => ws.answerInputRequest(choice, message.run_id || undefined)}
                     onNotice={ws.setNotice}
                     onContinue={() => void ws.continueRun(message.run_id || undefined)}
+                    uploading={uploading}
                     onRetry={() => void ws.retryTurn(message.run_id || undefined)}
-                    onOpenSource={(source) => void openSource(source)}
-                    onDownloadArtifact={(artifact) => downloadArtifact(message.run_id, artifact)}
+                    onOpenSources={(sourceId) => openSources(message.run_id ?? undefined, sourceId)}
                   />
-                ),
-              )}
-              {ws.visibleRuns.filter(card => card.status !== "queued").map((card) => (
-                <Fragment key={card.runId}>
-                  <article className="ws-question">
-                    <div>{card.question}</div>
-                    <MaterialCards materials={card.materials} />
-                    {card.updates?.map((text, index) => <div className="ws-user-update" key={index}><small>补充要求</small><p>{text}</p></div>)}
-                  </article>
-                  <article
-                    className="ws-answer"
-                    aria-busy={card.state === "receiving"}
-                  >
-                    <div className="ws-answer-byline">
-                      <span className="ws-answer-mark" aria-hidden="true">
-                        Z.
-                      </span>
-                      <span>舟序</span>
-                      <span className="ws-stream-state">
-                        {card.status === "running" ? "正在回答" : card.status === "waiting_user" ? "等待补充" : card.status === "succeeded" ? "已完成" : card.status === "failed" ? "运行失败" : card.status === "cancelled" ? "已取消" : card.status === "paused" ? "已暂停" : "未确认保存"}
-                      </span>
-                    </div>
-                    <RunProgress
-                      activities={card.activities}
-                      live={card.state === "receiving"}
-                    />
-                    <RunTimeline
-                      nodes={card.nodes}
-                      activeElapsedMs={card.activeElapsedMs}
-                      wallElapsedMs={card.wallElapsedMs}
-                    />
-                    <StreamingAnswer key={card.runId} text={card.answer} live={card.state === "receiving"} onSettled={card.status === "succeeded" ? () => void ws.finishPresentation(card.runId!) : undefined} />
-                    <SourceCards sources={card.sources} onOpen={(source) => void openSource(source)} />
-                    <ArtifactCards artifacts={card.artifacts} onDownload={(artifact) => downloadArtifact(card.runId, artifact)} />
-                    {card.state === "waiting" && card.inputRequest && (
-                      <div className="ws-run-status ws-run-status-waiting" role="status">
-                        <p>{card.inputRequest.question}</p>
-                        <p className="ws-muted">请在下方输入补充信息后发送。</p>
-                        <button className="ws-text-button" onClick={() => void ws.retryTurn(card.runId)}>重新处理本任务</button>
-                      </div>
-                    )}
-                    {(card.state === "paused" || card.state === "failed") && (
-                      <div className="ws-run-status" role="status">
-                        <p>{card.recovery.message || card.error || "处理未完成，已有内容已保留。"}</p>
-                        <div className="ws-run-status-actions">
-                          {card.recovery.can_continue && <button className="ws-text-button" onClick={() => void ws.continueRun(card.runId)}>继续处理</button>}
-                          {card.recovery.can_retry && <button className="ws-text-button" onClick={() => void ws.retryTurn(card.runId)}>重新做</button>}
-                        </div>
-                      </div>
-                    )}
-                    {card.state === "cancelled" && (
-                      <div className="ws-run-status ws-run-status-cancelled" role="status">
-                        已取消
-                      </div>
-                    )}
-                  </article>
-                </Fragment>
-              ))}
+                )}
+              </Fragment>)}
 
             </motion.div>
           )}
           </AnimatePresence>
+          {ws.pendingModelSwitch && <ModelSwitchDivider event={ws.pendingModelSwitch} pending />}
           <div className="ws-reader-end" />
         </div>
       </div>
@@ -757,10 +723,16 @@ export default function Conversation({
               </motion.div>
             ))}
           </AnimatePresence>
-          {ws.conversationMode === "work" && (
-            <div className="ws-mode-note" role="status">
-              <BriefcaseBusiness size={14} aria-hidden="true" />
-              <span>工作模式 · 需要文件操作时才准备执行环境</span>
+          {continuationMode && (
+            <div className="ws-mode-note ws-continuation-note" role="status">
+              <button
+                type="button"
+                className="ws-text-button"
+                style={{ marginLeft: "auto", fontSize: "12px" }}
+                onClick={ws.dismissContinuation}
+              >
+                新建提问
+              </button>
             </div>
           )}
           <form
@@ -849,7 +821,7 @@ export default function Conversation({
               ref={input}
               value={ws.draft}
               onChange={(e) => ws.setDraft(e.target.value)}
-              placeholder={ws.conversationMode === "work" ? "描述要完成的工作和希望得到的文件。" : "让事实有序，让判断有据。"}
+              placeholder={continuationMode ? "补充继续要求（将接着当前任务处理）" : ws.conversationMode === "work" ? "描述要完成的工作和希望得到的文件。" : "让事实有序，让判断有据。"}
               rows={2}
               maxLength={50000}
               disabled={false}
@@ -887,7 +859,18 @@ export default function Conversation({
                     从资料库选择
                   </MenuItem>
                 </Menu>
-                <ThinkingModeSelect value={ws.thinkingMode} onChange={ws.setThinkingMode} />
+                <ModelSelect
+                  catalog={ws.modelCatalog}
+                  value={ws.modelProfileId}
+                  onChange={ws.setModelProfile}
+                />
+                {selectedModel && (
+                  <ThinkingModeSelect
+                    value={ws.thinkingMode}
+                    modes={selectedModel.thinking_modes}
+                    onChange={ws.setThinkingMode}
+                  />
+                )}
                 {detail?.linked_resources.length ? (
                   <span className="ws-composer-hint">
                     <button type="button" onClick={openMaterials}>
@@ -915,7 +898,8 @@ export default function Conversation({
                   aria-label="发送问题"
                   disabled={
                     !ws.draft.trim() ||
-                    uploading
+                    uploading ||
+                    ws.turn?.state === "pausing"
                   }
                 >
                   <ArrowUp size={20} />
@@ -971,15 +955,7 @@ export default function Conversation({
           )}
         </motion.div>
       </div>
-      {sourceReference && (
-        <SourceViewer
-          reference={sourceReference}
-          document={sourceDocument}
-          loading={sourceLoading}
-          error={sourceError}
-          onClose={() => { setSourceReference(null); setSourceDocument(null); setSourceError(null); }}
-        />
-      )}
+
     </div>
   );
 }

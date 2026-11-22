@@ -3,13 +3,14 @@ from uuid import uuid4
 
 from pydantic import Field
 
+from backend.contracts.model_profiles import ModelRunSnapshot
 from backend.contracts.modules.materials import MaterialInput
 from backend.contracts.modules.memory import MemoryInput as MemoryInput  # noqa: F401
 from backend.contracts.modules.memory import MemoryRecall
 from backend.contracts.modules.perception import ContextAssembly, ContextItem
 from backend.contracts.schemas.core import Contract, Error
 
-ThinkingMode = Literal["none", "low", "high"]
+ThinkingMode = Literal["none", "low", "medium", "high", "xhigh", "max"]
 ConversationMode = Literal["chat", "work"]
 
 
@@ -21,6 +22,9 @@ class RunInput(Contract):
     mode: ConversationMode | None = None
     # A Run owns its mode; None only supports older checkpoints/CLI inputs.
     thinking_mode: ThinkingMode | None = None
+    # A run keeps the selected provider profile immutable for replay/audit.
+    model_profile_id: str | None = None
+    model_snapshot: ModelRunSnapshot | None = None
     facts: dict[str, Any] = Field(default_factory=dict)
     constraints: list[str] = Field(default_factory=list)
     materials: list[MaterialInput] = Field(default_factory=list)
@@ -203,6 +207,7 @@ class RunResult(Contract):
     status: Literal["succeeded", "waiting_user", "failed", "cancelled", "yielded"]
     answer: str | None = None
     missing_inputs: list[str] = Field(default_factory=list)
+    input_requests: list[dict[str, Any]] = Field(default_factory=list)
     error: Error | None = None
     elapsed_seconds: float
     completed_units: int | None = None

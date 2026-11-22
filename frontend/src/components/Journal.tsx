@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 const entries = [
   { title: "先说清楚，你要解决什么", image: "/explorations/planet.jpeg", readTime: "01", date: "提出问题", description: "说明争议发生的背景，以及你希望得到的判断、核对或草稿。不必先整理成完整报告，也可以从一个具体问题开始。" },
   { title: "让材料，回到事情的脉络里", image: "/explorations/cubes.jpeg", readTime: "02", date: "补充材料", description: "按需要补充合同、提单、邮件和检验报告。保留原始文件与版本，说明文件之间的关系，并区分案件材料与一般参考资料。" },
-  { title: "有依据，也看见判断的边界", image: "/explorations/ascii.jpeg", readTime: "03", date: "核对结果", description: "核对引用对应的文件与位置，检查计算起止、扣减和前提。材料没有显示，不等于法律上无效；有分歧的前提需要分别讨论。" },
+  { title: "有依据，也看见判断的边界", image: "/explorations/ascii.jpeg", readTime: "03", date: "核对结果", description: "核对引用对应的文件与位置，检查计算起止、扣减和前提；有分歧的前提需要分别讨论。" },
   { title: "补充新信息，继续向前一步", image: "/explorations/smoke.jpeg", readTime: "04", date: "持续推进", description: "在原对话中继续补充材料或纠正前提，辨明哪些结论改变、哪些仍然成立。涉及重要权利义务和正式提交的内容，交由专业人员复核。" },
 ];
 

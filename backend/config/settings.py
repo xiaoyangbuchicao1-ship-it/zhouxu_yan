@@ -29,6 +29,7 @@ class RuntimeSettings(BaseModel):
     call_timeout_seconds: float = Field(gt=0)
     model_call_timeout_seconds: float | None = Field(default=None, gt=0)
     action_timeout_seconds: float | None = Field(default=None, gt=0)
+    compile_timeout_seconds: float = Field(default=180.0, gt=0)
     tool_history_items: int = Field(default=4, ge=0)
     tool_history_chars: int = Field(default=3000, ge=0)
     recoverable_tool_errors: list[str] = Field(default_factory=list)
@@ -42,13 +43,20 @@ class GenerationMode(BaseModel):
 
 
 class ModelSettings(BaseModel):
-    provider: Literal["deepseek"] = "deepseek"
+    provider: Literal["deepseek", "relay"] = "deepseek"
+    protocol: Literal[
+        "deepseek_chat_completions",
+        "openai_chat_completions",
+        "openai_responses",
+        "anthropic_messages",
+        "google_generative_language",
+    ] = "deepseek_chat_completions"
     endpoint: str
     allowed_hosts: list[str]
     name: str
     timeout_seconds: float = Field(gt=0)
     temperature: float
-    thinking_mode: Literal["none", "low", "high"] = "none"
+    thinking_mode: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
     modes: dict[str, GenerationMode]
     credential_file: str
     credential_names: list[str]
@@ -57,6 +65,9 @@ class ModelSettings(BaseModel):
     decision_protocol: Literal["text", "explicit"] = "text"
     delivery_tool: str = "deliver_response"
     delivery_description: str = ""
+    # Deployment capability evidence, separate from upstream family names.
+    relay_effort_supported: bool = False
+    relay_thinking_style: str = "adaptive"
 
     @property
     def thinking_enabled(self) -> bool:
@@ -208,9 +219,10 @@ class ResearchCardSettings(BaseModel):
     # optional research resources. Production defaults enable the integration.
     enabled: bool = False
     information_alias: str = "maritime_information_cards_read"
-    information_index: str = "maritime_information_cards_v3"
+    information_index: str = "maritime_information_cards_v4"
     information_max_results: int = Field(default=6, ge=1, le=20)
     information_result_budget_chars: int = Field(default=12000, ge=1000)
+    originals_root: str = ""
     capability_dir: str = ""
     capability_file: str = "capability_cards.jsonl"
     skill_dir: str = ""
@@ -317,6 +329,7 @@ def load_settings(path: Path | None = None) -> Settings:
         for env_name, field_name in (
             ("ZHOUXU_CAPABILITY_CARDS_DIR", "capability_dir"),
             ("ZHOUXU_CSL_PAPER_SKILL_DIR", "skill_dir"),
+            ("ZHOUXU_PAPER_ORIGINALS_DIR", "originals_root"),
         ):
             value = os.environ.get(env_name, "").strip()
             if value:

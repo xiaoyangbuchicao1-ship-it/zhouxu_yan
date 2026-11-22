@@ -1,0 +1,24 @@
+# Use together with deploy/app/compose.yaml. Paths resolve from deploy/app.
+# This one-off test service never mounts the production runtime-state volume.
+services:
+  zhouxu-api:
+    volumes: !override
+      - ../../backend:/app/backend:ro
+      - ../../tests:/app/tests:ro
+      - ${ZHOUXU_DATA_DIR:-../../data}:/app/data:ro
+      - ${ZHOUXU_OPENSEARCH_DIR:-../../opensearch}:/app/opensearch:ro
+      - ${ZHOUXU_CAPABILITY_CARDS_DIR:-../../../能力卡}:/app/runtime-resources/capability_cards:ro
+      - ${ZHOUXU_PDF_DIR:-../../../PDF}:/app/runtime-resources/papers/PDF:ro
+      - ${ZHOUXU_MD_DIR:-../../../md}:/app/runtime-resources/papers/md:ro
+      - ${ZHOUXU_HF_CACHE_DIR:-../../models/huggingface}:/root/.cache/huggingface:ro
+      - ${ZHOUXU_PAPER_FONT_DIR:-../../models/fonts}:/usr/share/fonts/zhouxu:ro
+      - type: bind
+        source: ${ZHOUXU_RUNTIME_ENV_FILE:-.env}
+        target: /app/runtime.env
+        read_only: true
+      - type: tmpfs
+        target: /app/backend/.runtime
+      - type: bind
+        source: ${ZHOUXU_PROMPT_TEST_OUTPUT:?Set an absolute test output directory}
+        target: /results
+    command: ["python", "-B", "tests/prompts/compare.py", "--output", "/results"]

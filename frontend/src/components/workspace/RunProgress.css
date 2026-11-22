@@ -1,10 +1,162 @@
-.ws-progress { margin: 0 0 18px; }
-.ws-progress-current { display: flex; align-items: center; gap: 10px; min-height: 24px; color: #b6c5d4; font-size: 14px; }
-.ws-progress-label { background: linear-gradient(100deg, #95a7ba 15%, #edf5fb 40%, #95a7ba 65%); background-size: 230% 100%; background-clip: text; -webkit-background-clip: text; color: transparent; animation: ws-status-shine 2.8s ease-in-out infinite; }
-@keyframes ws-status-shine { from { background-position: 140% 0; } to { background-position: -90% 0; } }
-.ws-progress .ws-activities { margin: 7px 0 0 24px; font-size: 12px; }
-.ws-progress .ws-activities summary { opacity: .7; }
-.ws-progress .ws-activities ol { padding-left: 0; }
+.ws-progress {
+  margin: 0 0 18px;
+  color: #91a2b5;
+  font-size: 12px;
+}
+
+.ws-stage-details {
+  width: 100%;
+  min-width: 0;
+}
+
+.ws-stage-details > summary,
+.ws-stage-details-static {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 0;
+  list-style: none;
+  border-radius: 6px;
+}
+
+.ws-stage-details > summary {
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.ws-stage-details > summary::-webkit-details-marker { display: none; }
+.ws-stage-details > summary:hover { color: #d4e0ec; }
+.ws-stage-details > summary:focus-visible {
+  outline: 2px solid #8db5dc;
+  outline-offset: 4px;
+}
+
+.ws-progress-status {
+  display: grid;
+  place-items: center;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  color: #8c9eaf;
+}
+
+.ws-progress-status.is-live { color: #a2c4e6; }
+.ws-progress-status.is-done { color: #7cc3a3; }
+
+.ws-progress-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ws-progress-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #bbcbdc;
+  line-height: 1.5;
+}
+
+.ws-stage-details > summary > time,
+.ws-stage-details-static > time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: #899caf;
+}
+
+.ws-stage-details > summary > time::before,
+.ws-stage-details-static > time::before {
+  content: "·";
+  margin-right: 8px;
+  color: #61778b;
+}
+
+.ws-progress-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding-left: 8px;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.ws-progress-toggle svg { transition: transform 180ms ease; }
+.ws-stage-details[open] .ws-progress-toggle svg { transform: rotate(180deg); }
+
+.ws-progress-details {
+  padding: 5px 0 2px 22px;
+  animation: ws-progress-in 180ms ease-out;
+}
+
+.ws-stage-list,
+.ws-progress-node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ws-stage-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 16px;
+  padding: 6px 0;
+  color: #9eb0c3;
+  line-height: 1.5;
+}
+
+.ws-stage-list > li[data-active=true] > span { color: #dce8f5; }
+.ws-stage-list > li > time { color: #899caf; font-variant-numeric: tabular-nums; }
+.ws-stage-list > li > small { grid-column: 1 / -1; color: #8093a6; font-size: 11px; }
+
+.ws-progress-node {
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 9px;
+  padding: 6px 0;
+  line-height: 1.5;
+}
+
+.ws-progress-node-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #50687d;
+}
+
+.ws-progress-node-running .ws-progress-node-dot,
+.ws-progress-node-resuming .ws-progress-node-dot,
+.ws-progress-node-retrying .ws-progress-node-dot { background: #a2c4e6; }
+.ws-progress-node-succeeded .ws-progress-node-dot { background: #7cc3a3; }
+.ws-progress-node-failed .ws-progress-node-dot { background: #d68b8b; }
+
+.ws-progress-node-title { min-width: 0; color: #9eb0c3; overflow-wrap: anywhere; }
+.ws-progress-node-running .ws-progress-node-title { color: #dce8f5; }
+.ws-progress-node-meta { color: #899caf; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ws-progress-node-error { grid-column: 2 / -1; color: #d99898; font-size: 11px; }
+.ws-progress-note { margin: 7px 0 0; color: #8093a6; font-size: 11px; }
+
+@keyframes ws-progress-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .ws-progress-label { animation: none; background: none; color: #b6c5d4; }
+  .ws-stage-details > summary,
+  .ws-progress-toggle svg,
+  .ws-progress-details { transition: none; animation: none; }
+}
+
+@media (max-width: 600px) {
+  .ws-stage-details > summary,
+  .ws-stage-details-static { gap: 6px; }
+  .ws-progress-toggle { gap: 3px; padding-left: 2px; font-size: 11px; }
+  .ws-progress-details { padding-left: 20px; }
+  .ws-progress-node-meta { font-size: 11px; }
 }

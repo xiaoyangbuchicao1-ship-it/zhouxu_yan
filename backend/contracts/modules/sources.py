@@ -13,15 +13,28 @@ from backend.contracts.schemas.core import Contract
 
 class SourceReference(Contract):
     source_id: str
-    kind: Literal["law", "case"]
+    kind: Literal["law", "case", "paper"]
     title: str
     locator: str | None = None
     section: str | None = None
     version_date: str | None = None
     version_label: str | None = None
+    authors: str | None = None
+    collection: str | None = None
+
+
+class PaperOriginal(Contract):
+    document_id: str
+    sha256: str
+    size_bytes: int
+    page: int | None = None
+    page_end: int | None = None
+    page_count: int
+    content_url: str
 
 
 class SourceDocument(SourceReference):
     text: str
     source_url: str | None = None
     notices: list[str] = Field(default_factory=list)
+    original: PaperOriginal | None = None

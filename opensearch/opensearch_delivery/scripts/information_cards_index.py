@@ -17,7 +17,7 @@ DELIVERY = Path(__file__).resolve().parents[1]
 OPENSEARCH_ROOT = DELIVERY.parent
 PROJECT_ROOT = OPENSEARCH_ROOT.parent
 DEFAULT_SOURCE = PROJECT_ROOT.parent / "信息卡"
-DEFAULT_INDEX = "maritime_information_cards_v3"
+DEFAULT_INDEX = "maritime_information_cards_v4"
 SCHEMA_DIRECTORY = "maritime_information_cards_v2"
 DEFAULT_ALIAS = "maritime_information_cards_read"
 DEFAULT_EMBEDDINGS = OPENSEARCH_ROOT / "import" / "information_cards"
@@ -204,11 +204,10 @@ class CardEncoder:
     max_tokens = 2048
 
     def __init__(self, *, device="cpu", threads=4):
-        import torch
-        from transformers import AutoModel, AutoTokenizer
-
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        import torch
+        from transformers import AutoModel, AutoTokenizer
         self.contract = definition()["mappings"]["_meta"]["embedding"]
         options = {
             "revision": self.contract["revision"],
@@ -241,9 +240,13 @@ class CardEncoder:
         return encoded.cpu().numpy()
 
 
-def build_embeddings(cards, manifest, folder, *, device="cpu", batch_size=8):
+def build_embeddings(cards, manifest, folder, *, device="cpu", batch_size=8, reuse_dir=None, stop_after=None):
     """Same pinned CLS/L2 contract as the resident query encoder."""
     import numpy as np
+
+    if reuse_dir is not None:
+        return _incremental_embeddings(cards, manifest, folder, reuse_dir, device=device,
+                                       batch_size=batch_size, stop_after=stop_after)
 
     encoder = CardEncoder(device=device)
     contract = encoder.contract
@@ -313,6 +316,87 @@ def build_embeddings(cards, manifest, folder, *, device="cpu", batch_size=8):
     }
 
 
+def _incremental_embeddings(cards, manifest, folder, reuse_dir, *, device, batch_size, stop_after):
+    """Reuse only identical inputs under the identical pinned encoder contract."""
+    import numpy as np
+
+    contract = definition()["mappings"]["_meta"]["embedding"]
+    cached = _read_json(reuse_dir / "manifest.json")
+    if cached["embedding"] != contract:
+        raise CardImportError("cached_embedding_contract_changed")
+    for filename, key in (("vectors.npy", "vectors_sha256"), ("vectors_meta.jsonl", "sidecar_sha256")):
+        if _file_sha256(reuse_dir / filename) != cached[key]:
+            raise CardImportError("cached_embedding_file_changed:" + filename)
+    cache_rows = [json.loads(line) for line in (reuse_dir / "vectors_meta.jsonl").read_text(encoding="utf-8").splitlines()]
+    cache_vectors = np.load(reuse_dir / "vectors.npy", mmap_mode="r")
+    if cache_vectors.shape != (len(cache_rows), contract["dimensions"]):
+        raise CardImportError("cached_embedding_shape_invalid")
+    cache = {row["input_sha256"]: row for row in cache_rows}
+    hashes = [hashlib.sha256(card["retrieval_text"].encode()).hexdigest() for card in cards]
+    identity = hashlib.sha256(json.dumps([manifest, hashes], sort_keys=True).encode()).hexdigest()
+    folder.mkdir(parents=True, exist_ok=True)
+    progress_path = folder / "vectors.progress.json"
+    temporary = folder / "vectors.building.npy"
+    if progress_path.is_file():
+        progress = _read_json(progress_path)
+        if progress["identity"] != identity:
+            raise CardImportError("unfinished_embedding_release_changed")
+        lengths, done = progress["lengths"], progress["done"]
+        vectors = np.lib.format.open_memmap(temporary, mode="r+")
+        reused = progress["reused"]
+    else:
+        vectors = np.lib.format.open_memmap(temporary, mode="w+", dtype=np.float32,
+                                           shape=(len(cards), contract["dimensions"]))
+        lengths, done, reused = [None] * len(cards), [False] * len(cards), 0
+        for index, digest in enumerate(hashes):
+            if digest in cache:
+                record = cache[digest]
+                vectors[index] = cache_vectors[record["row"]]
+                lengths[index], done[index] = record["original_tokens"], True
+                reused += 1
+    pending = [index for index, complete in enumerate(done) if not complete]
+    encoder = CardEncoder(device=device) if pending else None
+    unknown = [index for index in pending if lengths[index] is None]
+    if unknown:
+        for index, length in zip(unknown, encoder.token_lengths([cards[i]["retrieval_text"] for i in unknown]), strict=True):
+            lengths[index] = length
+    pending.sort(key=lambda index: min(lengths[index], CardEncoder.max_tokens))
+    began = time.monotonic()
+    encoded = 0
+
+    def save():
+        vectors.flush()
+        progress_path.write_text(json.dumps({"identity": identity, "lengths": lengths, "done": done, "reused": reused}), encoding="utf-8")
+
+    save()
+    for offset in range(0, len(pending), batch_size):
+        indices = pending[offset:offset + batch_size]
+        vectors[indices] = encoder.encode([cards[index]["retrieval_text"] for index in indices])
+        for index in indices:
+            done[index] = True
+        encoded += len(indices)
+        save()
+        elapsed = round(time.monotonic() - began, 1)
+        print(json.dumps({"reused": reused, "newly_encoded": encoded, "remaining": sum(not x for x in done), "seconds": elapsed}), flush=True)
+        if stop_after is not None and encoded >= stop_after and not all(done):
+            return {"complete": False, "reused": reused, "newly_encoded": encoded, "seconds": elapsed}
+    del vectors
+    temporary.replace(folder / "vectors.npy")
+    with (folder / "vectors_meta.jsonl").open("w", encoding="utf-8") as stream:
+        for index, card in enumerate(cards):
+            stream.write(json.dumps({"row": index, "card_id": card["card_id"], "input_sha256": hashes[index],
+                                     "original_tokens": lengths[index], "truncated": lengths[index] > CardEncoder.max_tokens}) + "\n")
+    result = {**manifest, "embedding": contract, "max_tokens": CardEncoder.max_tokens,
+              "inference_device": device, "input_field": "retrieval_text",
+              "vectors_sha256": _file_sha256(folder / "vectors.npy"),
+              "sidecar_sha256": _file_sha256(folder / "vectors_meta.jsonl"),
+              "truncated_count": sum(length > CardEncoder.max_tokens for length in lengths), "reused_vectors": reused}
+    (folder / "manifest.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalize_release(cards, manifest, folder)
+    progress_path.unlink()
+    return {"complete": True, "embedded": len(cards), "reused": reused, "newly_encoded": encoded}
+
+
 def normalize_release(cards, manifest, folder):
     """Persist reviewable normalized records alongside the derived vectors."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -346,10 +430,17 @@ def normalize_release(cards, manifest, folder):
     with (folder / "sources.jsonl").open("w", encoding="utf-8") as out:
         for value in sources.values():
             out.write(json.dumps(value, ensure_ascii=False) + "\n")
+    registry_path = Path(manifest["source_dir"]) / "source_registry.jsonl"
+    with registry_path.open(encoding="utf-8-sig") as records, (folder / "papers.jsonl").open("w", encoding="utf-8") as out:
+        for line in records:
+            if line.strip():
+                record = json.loads(line)
+                out.write(json.dumps(record, ensure_ascii=False) + "\n")
     release.update(
         {
             "normalized_cards_sha256": _file_sha256(folder / "cards.jsonl"),
             "sources_sha256": _file_sha256(folder / "sources.jsonl"),
+            "papers_sha256": _file_sha256(folder / "papers.jsonl"),
             "represented_source_count": len(sources),
         }
     )
@@ -381,6 +472,7 @@ def load_embeddings(folder, cards, manifest):
         ("vectors_meta.jsonl", "sidecar_sha256"),
         ("cards.jsonl", "normalized_cards_sha256"),
         ("sources.jsonl", "sources_sha256"),
+        ("papers.jsonl", "papers_sha256"),
     ):
         if _file_sha256(folder / name) != meta[key]:
             raise CardImportError(f"embedding_file_changed:{name}")
@@ -597,6 +689,8 @@ def main() -> int:
     parser.add_argument("--embeddings-dir", type=Path, default=DEFAULT_EMBEDDINGS)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--embedding-batch-size", type=int, default=8)
+    parser.add_argument("--reuse-embeddings-dir", type=Path)
+    parser.add_argument("--stop-after", type=int)
     parser.add_argument("--replace-index")
     parser.add_argument("--previous-source-sha256")
     args = parser.parse_args()
@@ -611,6 +705,8 @@ def main() -> int:
             args.embeddings_dir,
             device=args.device,
             batch_size=args.embedding_batch_size,
+            reuse_dir=args.reuse_embeddings_dir,
+            stop_after=args.stop_after,
         )
     elif args.command == "normalize":
         result = normalize_release(cards, manifest, args.embeddings_dir)

@@ -20,6 +20,7 @@ class AccountModel(Base):
     display_name: Mapped[str] = mapped_column(String(80), default="")
     password_hash: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="active")
+    role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -57,6 +58,28 @@ class SessionModel(Base):
     harness_sessions: Mapped[list["HarnessSessionModel"]] = relationship(
         back_populates="auth_session", cascade="all, delete-orphan"
     )
+
+
+class BusinessAuditModel(Base):
+    """A small, public-facing record of business administration actions.
+
+    This table intentionally stores only the actor, target, action and safe
+    change details.  Server diagnostics, credentials, model payloads and
+    stack traces belong to the operations log and never cross this boundary.
+    """
+
+    __tablename__ = "business_audits"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    actor_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    target_account_id: Mapped[str | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="SET NULL"), index=True
+    )
+    details_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class HarnessSessionModel(Base):

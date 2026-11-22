@@ -1,4 +1,5 @@
 import type { RunNodeState } from "@/lib/workbench-api";
+import { formatDuration } from "@/lib/format-duration";
 
 interface Props {
   nodes: RunNodeState[];
@@ -31,19 +32,11 @@ const statusLabel: Record<RunNodeState["status"], string> = {
   cancelled: "已取消",
 };
 
-function formatDuration(value?: number | null) {
-  if (value == null || !Number.isFinite(value)) return "";
-  const seconds = Math.max(0, Math.round(value / 1000));
-  if (seconds < 60) return `${seconds} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes} 分 ${seconds % 60} 秒`;
-}
-
 export function RunTimeline({ nodes, activeElapsedMs, wallElapsedMs }: Props) {
   if (!nodes.length) return null;
   const elapsed = activeElapsedMs ?? wallElapsedMs;
   return (
-    <section className="ws-run-timeline" aria-label="运行节点时间线">
+    <details className="ws-node-details"><summary>执行步骤 · {nodes.length}</summary><section className="ws-run-timeline" aria-label="运行节点时间线">
       <div className="ws-run-timeline-heading">
         <span>运行路径</span>
         {elapsed != null && <time>已运行 {formatDuration(elapsed)}</time>}
@@ -70,7 +63,7 @@ export function RunTimeline({ nodes, activeElapsedMs, wallElapsedMs }: Props) {
       {activeElapsedMs != null && wallElapsedMs != null && wallElapsedMs > activeElapsedMs + 1000 && (
         <p className="ws-run-timeline-note">已执行 {formatDuration(activeElapsedMs)}，等待或暂停 {formatDuration(wallElapsedMs - activeElapsedMs)}</p>
       )}
-    </section>
+    </section></details>
   );
 }
 

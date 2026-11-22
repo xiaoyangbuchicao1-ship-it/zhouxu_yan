@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import sqlite3
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from time import monotonic
@@ -18,6 +20,7 @@ from backend.application.accounts.service import (
     AccountPrincipal,
     AccountService,
 )
+from backend.application.admin import AdminService, AdminServiceError
 from backend.application.workspace.conversations import WorkspaceError, WorkspaceService
 from backend.application.workspace.materials import (
     MaterialService,
@@ -26,10 +29,20 @@ from backend.application.workspace.materials import (
 from backend.application.workspace.run_projection import RunProjection
 from backend.bootstrap import open_harnesses
 from backend.config.settings import load_settings
+from backend.contracts.admin import (
+    AdminAccountsResponse,
+    AdminAccountUpdateRequest,
+    AdminAccountView,
+    AdminAuditResponse,
+    AdminAuditView,
+    AdminOverviewResponse,
+    AdminOverviewView,
+)
 from backend.contracts.events.runtime import RunEvent
 from backend.contracts.events.streaming import StreamEvent, visible_text
 from backend.contracts.harness.artifacts import ArtifactReference
 from backend.contracts.harness.lifecycle import RunEnvelope
+from backend.contracts.model_profiles import ModelCatalogView, ModelRunSnapshot
 from backend.contracts.modules.loop import RunInput
 from backend.contracts.modules.materials import MaterialReadInput
 from backend.contracts.modules.sources import SourceReference
@@ -136,6 +149,13 @@ class EventHub(MemoryEventSink):
             return self.store.stream_events_since(run_id=run_id, after_sequence=after_sequence)
         return super().stream_events_since(run_id=run_id, after_sequence=after_sequence)
 
+    def progress_events(self, run_id):
+        if self.store:
+            return self.store.progress_events(run_id)
+        return [event.model_dump(mode="json", include={"type", "emitted_at", "stage", "label"})
+                for event in self.stream_events_since(run_id=run_id)
+                if event.type in {"progress", "delta"}]
+
 
 def _command_error(exc: SchedulerCommandError) -> HTTPException:
     message = str(exc)
@@ -176,11 +196,25 @@ def create_app(
             active_account_service = AccountService(
                 database, settings.database, settings.auth
             )
+            admin_email = os.environ.get("ZHOUXU_ADMIN_EMAIL", "").strip()
+            admin_password = os.environ.get("ZHOUXU_ADMIN_PASSWORD", "")
+            if bool(admin_email) != bool(admin_password):
+                raise RuntimeError("admin_credentials_incomplete")
+            if admin_email:
+                active_account_service.ensure_admin(
+                    email=admin_email,
+                    password=admin_password,
+                )
             active_material_service = MaterialService(database, settings)
             active_workspace_service = WorkspaceService(database)
         if active_workspace_service is None and active_account_service is not None:
             active_workspace_service = WorkspaceService(active_account_service.database)
         app.state.account_service = active_account_service
+        app.state.admin_service = (
+            AdminService(active_account_service.database)
+            if active_account_service is not None
+            else None
+        )
         app.state.material_service = active_material_service
         app.state.workspace_service = active_workspace_service
         app.state.source_repository = CorpusSourceRepository(settings)
@@ -199,6 +233,7 @@ def create_app(
 
         run_store_path = Path(settings.application.get("run_store_path", "backend/.runtime/runs.sqlite3"))
         run_store = SQLiteRunStore(run_store_path)
+        app.state.run_store = run_store
         events = EventHub(store=run_store)
         app.state.project_run = RunProjection(active_workspace_service, events)
         async with AsyncExitStack() as stack:
@@ -208,27 +243,36 @@ def create_app(
                     open_harnesses(
                         settings=settings,
                         events=events,
-                        modes=("none", "low", "high"),
+                        modes=("none", "low", "medium", "high", "xhigh", "max"),
                         account_skill_loader=getattr(
                             app.state, "maritime_skill_loader", None
                         ),
                     )
                 )
                 harness = harnesses[settings.model.thinking_mode]
+                if settings.research_cards.enabled:
+                    app.state.information_card_retriever = harness.modules["action"].tools[
+                        "information_card_search"
+                    ].retriever
                 from backend.harness.graph.executor import (
                     GraphRunExecutor,
                     RoutedRunExecutor,
-                    default_graph_handlers,
                 )
+                from backend.harness.graph.handlers import build_graph_handlers
                 from backend.harness.lifecycle.executor import HarnessRunExecutor
 
+                graph_handlers = build_graph_handlers(harnesses, default_mode=settings.model.thinking_mode)
                 app.state.control_service = HarnessControlService(
                     RoutedRunExecutor(
                         HarnessRunExecutor(
                             harness, material_service=active_material_service,
                             history_service=active_workspace_service, harnesses=harnesses,
                         ),
-                        GraphRunExecutor(default_graph_handlers(), events=events),
+                        GraphRunExecutor(
+                            graph_handlers.handlers, events=events,
+                            prepare=graph_handlers.prepare, close=graph_handlers.close,
+                            collect_artifacts=graph_handlers.collect_artifacts,
+                        ),
                     ),
                     store=run_store,
                 )
@@ -259,6 +303,9 @@ def create_app(
     # execute lifespan hooks. Keep the health route safe in that mode.
     app.state.runtime_ready = supplied_service is not None
     app.state.account_service = account_service
+    app.state.admin_service = (
+        AdminService(account_service.database) if account_service is not None else None
+    )
     app.state.material_service = material_service
     app.state.workspace_service = workspace_service
     app.state.source_repository = CorpusSourceRepository(settings)
@@ -330,14 +377,16 @@ def create_app(
         return token
 
     def current_account(
-        request: Request, authorization: str | None
+        request: Request, authorization: str | None, *, update_last_seen: bool = True
     ) -> AccountPrincipal | None:
         auth = accounts(request)
         if auth is None:
             # Injected control-plane tests deliberately run without identity.
             return None
         try:
-            return auth.authenticate(bearer_token(authorization))
+            return auth.authenticate(
+                bearer_token(authorization), update_last_seen=update_last_seen
+            )
         except AccountError as exc:
             raise HTTPException(status_code=401, detail=exc.code) from None
 
@@ -347,6 +396,14 @@ def create_app(
         principal = current_account(request, authorization)
         if principal is None:
             raise HTTPException(status_code=401, detail="authentication_required")
+        return principal
+
+    def require_admin(
+        request: Request, authorization: str | None
+    ) -> AccountPrincipal:
+        principal = require_account(request, authorization)
+        if principal.role != "admin":
+            raise HTTPException(status_code=403, detail="admin_required")
         return principal
 
     def require_conversation(
@@ -400,9 +457,99 @@ def create_app(
                 projection = RunProjection(workspace(request), request.app.state.event_hub)
             projection(run)
 
+    def admin_service(request: Request) -> AdminService:
+        service_instance = getattr(request.app.state, "admin_service", None)
+        if service_instance is None:
+            raise HTTPException(status_code=503, detail="admin_service_unavailable")
+        return service_instance
+
+    def admin_error(exc: AdminServiceError) -> HTTPException:
+        if exc.code in {"admin_required"}:
+            return HTTPException(status_code=403, detail=exc.code)
+        if exc.code in {"account_not_found"}:
+            return HTTPException(status_code=404, detail=exc.code)
+        if exc.code in {
+            "invalid_account_status",
+            "invalid_account_role",
+            "account_change_required",
+            "invalid_audit_limit",
+        }:
+            return HTTPException(status_code=422, detail=exc.code)
+        return HTTPException(status_code=409, detail=exc.code)
+
+    @app.get("/admin/overview", response_model=AdminOverviewResponse)
+    async def admin_overview(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        return AdminOverviewResponse(
+            overview=AdminOverviewView(**admin_service(request).overview())
+        )
+
+    @app.get("/admin/accounts", response_model=AdminAccountsResponse)
+    async def admin_accounts(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        return AdminAccountsResponse(
+            accounts=[AdminAccountView(**item) for item in admin_service(request).list_accounts()]
+        )
+
+    @app.patch(
+        "/admin/accounts/{account_id}", response_model=AdminAccountView
+    )
+    async def admin_update_account(
+        account_id: str,
+        body: AdminAccountUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            updated = admin_service(request).update_account(
+                actor_id=principal.id,
+                account_id=account_id,
+                status=body.status,
+                role=body.role,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminAccountView(**updated)
+
+    @app.get("/admin/audit", response_model=AdminAuditResponse)
+    async def admin_audit(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        require_admin(request, authorization)
+        try:
+            events = admin_service(request).list_audit(limit=limit)
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminAuditResponse(
+            events=[AdminAuditView(**item) for item in events]
+        )
+
     @app.get(settings.application["health_path"])
     async def health(request: Request):
+        store = getattr(request.app.state, "run_store", None)
+        if store is not None:
+            try:
+                store.visible("__health_probe__")
+            except sqlite3.Error as exc:
+                raise HTTPException(status_code=503, detail="runtime_storage_unavailable") from exc
         return {"status": "ok"}
+
+    @app.get("/workspace/models", response_model=ModelCatalogView)
+    async def model_catalog(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        """Return grouped, secret-free profiles for the model selector."""
+        require_account(request, authorization)
+        from backend.infrastructure.model.registry import ModelRegistry
+
+        return ModelRegistry(settings).catalog_view()
 
     def auth_view(result) -> AuthSessionView:
         return AuthSessionView(
@@ -410,6 +557,7 @@ def create_app(
                 id=result.account.id,
                 email=result.account.email,
                 display_name=result.account.display_name,
+                role=result.account.role,
             ),
             session={"token": result.token},
         )
@@ -442,13 +590,27 @@ def create_app(
             status = 401 if exc.code == "authentication_failed" else 400
             raise HTTPException(status_code=status, detail=exc.code) from None
 
+    @app.post("/auth/admin-login", response_model=AuthSessionView)
+    async def admin_login(body: AuthCredentialsRequest, request: Request):
+        auth = accounts(request)
+        if auth is None:
+            raise HTTPException(status_code=503, detail="unavailable")
+        try:
+            return auth_view(auth.admin_login(email=body.email, password=body.password))
+        except AccountError as exc:
+            status = 401 if exc.code in {"authentication_failed", "admin_required"} else 400
+            raise HTTPException(status_code=status, detail=exc.code) from None
+
     @app.get("/auth/me", response_model=AccountView)
     async def me(request: Request, authorization: str | None = Header(default=None)):
         principal = current_account(request, authorization)
         if principal is None:
             raise HTTPException(status_code=401, detail="authentication_required")
         return AccountView(
-            id=principal.id, email=principal.email, display_name=principal.display_name
+            id=principal.id,
+            email=principal.email,
+            display_name=principal.display_name,
+            role=principal.role,
         )
 
     @app.post("/auth/logout", status_code=204)
@@ -500,6 +662,7 @@ def create_app(
         )
 
     def workbench_run_view(run: RunEnvelope) -> WorkbenchRunView:
+        from backend.application.workspace.progress import project_progress
         payload = RunInput.model_validate(run.payload).model_dump(mode="json")
         # Very old internal Harness checkpoints had no conversation mode. The
         # authenticated Workbench exposes those runs as the safe default.
@@ -556,8 +719,11 @@ def create_app(
             runtime_policy=run.runtime_policy,
             paused_at=run.paused_at,
             resumed_at=run.resumed_at,
+            continuation_guidance=list(run.continuation_guidance),
             active_elapsed_ms=run.active_elapsed_ms,
             wall_elapsed_ms=run.wall_elapsed_ms,
+            context_compaction_count=run.context_compaction_count,
+            stages=project_progress(run, app.state.event_hub.progress_events(run.run_id)) if app.state.event_hub else [],
         )
 
     @app.get(
@@ -829,6 +995,9 @@ def create_app(
                 progress = json.loads(run.progress_json or "{}")
             except (TypeError, ValueError):
                 progress = {}
+            compaction_count = progress.get("context_compaction_count", 0) if isinstance(progress, dict) else 0
+            if not isinstance(compaction_count, int) or compaction_count < 0:
+                compaction_count = 0
             raw_sources = progress.get("source_refs", []) if isinstance(progress, dict) else []
             run_sources = []
             for item in raw_sources if isinstance(raw_sources, list) else []:
@@ -844,17 +1013,35 @@ def create_app(
                 except (TypeError, ValueError):
                     continue
             attached_ids = stored_payload.get("attached_material_ids", [])
+            model_snapshot = (
+                ModelRunSnapshot.model_validate(stored_payload["model_snapshot"])
+                if stored_payload.get("model_snapshot") is not None
+                else None
+            )
+            stored_guidance = progress.get("continuation_guidance", []) if isinstance(progress, dict) else []
+            _internal_confirmations = {
+                "已确认升级当前会话为工作模式，请继续执行并交付所需文件。",
+                "保持聊天模式，直接输出完整文本正文。",
+            }
+            updates = [
+                text
+                for text in stored_payload.get("facts", {}).get("user_answers", {}).values()
+                if isinstance(text, str) and text not in _internal_confirmations
+            ]
+            updates.extend(text for text in stored_guidance if isinstance(text, str))
             messages.append(
                 WorkspaceMessageView(
                     message_id=f"{run.run_id}:user",
                     role="user",
                     content=run.question,
-                    updates=[text for text in stored_payload.get("facts", {}).get("user_answers", {}).values() if isinstance(text, str)],
+                    updates=list(dict.fromkeys(updates)),
                     materials=[material_view(owned_materials[key]) for key in attached_ids if key in owned_materials],
                     created_at=run.created_at,
                     run_id=run.run_id,
                     status=run.status,
+                        model_snapshot=model_snapshot,
                     artifacts=run_artifacts,
+                    context_compaction_count=0,
                 )
             )
             visible_answer = run.answer or run.partial_output
@@ -862,6 +1049,7 @@ def create_app(
                 status=run.status,
                 error_code=run.error_code,
                 partial_output=run.partial_output,
+                execution_state=progress if isinstance(progress, dict) else None,
                 retryable=False,
             )
             if visible_answer or run.status in {"failed", "cancelled", "paused"}:
@@ -873,12 +1061,14 @@ def create_app(
                         created_at=run.completed_at or run.created_at,
                         run_id=run.run_id,
                         status=run.status,
+                        model_snapshot=model_snapshot,
                         # Internal error codes remain in the diagnostic store;
                         # the conversation contract exposes only recovery.
                         error_code=None,
                         recovery=recovery,
                         sources=run_sources,
                         artifacts=run_artifacts,
+                        context_compaction_count=compaction_count,
                     )
                 )
         return WorkspaceConversationDetailResponse(
@@ -897,10 +1087,38 @@ def create_app(
         authorization: str | None = Header(default=None),
     ):
         require_account(request, authorization)
-        document = source_repository(request).get(source_id)
+        # The paper-card corpus is a large JSONL file.  Building its offset
+        # index is controlled disk I/O and must not pause the FastAPI event
+        # loop (health checks and other conversations stay responsive while a
+        # source detail is opened for the first time).
+        try:
+            document = await asyncio.to_thread(source_repository(request).get, source_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except OSError:
+            raise HTTPException(status_code=503, detail="paper_original_unavailable") from None
         if document is None:
             raise HTTPException(status_code=404, detail="source_not_found")
         return WorkspaceSourceResponse.model_validate(document.model_dump(mode="json"))
+
+    @app.get("/workspace/sources/{source_id}/original")
+    async def paper_original(
+        source_id: str,
+        request: Request,
+        sha256: str = Query(pattern=r"^[a-f0-9]{64}$"),
+        authorization: str | None = Header(default=None),
+    ):
+        require_account(request, authorization)
+        try:
+            original = await asyncio.to_thread(source_repository(request).paper_file, source_id, sha256)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except OSError:
+            raise HTTPException(status_code=503, detail="paper_original_unavailable") from None
+        if original is None:
+            raise HTTPException(status_code=404, detail="source_not_found")
+        return FileResponse(original.path, media_type="application/pdf", filename=original.filename,
+                            content_disposition_type="inline", headers={"Cache-Control": "private, no-store", "ETag": f'"{original.sha256}"'})
 
     # Workbench is the only public Run surface for the current frontend. The
     # legacy Harness routes below remain compatibility adapters and continue to
@@ -926,6 +1144,30 @@ def create_app(
         if body.conversation_id != conversation_id:
             raise HTTPException(status_code=400, detail="conversation_id_mismatch")
         run_facts = resolve_run_facts(request, principal, body.facts, conversation_mode)
+        from backend.infrastructure.model.registry import ModelRegistry
+
+        model_registry = ModelRegistry(settings)
+        selected_profile_id = body.model_profile_id or model_registry.catalog_view().default_profile_id
+        try:
+            profile = model_registry.get(selected_profile_id)
+        except PortError:
+            raise HTTPException(status_code=422, detail="model_profile_invalid") from None
+        if body.model_profile_id and not profile.available:
+            raise HTTPException(status_code=409, detail="model_profile_unavailable")
+        selected_thinking = body.thinking_mode or profile.default_thinking_mode
+        if selected_thinking not in profile.thinking_modes:
+            raise HTTPException(status_code=422, detail="thinking_mode_unsupported")
+        model_snapshot = ModelRunSnapshot(
+            profile_id=profile.profile_id,
+            provider=profile.provider,
+            model_id=profile.model_id,
+            protocol=profile.protocol,
+            thinking_mode=selected_thinking,
+            context_tokens=profile.context_tokens,
+            max_generation_tokens=profile.max_generation_tokens,
+            capabilities=profile.capabilities,
+            checked_on=profile.checked_on,
+        )
         if body.dispatch_mode in {"queue", "steer"} and not body.text.strip():
             raise HTTPException(status_code=422, detail="text_required")
         if body.dispatch_mode == "queue" and not body.client_request_id:
@@ -939,11 +1181,16 @@ def create_app(
                         raise HTTPException(
                             status_code=400, detail="request_id_required"
                         )
-                    _, run = await service(request).resume(
-                        session_id=conversation_id,
-                        run_id=body.target_run_id,
-                        request_id=body.request_id,
-                        answer=body.answer,
+                    return await workbench_resume(
+                        body.target_run_id,
+                        WorkbenchResumeRequest(
+                            conversation_id=conversation_id,
+                            request_id=body.request_id,
+                            answer=body.answer,
+                            attached_material_ids=body.attached_material_ids,
+                        ),
+                        request,
+                        authorization,
                     )
                 else:
                     from backend.contracts.modules.loop import RunInput
@@ -1030,7 +1277,9 @@ def create_app(
                 payload=RunInput(
                     text=body.text,
                     mode=conversation_mode,
-                    thinking_mode=body.thinking_mode or settings.model.thinking_mode,
+                    thinking_mode=selected_thinking,
+                    model_profile_id=body.model_profile_id,
+                    model_snapshot=model_snapshot,
                     facts=run_facts,
                     constraints=body.constraints,
                     material_ids=material_ids,
@@ -1166,6 +1415,7 @@ def create_app(
             request=WorkbenchInputRequestView(
                 request_id=item.request_id,
                 run_id=item.run_id,
+                kind=item.kind,
                 question=item.question,
                 options=[option.model_dump(mode="json") for option in item.options],
                 allow_free_text=item.allow_free_text,
@@ -1185,22 +1435,77 @@ def create_app(
         authorization: str | None = Header(default=None),
     ):
         principal = require_conversation(request, body.conversation_id, authorization)
-        payload = None
+        try:
+            current = await service(request).run(
+                session_id=body.conversation_id, run_id=run_id
+            )
+            pending_item = await service(request).request(
+                session_id=body.conversation_id, request_id=body.request_id
+            )
+            if pending_item.run_id != run_id:
+                raise SchedulerCommandError("input request not found")
+            if current.status != "waiting_user" or pending_item.status != "pending":
+                raise SchedulerCommandError("input request is not pending")
+        except SchedulerCommandError as exc:
+            raise _command_error(exc) from exc
+        original = RunInput.model_validate(current.payload)
+        payload: RunInput | None = None
         if body.attached_material_ids:
-            current = await service(request).run(session_id=body.conversation_id, run_id=run_id)
-            original = RunInput.model_validate(current.payload)
             ids = list(dict.fromkeys(original.material_ids + body.attached_material_ids))
+            materials_svc = request.app.state.material_service
+            if materials_svc is None:
+                raise HTTPException(status_code=503, detail="material_service_unavailable")
             try:
-                request.app.state.material_service.resolve(account_id=principal.id, session_id=body.conversation_id, conversation_id=body.conversation_id, material_ids=ids)
+                materials_svc.resolve(
+                    account_id=principal.id,
+                    session_id=body.conversation_id,
+                    conversation_id=body.conversation_id,
+                    material_ids=ids,
+                )
             except MaterialServiceError as exc:
                 raise HTTPException(status_code=404, detail=exc.code) from None
-            payload = original.model_copy(update={"material_ids": ids, "attached_material_ids": list(dict.fromkeys(original.attached_material_ids + body.attached_material_ids))})
+            original = original.model_copy(
+                update={
+                    "material_ids": ids,
+                    "attached_material_ids": list(
+                        dict.fromkeys(
+                            original.attached_material_ids + body.attached_material_ids
+                        )
+                    ),
+                }
+            )
+            payload = original
+        effective_answer = body.answer
+        if pending_item.kind == "mode_upgrade":
+            if body.answer not in ("keep_chat", "upgrade_work"):
+                raise HTTPException(status_code=422, detail="explicit_mode_choice_required")
+            if body.answer == "keep_chat":
+                facts = {**original.facts, "mode_upgrade_declined": True}
+                constraints = list(
+                    dict.fromkeys(
+                        [
+                            *original.constraints,
+                            "用户确认保持只读聊天模式：不使用文件写入或编译工具，请在核实证据后直接在对话正文中交付完整内容。",
+                        ]
+                    )
+                )
+                payload = original.model_copy(
+                    update={"facts": facts, "constraints": constraints}
+                )
+                effective_answer = "保持聊天模式，直接输出完整文本正文。"
+            else:
+                facts = {**original.facts, "task_mode": "work"}
+                facts.pop("mode_upgrade_declined", None)
+                payload = original.model_copy(update={"mode": "work", "facts": facts})
+                effective_answer = "已确认升级当前会话为工作模式，请继续执行并交付所需文件。"
+            if body.guidance and body.guidance.strip():
+                effective_answer += f"\n用户补充要求：{body.guidance.strip()}"
         try:
             _, run = await service(request).resume(
                 session_id=body.conversation_id,
                 run_id=run_id,
                 request_id=body.request_id,
-                answer=body.answer,
+                answer=effective_answer,
                 payload=payload,
             )
         except SchedulerCommandError as exc:
@@ -1211,8 +1516,42 @@ def create_app(
     @app.post("/workspace/runs/{run_id}/continue", response_model=WorkbenchRunCommandResponse)
     async def workbench_continue(run_id: str, body: WorkbenchRunControlRequest, request: Request, authorization: str | None = Header(default=None)):
         principal = require_conversation(request, body.conversation_id, authorization)
+        payload = None
+        if body.attached_material_ids:
+            current = await service(request).run(
+                session_id=body.conversation_id, run_id=run_id
+            )
+            original = RunInput.model_validate(current.payload)
+            ids = list(dict.fromkeys(original.material_ids + body.attached_material_ids))
+            materials = request.app.state.material_service
+            if materials is None:
+                raise HTTPException(status_code=503, detail="material_service_unavailable")
+            try:
+                materials.resolve(
+                    account_id=principal.id,
+                    session_id=body.conversation_id,
+                    conversation_id=body.conversation_id,
+                    material_ids=ids,
+                )
+            except MaterialServiceError as exc:
+                raise HTTPException(status_code=404, detail=exc.code) from None
+            payload = original.model_copy(
+                update={
+                    "material_ids": ids,
+                    "attached_material_ids": list(
+                        dict.fromkeys(
+                            original.attached_material_ids + body.attached_material_ids
+                        )
+                    ),
+                }
+            )
         try:
-            _, run = await service(request).continue_run(session_id=body.conversation_id, run_id=run_id)
+            _, run = await service(request).continue_run(
+                session_id=body.conversation_id,
+                run_id=run_id,
+                guidance=body.guidance,
+                payload=payload,
+            )
         except SchedulerCommandError as exc:
             raise _command_error(exc) from exc
         sync_run(request, principal, run)
@@ -1338,12 +1677,23 @@ def create_app(
             request, conversation_id, authorization, include_archived=True
         )
 
+        def stream_authorized() -> bool:
+            try:
+                current_account(request, authorization, update_last_seen=False)
+            except HTTPException as exc:
+                if exc.status_code != 401:
+                    raise
+                return False
+            return True
+
         async def stream() -> AsyncIterator[bytes]:
             started = monotonic()
             cursor = after_sequence
             last_status: str | None = None
             while monotonic() - started < timeout_seconds:
                 if await request.is_disconnected():
+                    return
+                if not stream_authorized():
                     return
                 try:
                     run = await service(request).run(
@@ -1370,6 +1720,7 @@ def create_app(
                             "text": event.text,
                             "stage": event.stage,
                             "label": event.label,
+                            "emitted_at": event.emitted_at.isoformat(),
                             "error": (
                                 {"message": public_error_message(event.error)}
                                 if event.error
@@ -1379,13 +1730,18 @@ def create_app(
                             if event.run
                             else None,
                         }
+                        if not stream_authorized():
+                            return
                         yield _json_line(payload)
                         cursor = event.sequence
                 # Lifecycle is a snapshot at the current stream cursor.  It
                 # is emitted after buffered deltas so a terminal snapshot can
                 # never make the UI regress from completed to receiving.
-                if run.status != last_status:
-                    last_status = run.status
+                state_key = (run.status, run.revision, tuple(item.get("source_id") for item in run.execution_state.get("source_refs", [])))
+                if state_key != last_status:
+                    last_status = state_key
+                    if not stream_authorized():
+                        return
                     yield _json_line(
                         {
                             "type": "lifecycle",
@@ -1976,6 +2332,15 @@ def create_app(
     ):
         principal = require_session_owner(request, session_id, authorization)
 
+        def stream_authorized() -> bool:
+            try:
+                current_account(request, authorization, update_last_seen=False)
+            except HTTPException as exc:
+                if exc.status_code != 401:
+                    raise
+                return False
+            return True
+
         async def stream() -> AsyncIterator[bytes]:
             started = monotonic()
             sent_events = 0
@@ -1986,6 +2351,8 @@ def create_app(
                 last_stream_sequences[run_id] = after_sequence
             while monotonic() - started < timeout_seconds:
                 if await request.is_disconnected():
+                    return
+                if not stream_authorized():
                     return
                 try:
                     snapshot = await service(request).session(session_id=session_id)
@@ -1998,6 +2365,7 @@ def create_app(
                 ]
                 if run_id and not matching:
                     return
+                matching_run_ids = {run.run_id for run in matching}
                 for run in matching:
                     sync_run(request, principal, run)
                     if (
@@ -2006,13 +2374,17 @@ def create_app(
                     ):
                         last_status[run.run_id] = run.status
                         sent_lifecycle_runs.add(run.run_id)
+                        if not stream_authorized():
+                            return
                         yield _json_line(
                             {"type": "lifecycle", "run": run.model_dump(mode="json")}
                         )
                 hub = request.app.state.event_hub
                 if hub is not None:
                     for event in hub.events[sent_events:]:
-                        if run_id is None or event.run_id == run_id:
+                        if event.run_id in matching_run_ids:
+                            if not stream_authorized():
+                                return
                             yield _json_line(
                                 {
                                     "type": "runtime",
@@ -2023,8 +2395,12 @@ def create_app(
                             )
                     sent_events = len(hub.events)
                     for event in hub.stream_events_since(run_id=run_id):
+                        if event.run_id not in matching_run_ids:
+                            continue
                         cursor = last_stream_sequences.get(event.run_id, 0)
                         if event.sequence > cursor:
+                            if not stream_authorized():
+                                return
                             yield _json_line(
                                 {
                                     "type": "stream",

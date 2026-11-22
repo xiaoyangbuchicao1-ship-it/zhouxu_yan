@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import json
+import logging
+import traceback
 from time import perf_counter
 from uuid import uuid4
 
@@ -34,11 +36,86 @@ from backend.contracts.schemas.core import (
 )
 from backend.harness.lifecycle.control import RunControl, StopRequested
 from backend.infrastructure.sources import source_refs_from_action
+from backend.harness.runtime.context_recovery import compaction_succeeded
 
 
 class Halt(Exception):
     def __init__(self, status: str, error: Error):
         self.status, self.error = status, error
+
+
+_REQUEST_WORK_MODE = ToolSpec(
+    name="request_work_mode",
+    description=(
+        "当前为聊天模式。任务需要读取 Skill、写入或修改文件、执行代码、编译，"
+        "或产生其他外部副作用时，必须先调用此工具请求用户明确授权。"
+        "此调用只显示确认选项，不授予权限；用户批准后系统会恢复同一任务。"
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    kind="control",
+    read_only=True,
+)
+
+
+def _mode_upgrade_request_spec() -> dict:
+    return {
+        "kind": "mode_upgrade",
+        "question": (
+            "当前任务需要工作模式才能继续（Skill、写入、执行、编译或其他外部操作）。"
+            "要继续当前任务吗？"
+        ),
+        "options": [
+            {
+                "value": "upgrade_work",
+                "label": "升级为工作模式",
+            },
+            {
+                "value": "keep_chat",
+                "label": "保持聊天模式",
+            },
+        ],
+        "allow_free_text": False,
+    }
+
+
+def _step_title(name: str, arguments: dict) -> str:
+    if not isinstance(arguments, dict):
+        return name
+    if name == "read_skill":
+        skill = arguments.get("skill_id") or arguments.get("name") or ""
+        resource = arguments.get("resource")
+        return f"{name}: {skill}" + (f"#{resource}" if resource else "")
+    if name in {"information_card_read", "capability_card_read"}:
+        return f"{name}: {arguments.get('card_id', '')}"
+    if name == "read_case":
+        start = arguments.get("start")
+        suffix = f"@{start}" if start is not None else ""
+        return f"{name}: {arguments.get('case_id', '')}{suffix}"
+    if name == "dynamic_rag_search":
+        parts = [
+            str(arguments.get(k)).strip()
+            for k in ("document_name", "location", "query")
+            if arguments.get(k)
+        ]
+        return f"{name}: {' | '.join(parts)[:96]}"
+    if name in {"write", "edit", "read"}:
+        mode_tag = " (append)" if name == "write" and arguments.get("append") else ""
+        return f"{name}: {arguments.get('path', '')}{mode_tag}"
+    if name == "paper_compile":
+        return f"{name}: {arguments.get('source_path', '')}"
+    if name == "web_read":
+        return f"{name}: {str(arguments.get('url', ''))[:80]}"
+    if name == "bash":
+        return f"{name}: {str(arguments.get('command', '')).strip()[:60]}"
+    query = arguments.get("query")
+    if isinstance(query, str) and query.strip():
+        return f"{name}: {query.strip()[:96]}"
+    summary_pairs = [
+        f"{k}={v}"
+        for k, v in arguments.items()
+        if isinstance(v, (str, int, float, bool)) and len(str(v)) <= 48
+    ]
+    return f"{name}: {', '.join(summary_pairs)[:96]}" if summary_pairs else name
 
 
 class Harness:
@@ -80,8 +157,8 @@ class Harness:
     def _emit(self, event: RunEvent):
         try:
             self.events.emit(event)
-        except Exception:
-            pass  # Optional telemetry must not turn a successful operation into failure.
+        except Exception as exc:
+            logging.getLogger(__name__).error("event sink failed type=%s run=%s", type(exc).__name__, event.run_id)
 
     async def run(
         self,
@@ -101,6 +178,13 @@ class Harness:
         explicit_session = session_id is not None
         session_id = session_id or f"ephemeral:{run_id}"
         task_id = task_id or run_id
+        bind_run = getattr(self.model_context, "bind_run", None)
+        if callable(bind_run):
+            bind_run(
+                run_id,
+                value.model_profile_id,
+                value.model_snapshot,
+            )
         control = control or RunControl()
         started = perf_counter()
         run_timeout = (
@@ -111,6 +195,7 @@ class Harness:
         deadline = started + run_timeout
         retries = 0
         saved = ExecutionState.model_validate(recovery or {})
+        context_compaction_count = saved.context_compaction_count
         tool_counts: dict[str, int] = dict(saved.tool_counts)
         last_progress_stage: str | None = None
         completed_units = 0
@@ -125,10 +210,11 @@ class Harness:
         compacted_ids = set(saved.compacted_record_ids)
         delivered_stages = list(saved.delivered_stages)
         remaining_work = list(saved.remaining_work)
+        continuation_guidance = list(saved.continuation_guidance)
         source_refs: list[dict] = list(saved.source_refs)
         recovery_mode = saved.recovery_mode
         compaction_requested = saved.compaction_requested
-        active_skills: list[dict[str, str]] = [
+        active_skills: list[dict] = [
             item
             for item in saved.active_skills
             if isinstance(item, dict)
@@ -141,16 +227,25 @@ class Harness:
         for raw in retained_results:
             if not isinstance(raw, dict) or raw.get("tool_name") != "read_skill":
                 continue
-            value = raw.get("result")
-            if not isinstance(value, dict):
+            skill_result = raw.get("result")
+            if not isinstance(skill_result, dict):
                 continue
-            skill_id = value.get("skill_id")
-            version = value.get("version")
+            skill_id = skill_result.get("skill_id")
+            version = skill_result.get("version")
             if isinstance(skill_id, str) and isinstance(version, str):
+                # Every Skill is a work-mode capability. Persisted method
+                # metadata cannot weaken this boundary.
+                requires_work = True
                 active_skills = [
                     item for item in active_skills if item.get("skill_id") != skill_id
                 ]
-                active_skills.append({"skill_id": skill_id, "version": version})
+                active_skills.append(
+                    {
+                        "skill_id": skill_id,
+                        "version": version,
+                        **({"requires_work_mode": True} if requires_work else {}),
+                    }
+                )
         continuation = self.model_context if isinstance(self.model_context, ModelContinuationPort) else None
 
         def delivered_prefix():
@@ -196,7 +291,7 @@ class Harness:
                     note_result(saved_requests[result.action_id], result)
 
         def execution_state(reason=None):
-            return ExecutionState(
+            state = ExecutionState(
                 records=retained_records,
                 tool_results=retained_results,
                 task_state=work,
@@ -217,10 +312,16 @@ class Harness:
                 recovery_mode=recovery_mode,
                 recovery_attempts=saved.recovery_attempts,
                 compaction_requested=compaction_requested,
+                context_compaction_count=context_compaction_count,
                 source_refs=source_refs,
                 active_skills=active_skills,
+                continuation_guidance=continuation_guidance,
+                workspace_baseline=saved.workspace_baseline,
+                workspace_baseline_origin=saved.workspace_baseline_origin,
+                artifacts=list(saved.artifacts),
                 model_continuation=continuation.export_run_state(run_id) if continuation else {},
             ).model_dump(mode="json")
+            return state
 
         async def save_checkpoint():
             if checkpoint is not None:
@@ -251,6 +352,29 @@ class Harness:
                 )
             )
 
+        def progress_stage_for_call(name, payload) -> str:
+            """Use stable, user-facing stages for the shared model/tool loop."""
+            if name in {"memory", "perception", "reasoning", "reflection"}:
+                return "model_processing"
+            if name != "action":
+                return name
+            tool_name = getattr(payload, "tool_name", "")
+            if tool_name in {"write", "edit"}:
+                return "file_writing"
+            if tool_name == "paper_compile":
+                return "file_compiling"
+            if tool_name == "bash":
+                return "execution"
+            if tool_name == "read_skill":
+                return "model_processing"
+            if (
+                "search" in tool_name
+                or "read" in tool_name
+                or tool_name in {"read_case", "dynamic_rag_search", "web_read"}
+            ):
+                return "researching"
+            return "model_processing"
+
         async def invoke(
             name, payload, *, context=None, durable=False, read_only=False
         ):
@@ -258,10 +382,8 @@ class Harness:
             while True:
                 if not durable:
                     guard()
-                if name != "action" and (
-                    name != "memory" or payload.operation == "recall"
-                ):
-                    progress(name)
+                if name != "memory" or payload.operation == "recall":
+                    progress(progress_stage_for_call(name, payload))
                 call_id = uuid4().hex
                 began = perf_counter()
                 self._emit(
@@ -283,7 +405,10 @@ class Harness:
                         module_timeout = self.settings.runtime.model_call_timeout_seconds or module_timeout
                         module_timeout = min(module_timeout, self.settings.model.generation_mode.call_timeout_seconds)
                     elif name == "action":
-                        module_timeout = self.settings.runtime.action_timeout_seconds or module_timeout
+                        if getattr(payload, "tool_name", None) == "paper_compile":
+                            module_timeout = self.settings.runtime.compile_timeout_seconds
+                        else:
+                            module_timeout = self.settings.runtime.action_timeout_seconds or module_timeout
                     response = await asyncio.wait_for(
                         control.read(operation) if name == "reasoning" else operation,
                         timeout=min(
@@ -352,7 +477,23 @@ class Harness:
                         )
                     )
                     raise
-                except Exception:
+                except Exception as exc:
+                    logging.getLogger(__name__).error("module failed run=%s module=%s type=%s stack=%s",
+                        run_id, name, type(exc).__name__, traceback.format_tb(exc.__traceback__))
+                    self._emit(
+                        RunEvent(
+                            run_id=run_id,
+                            call_id=call_id,
+                            module=name,
+                            phase="exception",
+                            status="failed",
+                            error_code="module_failed",
+                            diagnostics={
+                                "exception_type": type(exc).__name__,
+                                "exception": str(exc)[:400],
+                            },
+                        )
+                    )
                     response = ModuleResponse(
                         status="failed", error=self.settings.error("module_failed")
                     )
@@ -434,17 +575,29 @@ class Harness:
             retained_records.append(record.model_dump(mode="json"))
             return result
 
-        def finish(status, *, answer=None, error=None, missing_inputs=None):
+        def finish(
+            status,
+            *,
+            answer=None,
+            error=None,
+            missing_inputs=None,
+            input_requests=None,
+        ):
             answer = answer or last_answer
             if not answer and status != "succeeded":
-                answer = (
-                    visible_text(
-                        event
-                        for event in getattr(self.streams, "stream_events", [])
-                        if event.run_id == run_id
+                visible_fn = getattr(self.streams, "visible", None)
+                if callable(visible_fn):
+                    partial_text, _ = visible_fn(run_id)
+                    answer = partial_text or None
+                else:
+                    answer = (
+                        visible_text(
+                            event
+                            for event in getattr(self.streams, "stream_events", [])
+                            if event.run_id == run_id
+                        )
+                        or None
                     )
-                    or None
-                )
             if status == "succeeded":
                 progress("finalizing")
                 if self.streams is not None:
@@ -455,7 +608,9 @@ class Harness:
                 progress("waiting_user")
             elif status == "yielded":
                 progress("stage_delivered")
-            elif self.streams is not None:
+            elif self.streams is not None and not (
+                status == "cancelled" and control.reason in {"pause", "steer"}
+            ):
                 self.streams.emit_stream(
                     StreamEvent(type="error", run_id=run_id, error=error)
                 )
@@ -465,6 +620,7 @@ class Harness:
                 answer=answer,
                 error=error,
                 missing_inputs=missing_inputs or [],
+                input_requests=input_requests or [],
                 elapsed_seconds=perf_counter() - started,
                 # Rounds are a resource ceiling, not measured task completion.
                 completed_units=None,
@@ -540,7 +696,13 @@ class Harness:
             mode_allowed_names = {
                 tool.name
                 for tool in self.tools
-                if value.mode is None or value.mode == "work" or tool.read_only
+                if (
+                    (tool.kind == "skill_activation" and value.mode == "work")
+                    or (
+                        tool.kind != "skill_activation"
+                        and (value.mode is None or value.mode == "work" or tool.read_only)
+                    )
+                )
             }
             registered_specs = {tool.name: tool for tool in self.tools}
             if self.material_tool:
@@ -595,7 +757,33 @@ class Harness:
                             items=restored,
                         ),
                     )
-            await remember("user", value.model_dump(), value.text.strip())
+            user_dump = value.model_dump()
+            if not any(
+                r.get("source") == "user"
+                and (r.get("body") or r.get("updates")) == user_dump
+                for r in retained_records
+            ):
+                await remember("user", user_dump, value.text.strip())
+            can_offer_mode_upgrade = (
+                value.mode == "chat"
+                and any(not t.read_only for t in self.tools)
+                and not bool((value.facts or {}).get("mode_upgrade_declined"))
+            )
+            if can_offer_mode_upgrade:
+                available_tools.append(_REQUEST_WORK_MODE)
+            if can_offer_mode_upgrade and (
+                (value.facts or {}).get("skill_id")
+                or any(
+                    item.get("skill_id")
+                    for item in active_skills
+                )
+            ):
+                await save_checkpoint()
+                return finish(
+                    "waiting_user",
+                    input_requests=[_mode_upgrade_request_spec()],
+                    error=self.settings.error("missing_input"),
+                )
             # Crash/restart may leave issued calls without a receipt. Never
             # replay them: their external side effect is unknown.
             known_results = {r["action_id"] for r in retained_results}
@@ -604,21 +792,34 @@ class Harness:
                     raw.get("body", {}).get("proposal", {}).get("action_requests", [])
                 ):
                     if pending["action_id"] not in known_results:
-                        receipt = ActionResult(
-                            tool_name=pending["tool_name"],
-                            action_id=pending["action_id"],
-                            result={
-                                "status": "unavailable",
-                                "error": "execution_outcome_unknown",
-                                "message": "上次运行未保存此调用结果；未自动重放操作。",
-                            },
-                        )
+                        receipt = None
+                        if pending["tool_name"] == "write" and self.execution_tools:
+                            receipt = await self.execution_tools.recover_write(ModuleRequest(
+                                run_id=run_id, call_id=uuid4().hex,
+                                input=ActionRequest.model_validate(pending),
+                                context={"account_id": account_id,
+                                         "conversation_id": conversation_id or session_id if explicit_session else None},
+                            ))
+                        if receipt is None:
+                            receipt = ActionResult(
+                                tool_name=pending["tool_name"],
+                                action_id=pending["action_id"],
+                                outcome="error",
+                                result={
+                                    "status": "unavailable",
+                                    "error": "execution_outcome_unknown",
+                                    "message": "上次运行未保存此调用结果；未自动重放操作。",
+                                },
+                            )
                         retained_results.append(receipt.model_dump(mode="json"))
                         await remember(
                             "action", {"action": receipt.model_dump()}, retention="run"
                         )
                         known_results.add(receipt.action_id)
             finalizing = False
+            progress_recovery_used = False
+            exhausted_tools: set[str] = set()
+            length_recoveries = 0
             for round_index in range(self.settings.runtime.max_rounds):
                 current_unit = f"round:{round_index + 1}"
                 if self.material_catalog:
@@ -663,6 +864,26 @@ class Harness:
                               "instruction": self.settings.prompts["continue_visible"]},
                     ))
                     loop_required.append("task-continuation-state")
+                if continuation_guidance:
+                    loop_candidates.append(
+                        ContextItem(
+                            id="run-continuation-guidance",
+                            type="message",
+                            source="harness",
+                            role="user",
+                            kind="continuation_guidance",
+                            body={
+                                "guidance": continuation_guidance,
+                                "instruction": (
+                                    "这是用户在已暂停或失败的同一 Run 上点击“继续处理”后提交的补充要求。"
+                                    "它附着于原目标，不创建新任务；原目标和已保存进度仍然有效。"
+                                    "继续动作已经被系统接受，不能把“暂停后再继续”理解为再次暂停，也不能因此把任务标为blocked。"
+                                    "按补充要求调整后，从保存的进度继续完成原目标。"
+                                ),
+                            },
+                        )
+                    )
+                    loop_required.append("run-continuation-guidance")
                 if active_skills:
                     loop_candidates.append(
                         ContextItem(
@@ -673,6 +894,17 @@ class Harness:
                             kind="skill.activation",
                             body={
                                 "skills": active_skills,
+                                "loaded_instructions": [
+                                    {"skill_id": result["result"]["skill_id"],
+                                     "version": result["result"]["version"],
+                                     "content": result["result"].get("content", ""),
+                                     "runtime_instructions": result["result"].get("runtime_instructions", "")}
+                                    for result in retained_results
+                                    if result["tool_name"] == "read_skill"
+                                    and result.get("outcome") == "ok"
+                                    and isinstance(result.get("result"), dict)
+                                    and not result["result"].get("resource")
+                                ],
                                 "instruction": "已加载的 Skill 版本记录；需要完整方法正文时使用 read_skill 重新读取。",
                             },
                         )
@@ -728,7 +960,20 @@ class Harness:
                         retention="run",
                     )
                     compacted_ids.update(covered)
+                    did_compact = compaction_succeeded(summary)
+                    if did_compact:
+                        context_compaction_count += 1
                     await save_checkpoint()
+                    if did_compact and self.streams is not None:
+                        self.streams.emit_stream(
+                            StreamEvent(
+                                type="progress",
+                                run_id=run_id,
+                                stage="context_compaction_done",
+                                label="已整理较早的对话，继续处理",
+                                event_type="lifecycle",
+                            )
+                        )
                     memory = result
                     memory.records = [
                         r for r in memory.records if r.record_id not in compacted_ids
@@ -779,6 +1024,25 @@ class Harness:
                 if proposal.answer:
                     last_answer = delivered_prefix() + proposal.answer
                 if proposal.incomplete:
+                    if (
+                        proposal.finish_reason == "length"
+                        and length_recoveries < 2
+                        and not finalizing
+                        and round_index < self.settings.runtime.max_rounds - 1
+                    ):
+                        length_recoveries += 1
+                        await remember(
+                            "reflection",
+                            {"incomplete_reason": "length", "attempt": length_recoveries},
+                            (
+                                "上一轮单次输出达到模型输出长度上限被截断，该轮未执行。"
+                                "若正在写入长篇源稿（如 .typ 文档），请分 2~3 次调用 write（首次创建，后续传 append=true 分章追加），"
+                                "全部章节写完后再调用编译工具；若直接回答，请分阶段输出。"
+                            ),
+                            retention="run",
+                        )
+                        await save_checkpoint()
+                        continue
                     await remember("reasoning", {"proposal": proposal.model_dump()})
                     return finish(
                         "failed",
@@ -790,6 +1054,23 @@ class Harness:
                                 "transport_error": "model_unavailable",
                             }.get(proposal.finish_reason, "model_generation_stopped")
                         ),
+                    )
+                if (
+                    can_offer_mode_upgrade
+                    and proposal.kind == "action"
+                    and any(
+                        req.tool_name == _REQUEST_WORK_MODE.name
+                        or (req.tool_name in registered_specs
+                        and req.tool_name not in mode_allowed_names
+                        )
+                        for req in proposal.action_requests
+                    )
+                ):
+                    await save_checkpoint()
+                    return finish(
+                        "waiting_user",
+                        input_requests=[_mode_upgrade_request_spec()],
+                        error=self.settings.error("missing_input"),
                     )
                 if (
                     proposal.kind == "answer"
@@ -834,10 +1115,8 @@ class Harness:
                             name in registered_specs and name not in mode_allowed_names
                         )
                         prior = previous_results.get(request_key(action_request))
-                        reuse = bool(
-                            spec and spec.read_only and spec.reuse_identical_results
-                        )
-                        blocked = bool(
+                        reuse = bool(spec and spec.reuse_identical_results)
+                        blocked = name in exhausted_tools or bool(
                             reuse
                             and prior
                             and result_fingerprints.get(
@@ -851,6 +1130,13 @@ class Harness:
                                 "search_material": "material_searching",
                                 "search_cases": "case_searching",
                                 "read_case": "case_reading",
+                                "search_laws": "law_searching",
+                                "dynamic_rag_search": "law_searching",
+                                "search": "law_searching",
+                                "read_law": "source_reading",
+                                "write_file": "file_writing",
+                                "write": "file_writing",
+                                "paper_compile": "file_compiling",
                             }.get(name, "action")
                         )
                         allocation = self.model_context.allocate_tool_context(
@@ -904,7 +1190,7 @@ class Harness:
                                 result={
                                     "status": "not_executed",
                                     "message": error.message,
-                                    "previous_action_id": prior.action_id,
+                                    "previous_action_id": prior.action_id if prior else None,
                                 },
                                 session_summary={
                                     "status": "not_executed",
@@ -953,13 +1239,22 @@ class Harness:
                             skill_id = payload.get("skill_id")
                             version = payload.get("version")
                             if isinstance(skill_id, str) and isinstance(version, str):
+                                requires_work = True
                                 active_skills = [
                                     item
                                     for item in active_skills
                                     if item.get("skill_id") != skill_id
                                 ]
                                 active_skills.append(
-                                    {"skill_id": skill_id, "version": version}
+                                    {
+                                        "skill_id": skill_id,
+                                        "version": version,
+                                        **(
+                                            {"requires_work_mode": True}
+                                            if requires_work
+                                            else {}
+                                        ),
+                                    }
                                 )
                         retained_results.append(result.model_dump(mode="json"))
                         for ref in source_refs_from_action(result):
@@ -994,7 +1289,7 @@ class Harness:
                         work.steps.append(
                             TaskStep(
                                 step_id=result.action_id,
-                                title=f"{name}: {action_request.arguments.get('query', '')}",
+                                title=_step_title(name, action_request.arguments),
                                 status="blocked"
                                 if result.outcome == "error"
                                 or status in {"failed", "unavailable"}
@@ -1006,6 +1301,7 @@ class Harness:
                         count = None if blocked else note_result(action_request, result)
                         if blocked or (
                             reuse
+                            and prior
                             and count
                             >= self.settings.context_policy.repeated_tool_limit
                         ):
@@ -1026,8 +1322,20 @@ class Harness:
                         else 0
                     )
                     if stagnant_rounds >= self.settings.runtime.no_progress_rounds:
-                        finalizing = True
-                        work.blockers = [self.settings.messages["tool_no_progress"]]
+                        if value.mode == "work" and not progress_recovery_used:
+                            # A stalled discovery branch must not remove the
+                            # write/compile tools needed to deliver the task.
+                            exhausted_tools.update(req.tool_name for req in proposal.action_requests
+                                if req.action_id in repeated_actions)
+                            available_tools = [tool for tool in available_tools if tool.name not in exhausted_tools]
+                            progress_recovery_used = True
+                            stagnant_rounds = 0
+                            await remember("reflection", {"exhausted_tools": sorted(exhausted_tools)},
+                                "这些工具的重复调用没有新增证据，本次执行暂停该检索分支。已有回执和原文仍可使用；请推进尚未完成的写作、文件操作或编译。若确实缺少必要依据，明确指出具体缺口，不能编造。",
+                                retention="run")
+                        else:
+                            finalizing = True
+                            work.blockers = [self.settings.messages["tool_no_progress"]]
                     limit = self.settings.rag_tool.max_calls_per_run
                     if (
                         limit
@@ -1040,6 +1348,15 @@ class Harness:
                         ]
                     work.revision += 1
                     await save_checkpoint()
+                    if can_offer_mode_upgrade and any(
+                        item.get("skill_id")
+                        for item in active_skills
+                    ):
+                        return finish(
+                            "waiting_user",
+                            input_requests=[_mode_upgrade_request_spec()],
+                            error=self.settings.error("missing_input"),
+                        )
                 review = await invoke(
                     "reflection", ReflectionInput(proposed=proposal, actions=actions)
                 )
@@ -1083,7 +1400,24 @@ class Harness:
         except asyncio.CancelledError as exc:
             exc.run_result = finish("cancelled", error=self.settings.error("cancelled"))
             raise
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "harness failed run=%s type=%s stack=%s", run_id,
+                type(exc).__name__, traceback.format_list(traceback.extract_tb(exc.__traceback__)),
+            )
+            self._emit(
+                RunEvent(
+                    run_id=run_id,
+                    module="harness",
+                    phase="finished",
+                    event_type="diagnostic",
+                    status="failed",
+                    error_code="module_failed",
+                    diagnostics={
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+            )
             return finish("failed", error=self.settings.error("module_failed"))
         finally:
             # In-memory, run-scoped memory is released on every exit, including cancellation.
@@ -1103,8 +1437,8 @@ class Harness:
                     ),
                     timeout=self.settings.runtime.call_timeout_seconds,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).error("memory cleanup failed run=%s type=%s", run_id, type(exc).__name__)
             if self.material_catalog:
                 self.material_catalog.close_run(run_id)
             if continuation:

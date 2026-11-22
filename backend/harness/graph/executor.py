@@ -28,6 +28,7 @@ from backend.contracts.schemas.core import Error, PortError
 from backend.harness.lifecycle.control import RunControl, StopRequested
 
 NodeHandler = Callable[[NodeSpec, RunEnvelope, dict, RunControl], Awaitable[GraphNodeResult]]
+ArtifactCollector = Callable[[RunEnvelope, dict, bool], Awaitable[None]]
 
 
 def validate_graph(graph: RunGraph) -> list[NodeSpec]:
@@ -60,9 +61,10 @@ def validate_graph(graph: RunGraph) -> list[NodeSpec]:
 class GraphRunExecutor:
     """Execute typed nodes without adding another queue or Run store."""
 
-    def __init__(self, handlers: dict[str, NodeHandler], *, events=None):
+    def __init__(self, handlers: dict[str, NodeHandler], *, events=None, prepare=None, close=None, collect_artifacts=None):
         self.handlers = dict(handlers)
         self.events = events
+        self.prepare, self.close, self.collect_artifacts = prepare, close, collect_artifacts
 
     async def execute(self, run: RunEnvelope, control: RunControl) -> RunResult:
         started = monotonic()
@@ -94,7 +96,13 @@ class GraphRunExecutor:
             if self.events:
                 self.events.emit(RunEvent(run_id=run.run_id, module="graph", phase=phase, event_type="node", node_id=node.id, attempt_id=attempt.attempt_id, status=status, error_code=error.code if error else None))
 
+        async def finalize_artifacts(completed: bool):
+            if self.collect_artifacts:
+                await self.collect_artifacts(run, progress.state, completed=completed)
+
         try:
+            if self.prepare:
+                await self.prepare(run, progress.state, control)
             for node in ordered:
                 state = progress.node_states[node.id]
                 if state.status == "succeeded":
@@ -119,6 +127,11 @@ class GraphRunExecutor:
                 timeout = node.timeout_ms or run.runtime_policy.timeout_ms
                 try:
                     result = await asyncio.wait_for(operation, timeout / 1000) if timeout else await operation
+                except StopRequested:
+                    state.status = "cancelled" if control.reason == "cancel" else "paused"
+                    attempt.status = state.status
+                    emit(node, attempt, "finished", state.status)
+                    raise
                 except (PortError, TimeoutError) as exc:
                     error = exc.error if isinstance(exc, PortError) else Error(code="node_timeout", message="节点执行超时", retryable=True)
                     state.status, state.error = "failed", error
@@ -137,13 +150,17 @@ class GraphRunExecutor:
                 emit(node, attempt, "finished", "succeeded")
                 progress.current_node_id = progress.current_attempt_id = None
                 await publish()
+            await finalize_artifacts(True)
+            await publish()
             return RunResult(run_id=run.run_id, status="succeeded", answer="\n\n".join(summaries), elapsed_seconds=monotonic() - started, completed_units=len(ordered), total_units=len(ordered), execution_state=progress.state)
         except StopRequested:
+            await finalize_artifacts(False)
             await publish()
             return RunResult(run_id=run.run_id, status="cancelled", answer="\n\n".join(summaries), elapsed_seconds=monotonic() - started, execution_state=progress.state)
         except PortError as exc:
             if progress.current_node_id:
                 emit(node, attempt, "finished", "failed", exc.error)
+            await finalize_artifacts(False)
             await publish()
             return RunResult(run_id=run.run_id, status="failed", error=exc.error, elapsed_seconds=monotonic() - started, execution_state=progress.state)
         except Exception as exc:
@@ -153,18 +170,18 @@ class GraphRunExecutor:
                 state.status = "failed"
                 state.error = error
             if progress.current_node_id:
+                attempt.status, attempt.error = "failed", error
                 emit(node, attempt, "finished", "failed", error)
+            await finalize_artifacts(False)
             await publish()
             return RunResult(run_id=run.run_id, status="failed", error=error, elapsed_seconds=monotonic() - started, execution_state=progress.state)
+        finally:
+            if self.close:
+                await self.close(run)
 
 
 async def descriptor_node(node: NodeSpec, run: RunEnvelope, state: dict, control: RunControl) -> GraphNodeResult:
-    """Small first-slice adapter for declarative Skill/tool/model/file nodes.
-
-    It records a stable output reference and a user-visible summary. Real
-    provider/tool routing is deliberately added in the model/tool milestone;
-    the runtime contract is already the same for both paths.
-    """
+    """Explicit test fixture; never wire this adapter into the application."""
 
     if control.cancelled:
         raise StopRequested
@@ -176,6 +193,7 @@ async def descriptor_node(node: NodeSpec, run: RunEnvelope, state: dict, control
 
 
 def default_graph_handlers() -> dict[str, NodeHandler]:
+    """Descriptor fixtures retained for tests that explicitly import them."""
     return {kind: descriptor_node for kind in ("skill", "tool", "model", "file")}
 
 

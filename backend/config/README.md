@@ -4,8 +4,13 @@ defaults.toml 保存参数、提示词和文案；settings.py 校验并读取配
 
 密钥仅通过指定环境变量或本地凭证文件取得，不写入本目录、日志、公开事件或前端。
 
-- 生产固定 DeepSeek Flash，thinking_mode 为 none / low / high；生成预留 8192 / 16384 / 32768，含思考消耗。旧 model_routing 被工厂拒绝。
+2026-11-22 经用户批准，`defaults.toml` 的 `[prompts]` 已整体替换为用户确认的 15 段提示词，各模型和两种模式共用。`prompts/zhouxu-2026-11-22.toml` 只作为完整性校验原文；它不是另一套运行提示词。平台不做逐任务提示词版本绑定、历史迁移或回滚；新任务和旧任务继续执行时都使用当前唯一提示词，已保存的回答保持原样。
+
+无费用检查：`python -B -m unittest backend.config.test_prompt_bundle backend.infrastructure.model.test_prompt_protocols`。应在项目规定的 Docker Python 3.11 环境运行；真实新旧比较入口为 `tests/prompts/compare.py`，需要独立存储与真实官方 DeepSeek 配置，运行会产生少量模型费用。
+
+- 生产使用官方 DeepSeek Flash / Pro，thinking_mode 为 none / low / high / max；生成预留 8192 / 16384 / 32768，含思考消耗。旧 model_routing 被工厂拒绝。
 - 主模型 explicit 协议配合 auto 工具选择，允许原生最终正文。review 与 compaction 关闭思考，独立设置输出额度。
+- 聊天可用的模型共用工作模式清单，工具由统一执行层按模式授权；`relay_verification.json` 只记录实际验证证据，不作为工作模式或工具发送的开关。
 - runtime 的轮数、模块时限、模型时限与执行总时限分别生效；50 轮是上限，聊天默认 180 秒，工作任务默认 1800 秒。
 - context_policy 是应用预算策略；原始模型能力与 deployment_limits 分开。唯一计算在 infrastructure/model/budget.py，60/65/70 水位不代表通用质量最优区间。
 - materials 约束解析、预览、读取、搜索与可选 OCR/MinerU。共享初始预览 1200 字符，默认读取上界 12000 字符；所有正文和封装仍受完整请求预算约束。

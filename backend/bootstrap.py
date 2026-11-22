@@ -115,9 +115,9 @@ def build_harness(
             maritime_tool.spec,
             maritime_tool,
         )
-    # Skills are read-only method packages.  The model-facing read_skill tool
-    # is registered independently of RAG, case retrieval, or execution so the
-    # Skill catalog remains usable in ordinary chat and work conversations.
+    # Register the Skill catalog independently of retrieval/execution. The
+    # shared runtime and graph permission checks expose activation only in work
+    # mode; registration itself does not grant chat access.
     from backend.infrastructure.tools.skills import SkillReadTool
     from backend.skills.registry import default_skill_registry
 
@@ -125,6 +125,7 @@ def build_harness(
         default_skill_registry(),
         settings,
         account_skill_loader=account_skill_loader,
+        package_installer=execution_tools.install_skill_package if execution_tools is not None else None,
     )
     if skill_tool.spec.name in registered:
         raise ValueError("duplicate_tool_registration")
@@ -217,7 +218,7 @@ async def open_harnesses(
     Startup performs no retrieval. Only an action requested by the model queries
     the corpus. Tests may still inject a Module via build_harness(rag=...).
     """
-    from backend.infrastructure.model.factory import open_model
+    from backend.infrastructure.model.router import open_routed_model
 
     async with AsyncExitStack() as stack:
         web_client = None
@@ -308,7 +309,7 @@ async def open_harnesses(
             selected = settings.model_copy(deep=True)
             selected.model.thinking_mode = mode
             model = await stack.enter_async_context(
-                open_model(settings=selected, events=events, role="main")
+                open_routed_model(settings=selected, events=events)
             )
             harnesses[mode] = build_harness(
                 model=model,

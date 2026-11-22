@@ -40,7 +40,8 @@ class ModelReasoning:
         except PortError as exc:
             return ModuleResponse(status="failed", error=exc.error)
         valid = (
-            decision.kind == "answer"
+            decision.incomplete
+            or decision.kind == "answer"
             and bool((decision.answer or "").strip())
             or decision.kind == "action"
             and bool(decision.action_requests)
@@ -54,7 +55,11 @@ class ModelReasoning:
                 status="failed",
                 error=self.settings.error("invalid_decision", retryable=True),
             )
-        if self.streams is not None and request.input.purpose != "compaction":
+        if (
+            self.streams is not None
+            and request.input.purpose != "compaction"
+            and not decision.incomplete
+        ):
             self.streams.emit_stream(
                 StreamEvent(
                     type="answer",

@@ -1,4 +1,4 @@
-export type ThinkingMode = "none" | "low" | "high";
+export type ThinkingMode = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export const THINKING_MODES: readonly {
   value: ThinkingMode;
@@ -6,9 +6,12 @@ export const THINKING_MODES: readonly {
   description: string;
   note: string;
 }[] = [
-  { value: "none", label: "不思考", description: "直接回应，优先速度", note: "直接" },
-  { value: "low", label: "轻度思考", description: "适度推敲，兼顾速度与分析", note: "适度" },
-  { value: "high", label: "高度思考", description: "深入分析，通常需要更多时间", note: "深入" },
+  { value: "none", label: "关闭", description: "不启用思考", note: "关闭" },
+  { value: "low", label: "低", description: "较快思考", note: "低" },
+  { value: "medium", label: "中", description: "平衡速度与深度", note: "中" },
+  { value: "high", label: "高", description: "深入思考", note: "高" },
+  { value: "xhigh", label: "很高", description: "更充分思考", note: "很高" },
+  { value: "max", label: "最高", description: "最大思考强度", note: "最高" },
 ];
 
 export function readThinkingMode(key: string): ThinkingMode {

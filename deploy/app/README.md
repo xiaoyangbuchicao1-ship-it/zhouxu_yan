@@ -33,7 +33,9 @@ models/huggingface/         固定 BGE-M3 缓存
 models/fonts/              论文模板字体
 ```
 
-另外保留项目外的信息卡、能力卡和完整 `csl-law-paper-generator` 目录，在 `.env` 中指定路径；原目录不复制进源码。`opensearch/import/information_cards/` 必须包含已校验的派生向量与清单。运行状态保存在 `data/runtime/`，编译文件保存在当前会话工作区，并沿用前端认证下载接口。
+另外保留项目外的信息卡、能力卡和完整 `csl-law-paper-generator` 目录，在 `.env` 中指定路径；原目录不复制进源码。`opensearch/import/information_cards/` 必须包含已校验的派生向量与清单。运行状态和个人 Skill 元数据保存在 Docker Linux 数据卷 `zhouxu_runtime-state`，编译文件保存在当前会话工作区，并沿用前端认证下载接口。
+
+迁移旧版本或更换电脑前，先按[运行库迁移与导出](../../docs/deployment.md#运行库的-linux-数据卷迁移与导出)停止 API 并迁入/导出数据库。`data/runtime/` 现在只作为旧库导入来源，迁移后不再更新；仅复制这个旧目录无法搬走最新任务和个人 Skill。启动发现旧库存在、新卷为空时会明确报错，要求执行迁移，不会静默打开空历史。
 
 如果要保留现有 OpenSearch 的快速运行快照，再复制：
 
@@ -75,7 +77,7 @@ docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml config --qu
 docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml up -d --build
 ```
 
-`.env` 至少要设置一个真实的 `OPENSEARCH_INITIAL_ADMIN_PASSWORD` 和后端所需的 `DEEPSEEK_API_KEY`。不要把 `.env` 上传 GitHub。
+`.env` 至少要设置一个真实的 `OPENSEARCH_INITIAL_ADMIN_PASSWORD` 和后端所需的 `DEEPSEEK_API_KEY`。如果要启用中转站，再填写 `ZHOUXU_RELAY_ENDPOINT` 和 `ZHOUXU_RELAY_API_KEY`；两项都填好后，API 才能使用已经通过连通性检查的中转模型。不要把 `.env` 上传 GitHub。
 
 说明：这套镜像自带 CPU PyTorch，BGE-M3 权重不打进镜像，而是由 `ZHOUXU_HF_CACHE_DIR` 指向宿主机的 Hugging Face 缓存，并以只读方式挂载到 API 容器的 `/root/.cache/huggingface`。当前配置使用固定 revision `5617a9f61b028005a4858fdac845db406aefb181`，因此法规和案例的向量检索可以离线运行。迁移到另一台机器时，必须复制同一模型缓存，或把 `ZHOUXU_HF_CACHE_DIR` 改为目标机上包含该 revision 的目录；只复制前后端镜像而不提供模型，网页仍能打开，但向量检索会失败。
 
@@ -122,7 +124,7 @@ docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml up -d
 docker compose --env-file deploy\app\.env -f deploy\app\compose.yaml down
 ```
 
-不要使用 `docker compose down -v`，也不要手动删除 `opensearch/vector_db_data/opensearch/`；那会删除检索数据。
+不要使用 `docker compose down -v`，它会删除运行数据卷中的任务和个人 Skill；也不要手动删除 `opensearch/vector_db_data/opensearch/`，那会删除检索数据。
 
 ## Linux/ECS
 

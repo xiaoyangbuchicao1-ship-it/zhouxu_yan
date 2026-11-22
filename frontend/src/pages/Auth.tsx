@@ -203,6 +203,7 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
                 </fieldset>
               </form>
               <p className="auth-switch-copy">{register ? "已有账户？" : "初次来到舟序？"}<Link to={register ? "/login" : "/register"} state={{ email }} aria-disabled={busy} onClick={e => { if (busy) e.preventDefault(); }}>{register ? "直接登录" : "创建一个账户"}<ArrowRight size={12} aria-hidden="true" /></Link></p>
+              {!register && <Link className="auth-admin-link" to="/admin/login">管理员入口</Link>}
             </>
           )}
 

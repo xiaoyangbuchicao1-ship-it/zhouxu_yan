@@ -6,11 +6,14 @@ behind a later port.
 """
 
 import asyncio
+import logging
+import traceback
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from backend.application.workspace.task_graph import validate_graph_capabilities
 from backend.contracts.harness.lifecycle import (
     DispatchResult,
     InputRequest,
@@ -85,7 +88,10 @@ class InMemoryRunScheduler:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def continue_run(self, *, session_id: str, run_id: str) -> DispatchResult:
+    async def continue_run(
+        self, *, session_id: str, run_id: str, guidance: str | None = None,
+        payload: Any | None = None,
+    ) -> DispatchResult:
         await self._ensure_session(session_id)
         async with self._lock:
             session = self._require_session(session_id)
@@ -99,10 +105,26 @@ class InMemoryRunScheduler:
                 raise SchedulerCommandError("run cannot be continued")
             still_stopping = run_id in session.tasks
             error_code = run.error.code if run.error else None
-            run.status, run.error, run.completed_at = "queued", None, None
-            run.execution_state = prepare_checkpoint_for_continue(
+            prepared_state = prepare_checkpoint_for_continue(
                 run.execution_state, error_code=error_code
             )
+            existing_guidance = prepared_state.get("continuation_guidance", [])
+            if not isinstance(existing_guidance, list) or any(
+                not isinstance(item, str) for item in existing_guidance
+            ):
+                raise SchedulerCommandError("run continuation guidance is invalid")
+            run.status, run.error, run.completed_at = "queued", None, None
+            run.execution_state = prepared_state
+            run.continuation_guidance = existing_guidance[-8:]
+            if payload is not None:
+                run.payload = payload
+            instruction = guidance.strip() if guidance is not None else ""
+            if instruction:
+                prior_guidance = list(run.continuation_guidance)
+                if not prior_guidance or prior_guidance[-1] != instruction:
+                    prior_guidance.append(instruction)
+                run.execution_state["continuation_guidance"] = prior_guidance[-8:]
+                run.continuation_guidance = prior_guidance[-8:]
             if run.partial_output:
                 run.execution_state["resume_visible_output"] = run.partial_output
             run.revision += 1
@@ -129,6 +151,7 @@ class InMemoryRunScheduler:
         runtime_policy: RunPolicy | None = None,
     ) -> DispatchResult:
         if graph is not None:
+            validate_graph_capabilities(graph, RunInput.model_validate(payload))
             validate_graph(graph)
         await self._ensure_session(session_id)
         async with self._lock:
@@ -201,6 +224,8 @@ class InMemoryRunScheduler:
                 raise SchedulerCommandError("run is not waiting for this request")
             if request.run_id != run_id or request.status != "pending":
                 raise SchedulerCommandError("input request is not pending")
+            if request.kind == "mode_upgrade" and payload is None:
+                raise SchedulerCommandError("mode choice requires the workbench resume command")
             request.status = "answered"
             request.answer = answer
             run.answers[request_id] = answer
@@ -330,7 +355,7 @@ class InMemoryRunScheduler:
         async with self._lock:
             session = self._require_session(session_id)
             run = self._require_run(session, run_id)
-            started_revision = run.revision
+            elapsed_before_execution = run.active_elapsed_ms
             execution_input = run.model_copy(deep=True)
 
         async def checkpoint(state):
@@ -339,6 +364,7 @@ class InMemoryRunScheduler:
                 if session.controls.get(run_id) is not control:
                     return
                 current.execution_state = state
+                current.context_compaction_count = state.get("context_compaction_count", 0)
                 await self._persist_locked(session)
 
         control.checkpoint = checkpoint
@@ -356,7 +382,7 @@ class InMemoryRunScheduler:
                 current.current_node_id = progress.current_node_id
                 current.current_attempt_id = progress.current_attempt_id
                 current.execution_state = progress.state
-                current.active_elapsed_ms = progress.elapsed_ms
+                current.active_elapsed_ms = elapsed_before_execution + progress.elapsed_ms
                 current.wall_elapsed_ms = int((datetime.now(timezone.utc) - current.created_at).total_seconds() * 1000)
                 current.revision += 1
                 await self._persist_locked(session)
@@ -377,33 +403,23 @@ class InMemoryRunScheduler:
                 elapsed_seconds=0,
             )
         except Exception as exc:
+            logging.getLogger(__name__).error("executor failed run=%s type=%s stack=%s",
+                run_id, type(exc).__name__, traceback.format_tb(exc.__traceback__))
             outcome = RunResult(
                 run_id=run_id,
                 status="failed",
                 error=Error(code="executor_failed", message=f"run executor failed: {type(exc).__name__}"),
+                execution_state=dict(run.execution_state),
                 elapsed_seconds=0,
             )
 
         async with self._lock:
             session = self._require_session(session_id)
             run = self._require_run(session, run_id)
-            # Graph progress revisions describe the same execution; only a
-            # user steer changes its payload generation.
-            stale = run.revision != started_revision and run.graph is None
-            if stale:
-                if outcome.execution_state:
-                    run.execution_state = outcome.execution_state
-                # A steer superseded this execution. Its result is never
-                # published; the same Run is placed ahead of ordinary queue work.
-                if run.status not in {"cancelled", "pausing"}:
-                    run.status = "queued"
-                    session.queue.appendleft(run_id)
-                elif outcome.execution_state:
-                    run.execution_state = outcome.execution_state
-                    if outcome.answer:
-                        run.partial_output = outcome.answer
-                session.active_run_id = None
-            elif run.status in {"cancelled", "pausing"}:
+            # Pause/cancel settle the current execution even if an earlier
+            # steer changed its input. Public projection revisions are not an
+            # input generation: progress and control actions also change them.
+            if run.status in {"cancelled", "pausing"}:
                 if outcome.answer:
                     run.partial_output = outcome.answer
                     run.output = None
@@ -412,13 +428,25 @@ class InMemoryRunScheduler:
                 run.total_units = outcome.total_units
                 run.current_unit = outcome.current_unit
                 run.execution_state = outcome.execution_state
+                run.context_compaction_count = outcome.execution_state.get("context_compaction_count", 0)
                 if run.status == "pausing":
                     run.status = "paused"
                     run.paused_at = datetime.now(timezone.utc)
-                session.active_run_id = None
+            elif control.reason == "steer":
+                if outcome.execution_state:
+                    run.execution_state = outcome.execution_state
+                # Only a replaced input discards its result and queues the
+                # same Run ahead of ordinary work, regardless of executor kind.
+                run.status = "queued"
+                session.queue.appendleft(run_id)
             else:
                 self._apply_outcome(session, run, outcome)
-                session.active_run_id = None
+            run.active_elapsed_ms = max(
+                run.active_elapsed_ms,
+                elapsed_before_execution + int(outcome.elapsed_seconds * 1000),
+            )
+            run.wall_elapsed_ms = int((datetime.now(timezone.utc) - run.created_at).total_seconds() * 1000)
+            session.active_run_id = None
             session.controls.pop(run_id, None)
             session.tasks.pop(run_id, None)
             await self._persist_locked(session)
@@ -438,8 +466,7 @@ class InMemoryRunScheduler:
         run.total_units = outcome.total_units
         run.current_unit = outcome.current_unit
         run.execution_state = outcome.execution_state
-        run.active_elapsed_ms += int(outcome.elapsed_seconds * 1000)
-        run.wall_elapsed_ms = int((datetime.now(timezone.utc) - run.created_at).total_seconds() * 1000)
+        run.context_compaction_count = outcome.execution_state.get("context_compaction_count", 0)
         run.revision += 1
         if outcome.status in {"succeeded", "failed", "cancelled"}:
             run.completed_at = datetime.now(timezone.utc)
@@ -454,6 +481,16 @@ class InMemoryRunScheduler:
             return
         if outcome.status == "waiting_user":
             run.status = "waiting_user"
+            if outcome.input_requests:
+                for spec in outcome.input_requests:
+                    request = InputRequest(
+                        session_id=run.session_id,
+                        run_id=run.run_id,
+                        **spec,
+                    )
+                    session.requests[request.request_id] = request
+                    run.pending_request_ids.append(request.request_id)
+                return
             questions = outcome.missing_inputs or [
                 outcome.error.message if outcome.error is not None else "missing input"
             ]
@@ -533,6 +570,19 @@ class InMemoryRunScheduler:
         )
         session.active_run_id = None
         for run in session.runs.values():
+            if not run.continuation_guidance:
+                saved_guidance = run.execution_state.get("continuation_guidance", [])
+                if isinstance(saved_guidance, list) and all(
+                    isinstance(item, str) for item in saved_guidance
+                ):
+                    run.continuation_guidance = saved_guidance[-8:]
+            if run.status == "pausing":
+                # The old worker no longer exists after restart. Honor its
+                # accepted pause at the latest saved checkpoint, without
+                # automatically dispatching more work.
+                run.status = "paused"
+                run.paused_at = datetime.now(timezone.utc)
+                run.revision += 1
             if run.status == "running":
                 if run.partial_output:
                     run.execution_state["resume_visible_output"] = run.partial_output
@@ -543,30 +593,29 @@ class InMemoryRunScheduler:
                     session.queue.appendleft(run.run_id)
 
     async def _persist_locked(self, session: _SessionRuntime) -> None:
+        if self._store is not None:
+            await self._store.save(
+                PersistedSession(
+                    snapshot=SessionSnapshot(
+                        session_id=session.session_id,
+                        active_run_id=session.active_run_id,
+                        queued_run_ids=list(session.queue),
+                        waiting_run_ids=[
+                            run_id
+                            for run_id, run in session.runs.items()
+                            if run.status == "waiting_user"
+                        ],
+                        runs=[run.model_copy(deep=True) for run in session.runs.values()],
+                    ),
+                    input_requests=[
+                        request.model_copy(deep=True)
+                        for request in session.requests.values()
+                    ],
+                )
+            )
         if self.on_change:
             for run in session.runs.values():
                 self.on_change(run)
-        if self._store is None:
-            return
-        await self._store.save(
-            PersistedSession(
-                snapshot=SessionSnapshot(
-                    session_id=session.session_id,
-                    active_run_id=session.active_run_id,
-                    queued_run_ids=list(session.queue),
-                    waiting_run_ids=[
-                        run_id
-                        for run_id, run in session.runs.items()
-                        if run.status == "waiting_user"
-                    ],
-                    runs=[run.model_copy(deep=True) for run in session.runs.values()],
-                ),
-                input_requests=[
-                    request.model_copy(deep=True)
-                    for request in session.requests.values()
-                ],
-            )
-        )
 
     def _session(self, session_id: str) -> _SessionRuntime:
         return self._sessions.setdefault(session_id, _SessionRuntime(session_id))

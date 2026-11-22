@@ -25,6 +25,7 @@ import { useWorkspace } from "@/hooks/use-workspace";
 import type { Conversation as Chat, ConversationMode, Resource } from "@/lib/workbench-api";
 import Sidebar, { type SidebarProps } from "@/components/workspace/Sidebar";
 import Conversation from "@/components/workspace/Conversation";
+import { ResearchPanel } from "@/components/workspace/ResearchPanel";
 import ConversationModeSwitch from "@/components/workspace/ConversationModeSwitch";
 import {
   LibraryPage,
@@ -50,14 +51,26 @@ function Desk({ session }: { session: AuthSession }) {
   const match = location.pathname.match(/^\/workspace\/chat\/([^/]+)\/?$/);
   const id = match?.[1];
   const params = new URLSearchParams(location.search);
+  const initialMode = params.get("mode") === "work" ? "work" : "chat";
   const ws = useWorkspace(session, id, {
     skillId: params.get("skill") || undefined,
     caseId: params.get("case") || undefined,
+    initialMode,
   });
   const reduced = useReducedMotion();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [materials, setMaterials] = useState(false);
+  const [panelTab, setPanelTab] = useState<"sources" | "materials">("sources");
+  const [sourceRunId, setSourceRunId] = useState<string | null>(null);
+  const [sourceId, setSourceId] = useState<string | null>(null);
+  useEffect(() => { setSourceRunId(null); setSourceId(null); }, [id, ws.turn?.runId]);
+  function openSources(runId?: string, selectedSource?: string) {
+    setSourceRunId(runId ?? null);
+    setSourceId(selectedSource ?? null);
+    setPanelTab("sources");
+    setMaterials(true);
+  }
   const [narrow, setNarrow] = useState(
     () => window.matchMedia("(max-width: 1100px)").matches,
   );
@@ -161,7 +174,7 @@ function Desk({ session }: { session: AuthSession }) {
     },
   };
   const title = officePage
-    ? ({ skills: "技能工坊", research: "海事检索", cases: "案件协作" }[officePage])
+    ? ({ skills: "技能", research: "海事检索", cases: "案件协作" }[officePage])
     : library
     ? "资料库"
     : ws.detail.data?.conversation.title || "新对话";
@@ -172,6 +185,12 @@ function Desk({ session }: { session: AuthSession }) {
         (!id ? ws.projectFilter : null)),
   );
   const panel = (
+    <>
+    <div className="ws-evidence-tabs" aria-label="侧栏内容">
+      <button type="button" aria-pressed={panelTab === "sources"} onClick={() => setPanelTab("sources")}>检索资料</button>
+      <button type="button" aria-pressed={panelTab === "materials"} onClick={() => setPanelTab("materials")}>附件与资料库</button>
+    </div>
+    {panelTab === "sources" ? <ResearchPanel ws={ws} selectedRunId={sourceRunId} onSelect={setSourceRunId} sourceId={sourceId} onSource={setSourceId} /> : (
     <MaterialsPanel
       ws={ws}
       id={id}
@@ -181,6 +200,8 @@ function Desk({ session }: { session: AuthSession }) {
         navigate("/workspace/library");
       }}
     />
+    )}
+    </>
   );
   const invalidPath =
     !library && !officePage && !id && !/^\/workspace\/?$/.test(location.pathname);
@@ -305,7 +326,8 @@ function Desk({ session }: { session: AuthSession }) {
                 <Conversation
                   ws={ws}
                   id={id}
-                  openMaterials={() => setMaterials(true)}
+                  openMaterials={() => { setPanelTab("materials"); setMaterials(true); }}
+                  openSources={openSources}
                 />
               )}
             </main>
@@ -353,7 +375,6 @@ function Desk({ session }: { session: AuthSession }) {
           open={materials && narrow && !library && !officePage}
           onOpenChange={setMaterials}
           title="资料与依据"
-          description="管理本对话的资料与附件。"
           side="right"
         >
           {panel}

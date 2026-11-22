@@ -26,6 +26,7 @@ class SkillDescriptor:
     version: str = "1"
     method_path: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    compatible_versions: tuple[str, ...] = ()
 
     @property
     def skill_id(self) -> str:
@@ -33,10 +34,11 @@ class SkillDescriptor:
 
 
 _SKILL_ROOT = BACKEND_ROOT / "skills"
+_BUILTIN_CSL_ROOT = _SKILL_ROOT / "csl-law-paper-generator"
 _EXTERNAL_CSL_ROOT = Path(
     os.environ.get(
         "ZHOUXU_CSL_PAPER_SKILL_DIR",
-        str(BACKEND_ROOT.parent.parent / "技能候选" / "csl-law-paper-generator"),
+        str(_BUILTIN_CSL_ROOT),
     )
 ).resolve()
 
@@ -58,15 +60,20 @@ def _descriptor(
     *,
     method_path: Path | None = None,
     version: str = "1",
+    metadata: dict[str, Any] | None = None,
+    compatible_versions: tuple[str, ...] = (),
 ) -> SkillDescriptor:
-    metadata = _load_method(method_path) if method_path else {}
+    loaded = _load_method(method_path) if method_path else {}
+    if metadata:
+        loaded.update(metadata)
     return SkillDescriptor(
         name=name,
         description=description,
         path=path,
-        version=str(metadata.get("version") or version),
+        version=str(loaded.get("version") or version),
         method_path=method_path,
-        metadata=metadata,
+        metadata=loaded,
+        compatible_versions=compatible_versions,
     )
 
 
@@ -114,13 +121,22 @@ for _name, _fallback_description in _MARITIME_SKILLS:
         version="2",
     )
 
-_CSL_SKILL_PATH = _EXTERNAL_CSL_ROOT / "SKILL.md"
+_CSL_SKILL_PATH = (
+    _EXTERNAL_CSL_ROOT / "SKILL.md"
+    if (_EXTERNAL_CSL_ROOT / "SKILL.md").is_file()
+    else _BUILTIN_CSL_ROOT / "SKILL.md"
+)
 if _CSL_SKILL_PATH.is_file():
     _CATALOG["csl-law-paper-generator"] = _descriptor(
         "csl-law-paper-generator",
         "中文海事法学论文写作、Typst 源稿和固定 PDF/Word 双链路编译规范。",
         _CSL_SKILL_PATH,
-        version="3.5",
+        version="4.0",
+        metadata={
+            "requires_work_mode": True,
+            "required_tools": ["write", "paper_compile"],
+        },
+        compatible_versions=("3.5",),
     )
 
 

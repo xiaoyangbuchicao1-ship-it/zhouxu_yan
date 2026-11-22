@@ -7,9 +7,12 @@ export interface AuthCredentials {
 }
 
 export interface AuthSession {
-  account: { id: string; email: string; display_name: string };
+  account: { id: string; email: string; display_name: string; role: "user" | "admin" };
   session: { token: string };
 }
+
+export type AccountRole = AuthSession["account"]["role"];
+export type AccountView = AuthSession["account"];
 
 export class AuthApiError extends Error {
   constructor(public code: string, public status = 0) {
@@ -23,6 +26,7 @@ export function authErrorMessage(code: string): string {
     email_invalid: "请填写有效的邮箱地址。",
     password_length_invalid: "密码需要至少 12 个字符。",
     account_email_exists: "这个邮箱已经注册，可以直接登录。",
+    admin_required: "这个入口只对管理员开放。",
     authentication_failed: "邮箱或密码不正确，请核对后重试。",
     authentication_required: "登录状态已失效，请重新登录。",
     invalid_response: "服务返回的信息不完整，请稍后重试。",
@@ -52,10 +56,13 @@ export function isAuthSession(value: unknown): value is AuthSession {
   return typeof candidate.account?.id === "string" && Boolean(candidate.account.id)
     && typeof candidate.account?.email === "string"
     && typeof candidate.account?.display_name === "string"
+    && (candidate.account?.role === "user" || candidate.account?.role === "admin")
     && typeof candidate.session?.token === "string" && Boolean(candidate.session.token);
 }
 
-const apiBase = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+const runtimeEnv: Record<string, string | undefined> =
+  (import.meta as ImportMeta & { env?: Record<string, string> }).env ?? {};
+const apiBase = (runtimeEnv.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 
 async function request(path: string, options: RequestInit = {}, signal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController();
@@ -99,10 +106,18 @@ export async function authenticate(mode: AuthMode, values: AuthCredentials, sign
   return data;
 }
 
+export async function authenticateAdmin(values: AuthCredentials, signal?: AbortSignal) {
+  const payload: AuthCredentials = { email: values.email.trim().toLowerCase(), password: values.password };
+  const data = await request("/auth/admin-login", { method: "POST", body: JSON.stringify(payload) }, signal);
+  if (!isAuthSession(data) || data.account.role !== "admin") throw new AuthApiError("invalid_response");
+  return data;
+}
+
 // This read-only route verifies the bearer session without loading workspace data.
 export async function verifySession(token: string, signal?: AbortSignal) {
   const data = await request("/auth/me", { headers: { Authorization: `Bearer ${token}` } }, signal);
-  if (!data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string") {
+  if (!data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string"
+    || ((data as { role?: unknown }).role !== "user" && (data as { role?: unknown }).role !== "admin")) {
     throw new AuthApiError("invalid_response");
   }
   return data;

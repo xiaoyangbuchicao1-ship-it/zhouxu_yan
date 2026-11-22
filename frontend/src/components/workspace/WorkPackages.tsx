@@ -117,7 +117,6 @@ export function WorkPackages({
           <div>
             <span className="md-delivery-kicker">本次交付</span>
             <h3>文件与工作包</h3>
-            <p>文件已保存为本次运行的快照，打开或下载前仍请核对材料范围与专业判断。</p>
           </div>
           <span className="md-delivery-count">{files.length + packages.length} 项</span>
         </header>
@@ -127,7 +126,7 @@ export function WorkPackages({
           const isDownloading = downloadingId === file.id;
           const extension = file.name.split('.').pop()?.toLowerCase() || '';
           const fileType = ({xlsx: 'Excel', docx: 'Word', csv: 'CSV', pdf: 'PDF', txt: '文本', md: 'Markdown', json: 'JSON'} as Record<string, string>)[extension] || '文件';
-          const isPreviewable = extension === 'xlsx' || extension === 'docx';
+           const isPreviewable = extension === 'pdf' || Boolean(file.preview_artifact_id);
           return <div key={file.id} className="md-work-package md-file-package" role="group" aria-label={`交付文件 ${file.name}`}>
             <span className="md-package-icon"><FileIcon size={21}/></span>
             <span className="md-package-body"><strong>{file.name}</strong><small title={`SHA256 ${file.sha256}`}>{fileType} · {Math.ceil(file.size/1024)} KB · SHA256 {file.sha256.slice(0, 10)}…</small></span>
@@ -240,7 +239,7 @@ export function WorkPackages({
           if (!open) closePreview();
         }}
         title={previewFile?.name || "文件预览"}
-        description={previewLoading ? "正在隔离环境中转换预览，不会修改交付快照。" : "预览来自本次运行的交付快照；专业内容仍需人工核对。"}
+         description={undefined}
       >
         <div className="md-office-preview" aria-live="polite">
           {previewLoading && <div className="md-office-preview-state"><LoaderCircle className="md-download-spinner" size={20} aria-hidden="true" /><span>正在准备预览…</span></div>}

@@ -38,6 +38,7 @@ RunStatus = Literal[
 RecoveryMode = Literal["none", "checkpoint", "fresh_attempt"]
 CommandKind = Literal["submit", "resume", "steer", "pause", "cancel"]
 InputRequestStatus = Literal["pending", "answered", "cancelled"]
+InputRequestKind = Literal["clarification", "mode_upgrade", "human_gate"]
 
 
 class InputOption(Contract):
@@ -53,6 +54,7 @@ class InputRequest(Contract):
     request_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1)
     session_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    kind: InputRequestKind = "clarification"
     question: str = Field(min_length=1)
     options: list[InputOption] = Field(default_factory=list)
     allow_free_text: bool = True
@@ -129,8 +131,14 @@ class RunEnvelope(Contract):
     runtime_policy: RunPolicy = Field(default_factory=RunPolicy)
     paused_at: datetime | None = None
     resumed_at: datetime | None = None
+    # User guidance submitted while continuing a paused/failed Run. Keeping
+    # it separate from the original payload preserves the task identity while
+    # allowing the runtime to apply an explicit follow-up instruction.
+    continuation_guidance: list[str] = Field(default_factory=list)
     active_elapsed_ms: int = Field(default=0, ge=0)
     wall_elapsed_ms: int = Field(default=0, ge=0)
+    # User-visible explanation that older turns were condensed in this Run.
+    context_compaction_count: int = Field(default=0, ge=0)
     # Run recovery only. Public serialization must never contain evidence bodies.
     execution_state: dict[str, Any] = Field(default_factory=dict, exclude=True)
 

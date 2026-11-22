@@ -165,7 +165,7 @@ export default function Sidebar({
           <span>资料库</span>
         </Link>
         {([
-          ["skills", "技能工坊", Compass],
+          ["skills", "技能", Compass],
           ["research", "海事检索", Search],
           ["cases", "案件协作", BriefcaseBusiness],
         ] as const).map(([path, label, Icon]) => (

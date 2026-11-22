@@ -166,6 +166,8 @@ class InformationCardRetriever:
             }
             for row in rows
         ]
+        for item in items:
+            item["citation_url"] = f"/workspace/sources/paper-{item['card_id']}"
         return {
             "status": "partial" if notices else "ok",
             "query": query,
@@ -175,7 +177,7 @@ class InformationCardRetriever:
             "method": "bm25" if notices else "hybrid",
             "notices": notices,
             "source_type": "validated_information_card",
-            "read_hint": "用 information_card_read(card_id) 读取完整卡片；source_path 仅供来源定位，不是工作区文件。",
+            "read_hint": "用 information_card_read(card_id) 读取完整卡片；引用论文请使用 [论文标题](citation_url)。",
         }
 
     async def read(self, card_id: str) -> dict:
@@ -189,11 +191,12 @@ class InformationCardRetriever:
         if not isinstance(source, dict) or source.get("card_id") != card_id:
             raise PortError(self.settings.error("information_card_read_failed"))
         source.pop("vector", None)
+        source["citation_url"] = f"/workspace/sources/paper-{card_id}"
         return {
             "status": "ok",
             "card": source,
             "source_type": "validated_information_card",
-            "read_hint": "已返回完整卡片记录；source_path 仅供原文来源定位，当前工作区不含该原文。",
+            "read_hint": "已返回完整卡片记录；引用论文请使用 [论文标题](citation_url)。",
         }
 
 

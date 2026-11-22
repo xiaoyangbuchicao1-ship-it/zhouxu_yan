@@ -75,7 +75,7 @@ class ModelBudget:
         def project(value):
             nonlocal images
             if isinstance(value, dict):
-                if value.get("type") in {"image_url", "input_image"}:
+                if value.get("type") in {"image_url", "input_image", "image"} or "inlineData" in value:
                     if (
                         self.capability.image_transport == "none"
                         or not self.capability.image_token_upper_bound
@@ -121,11 +121,16 @@ class ModelBudget:
 
     def check(self, packet, *, purpose=None, enforce_warning=True):
         purpose = purpose or ("main" if packet.get("tools") else "review")
-        output = packet.get("max_output_tokens", packet.get("max_tokens"))
+        protocol = getattr(self.settings.model, "protocol", "deepseek_chat_completions")
+        if protocol == "google_generative_language":
+            output = (packet.get("generationConfig") or {}).get("maxOutputTokens")
+        else:
+            output = packet.get("max_output_tokens", packet.get("max_tokens"))
         budget = self.plan(purpose=purpose, output_tokens=output)
         if output is None or output != budget.output_reserved:
             raise PortError(self.settings.error("context_configuration"))
-        if packet.get("model") != self.capability.model_id:
+        # Gemini puts the model in the URL path rather than the JSON body.
+        if protocol != "google_generative_language" and packet.get("model") != self.capability.model_id:
             raise PortError(self.settings.error("model_profile_invalid"))
         estimate = self.estimate(packet)
         if (
@@ -154,19 +159,34 @@ class BudgetTransport(httpx.AsyncBaseTransport):
         self.inner = inner or httpx.AsyncHTTPTransport(trust_env=False)
 
     async def handle_async_request(self, request):
-        if request.url != httpx.URL(self.budget.settings.model.endpoint):
+        configured = httpx.URL(self.budget.settings.model.endpoint)
+        protocol = self.budget.settings.model.protocol
+        allowed = {configured}
+        if protocol == "google_generative_language":
+            model_path = f"/models/{self.budget.capability.model_id}:generateContent"
+            if not configured.path.endswith(model_path):
+                raise PortError(self.budget.settings.error("model_profile_invalid"))
+            allowed.add(httpx.URL(str(configured).removesuffix(":generateContent") + ":streamGenerateContent?alt=sse"))
+        if request.url not in allowed:
             raise PortError(self.budget.settings.error("invalid_endpoint"))
         packet = json.loads(request.content)
         # Reviewer uses the authenticated client directly. Apply its own model/mode
         # and output policy here, before counting its complete encoded request.
         purpose = request.headers.get("x-zhouxu-purpose") or ("main" if packet.get("tools") else "review")
         plan = self.budget.plan(purpose=purpose)
-        packet["max_tokens"] = plan.output_reserved
-        packet["thinking"] = {
-            "type": "enabled"
-            if self.budget.settings.model.thinking_enabled and purpose not in {"review", "compaction"}
-            else "disabled"
-        }
+        if protocol == "openai_responses":
+            packet["max_output_tokens"] = plan.output_reserved
+        elif protocol == "google_generative_language":
+            packet.setdefault("generationConfig", {})["maxOutputTokens"] = plan.output_reserved
+        else:
+            packet["max_tokens"] = plan.output_reserved
+        if self.budget.settings.model.provider == "deepseek":
+            packet["thinking"] = {
+                "type": "enabled"
+                if self.budget.settings.model.thinking_enabled
+                and purpose not in {"review", "compaction"}
+                else "disabled"
+            }
         self.budget.check(packet, purpose=purpose)
         forwarded = httpx.Request(
             request.method,
