@@ -15,6 +15,16 @@ page.setDefaultTimeout(12000);
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 
+function visibleSegments(markdown) {
+  return markdown
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[`*_>#~-]/g, '')
+    .split(/\r?\n/)
+    .map(value => value.trim())
+    .filter(value => value.length >= 12);
+}
+
 try {
   await page.goto(`${base}/admin/login`);
   await page.getByLabel('邮箱', { exact: true }).fill(email);
@@ -43,6 +53,9 @@ try {
     if (target) break;
   }
   assert.ok(target, '预览库没有已持久化的超长回答；请先通过真实用户入口生成测试回答');
+  const segments = visibleSegments(target.longRun.public_answer);
+  assert.ok(segments.length >= 3, '长回答需要包含可核对的开头、中段和结尾');
+  const markers = [segments[0], segments[Math.floor(segments.length / 2)], segments.at(-1)];
 
   await page.getByRole('link', { name: '人员', exact: true }).click();
   await page.waitForURL(/\/admin\/accounts$/);
@@ -51,19 +64,22 @@ try {
   await page.waitForURL(/\/conversations$/);
   await page.locator(`a[href="/admin/accounts/${target.account.id}/conversations/${target.conversation.id}"]`).click();
   await page.waitForURL(/\/conversations\//);
-  const answer = page.locator('.admin-run-answer-text').filter({ hasText: target.longRun.public_answer.slice(0, 40) }).first();
+  const answer = page.locator('.admin-run-answer-text').filter({ hasText: markers[0] }).first();
   await answer.waitFor();
   // The full answer is visible on first render; the user can collapse it.
-  assert.ok((await answer.innerText()).length >= target.longRun.public_answer.length - 8, '管理员详情首屏应显示完整回答');
+  const initialText = await answer.innerText();
+  markers.forEach(marker => assert.ok(initialText.includes(marker), `完整回答缺少：${marker}`));
   const collapse = answer.locator('..').getByRole('button', { name: '收起回答', exact: true });
   await collapse.click();
   assert.equal(await collapse.getAttribute('aria-expanded'), 'false');
   const expand = answer.locator('..').getByRole('button', { name: '展开完整回答', exact: true });
   await expand.click();
   assert.equal(await expand.getAttribute('aria-expanded'), 'true');
-  assert.ok((await answer.innerText()).length >= target.longRun.public_answer.length - 8, '展开后不能丢失回答正文');
+  const expandedText = await answer.innerText();
+  markers.forEach(marker => assert.ok(expandedText.includes(marker), `展开后缺少：${marker}`));
   await page.reload({ waitUntil: 'networkidle' });
-  assert.ok((await page.locator('.admin-run-answer-text').filter({ hasText: target.longRun.public_answer.slice(0, 40) }).first().innerText()).length >= target.longRun.public_answer.length - 8, '刷新后仍显示完整回答');
+  const refreshedText = await page.locator('.admin-run-answer-text').filter({ hasText: markers[0] }).first().innerText();
+  markers.forEach(marker => assert.ok(refreshedText.includes(marker), `刷新后缺少：${marker}`));
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '详情页出现横向溢出');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: 'networkidle' });
