@@ -72,3 +72,28 @@ test("API若夹带路径、完整payload或提示词，管理台拒绝渲染", a
   }
 });
 
+test("能力页请求真实接口，并把权限修改发回服务端", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (String(url).includes("/admin/capabilities/") && options?.method === "PATCH") {
+      return Response.json({
+        account_id: "a1", email: "user@example.com", display_name: "用户",
+        model_policy: "allowlist", allowed_models: ["deepseek-flash"],
+        skill_policy: "builtin_only", can_upload_skill: false, updated_at: null,
+      });
+    }
+    return Response.json({
+      accounts: [{ account_id: "a1", email: "user@example.com", display_name: "用户", model_policy: "default", allowed_models: [], skill_policy: "default", can_upload_skill: true, updated_at: null }],
+    });
+  };
+  const { createAdminApi } = await import("../src/lib/admin-api.ts");
+  const api = createAdminApi("token");
+  const capabilities = await api.capabilities();
+  assert.equal(capabilities.accounts[0].account_id, "a1");
+  const updated = await api.updateCapability("a1", { model_policy: "allowlist", allowed_models: ["deepseek-flash"] });
+  assert.equal(updated.model_policy, "allowlist");
+  assert.equal(calls[1].options.method, "PATCH");
+  assert.deepEqual(JSON.parse(calls[1].options.body), { model_policy: "allowlist", allowed_models: ["deepseek-flash"] });
+});
+

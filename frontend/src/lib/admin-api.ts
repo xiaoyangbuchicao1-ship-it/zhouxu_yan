@@ -87,6 +87,49 @@ export interface AdminConversationList {
   next_cursor: string | null;
 }
 
+export interface AdminCapability {
+  account_id: string;
+  email: string;
+  display_name: string;
+  model_policy: "default" | "allowlist" | "disabled";
+  allowed_models: string[];
+  skill_policy: "default" | "builtin_only" | "disabled";
+  can_upload_skill: boolean;
+  updated_at: string | null;
+}
+
+export interface AdminSkillStatus {
+  id: string;
+  name: string;
+  summary: string;
+  version: string;
+  visibility: string;
+  status: "ready" | "unavailable" | "not_configured";
+  owner_email: string | null;
+  updated_at: string | null;
+}
+
+export interface AdminTask {
+  run_id: string;
+  account_id: string;
+  account_email: string;
+  conversation_id: string;
+  question: string;
+  status: string;
+  model: string | null;
+  provider: string | null;
+  created_at: string;
+  completed_at: string | null;
+  elapsed_ms: number | null;
+  answer_chars: number;
+}
+
+export interface AdminHealthItem {
+  status: "ready" | "degraded" | "unavailable" | "not_configured";
+  count?: number;
+  reason?: string;
+}
+
 export interface AdminConversationFilters {
   query?: string;
   mode?: ConversationMode | "all";
@@ -261,6 +304,13 @@ export function createAdminApi(token: string) {
       `/admin/accounts/${encodeURIComponent(accountId)}/conversations/${encodeURIComponent(conversationId)}${conversationQuery(filters)}`,
       token,
     )),
+    capabilities: (signal?: AbortSignal) => request<{ accounts: AdminCapability[] }>("/admin/capabilities", token, {}, signal),
+    updateCapability: (accountId: string, update: Partial<Pick<AdminCapability, "model_policy" | "allowed_models" | "skill_policy" | "can_upload_skill">>) =>
+      request<AdminCapability>(`/admin/capabilities/${encodeURIComponent(accountId)}`, token, { method: "PATCH", body: JSON.stringify(update) }),
+    skills: (signal?: AbortSignal) => request<{ status: "ready" | "degraded" | "unavailable"; total: number; skills: AdminSkillStatus[] }>("/admin/skills", token, {}, signal),
+    resourcesHealth: (signal?: AbortSignal) => request<{ status: "ready" | "degraded" | "unavailable"; sources: Record<string, AdminHealthItem> }>("/admin/resources/health", token, {}, signal),
+    tasks: (limit = 50, signal?: AbortSignal) => request<{ tasks: AdminTask[]; next_cursor: string | null }>(`/admin/tasks?limit=${limit}`, token, {}, signal),
+    runtimeHealth: (signal?: AbortSignal) => request<{ status: "ready" | "degraded" | "unavailable"; components: Record<string, AdminHealthItem> }>("/admin/runtime/health", token, {}, signal),
   };
 }
 

@@ -22,6 +22,7 @@ from backend.application.accounts.service import (
 )
 from backend.application.admin import AdminService, AdminServiceError
 from backend.application.admin_conversations import AdminConversationService
+from backend.application.admin_operations import AdminOperationsService
 from backend.application.model_directory import ModelDirectoryAdminService
 from backend.application.workspace.conversations import WorkspaceError, WorkspaceService
 from backend.application.workspace.materials import (
@@ -46,6 +47,13 @@ from backend.contracts.admin import (
     AdminProviderView,
     AdminOverviewResponse,
     AdminOverviewView,
+    AdminCapabilitiesResponse,
+    AdminCapabilityUpdateRequest,
+    AdminCapabilityView,
+    AdminResourceHealthResponse,
+    AdminRuntimeHealthResponse,
+    AdminSkillsResponse,
+    AdminTasksResponse,
 )
 from backend.contracts.events.runtime import RunEvent
 from backend.contracts.events.streaming import StreamEvent, visible_text
@@ -230,6 +238,11 @@ def create_app(
             if active_account_service is not None
             else None
         )
+        app.state.admin_operations_service = (
+            AdminOperationsService(active_account_service.database, settings)
+            if active_account_service is not None
+            else None
+        )
         app.state.model_directory = None
         app.state.model_directory_admin_service = None
         if active_account_service is not None:
@@ -337,6 +350,11 @@ def create_app(
     )
     app.state.admin_conversation_service = (
         AdminConversationService(account_service.database)
+        if account_service is not None
+        else None
+    )
+    app.state.admin_operations_service = (
+        AdminOperationsService(account_service.database, settings)
         if account_service is not None
         else None
     )
@@ -517,6 +535,12 @@ def create_app(
             )
         return service_instance
 
+    def admin_operations_service(request: Request) -> AdminOperationsService:
+        service_instance = getattr(request.app.state, "admin_operations_service", None)
+        if service_instance is None:
+            raise HTTPException(status_code=503, detail="admin_service_unavailable")
+        return service_instance
+
     def model_directory(request: Request):
         directory = getattr(request.app.state, "model_directory", None)
         if directory is not None:
@@ -567,6 +591,13 @@ def create_app(
             "upstream_model_required",
             "model_label_required",
             "provider_revision_missing",
+            "capability_model_policy_invalid",
+            "capability_skill_policy_invalid",
+            "capability_model_list_invalid",
+            "capability_model_list_required",
+            "capability_change_required",
+            "invalid_task_limit",
+            "invalid_task_cursor",
         }:
             return HTTPException(status_code=422, detail=exc.code)
         if exc.code in {"conversation_not_found", "provider_not_found", "profile_not_found"}:
@@ -574,6 +605,83 @@ def create_app(
         if exc.code in {"provider_exists", "profile_exists"}:
             return HTTPException(status_code=409, detail=exc.code)
         return HTTPException(status_code=409, detail=exc.code)
+
+    @app.get("/admin/capabilities", response_model=AdminCapabilitiesResponse)
+    async def admin_capabilities(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        return AdminCapabilitiesResponse(
+            accounts=[
+                AdminCapabilityView(**item)
+                for item in admin_operations_service(request).list_capabilities()
+            ]
+        )
+
+    @app.patch(
+        "/admin/capabilities/{account_id}", response_model=AdminCapabilityView
+    )
+    async def admin_update_capability(
+        account_id: str,
+        body: AdminCapabilityUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            item = admin_operations_service(request).update_capability(
+                actor_id=principal.id,
+                account_id=account_id,
+                **body.model_dump(exclude_unset=True),
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminCapabilityView(**item)
+
+    @app.get("/admin/skills", response_model=AdminSkillsResponse)
+    async def admin_skills(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        return AdminSkillsResponse(**admin_operations_service(request).list_skills())
+
+    @app.get("/admin/resources/health", response_model=AdminResourceHealthResponse)
+    async def admin_resource_health(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        return AdminResourceHealthResponse(
+            **admin_operations_service(request).resource_health()
+        )
+
+    @app.get("/admin/tasks", response_model=AdminTasksResponse)
+    async def admin_tasks(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        limit: int = Query(default=50, ge=1, le=100),
+        cursor: str | None = Query(default=None),
+    ):
+        require_admin(request, authorization)
+        try:
+            result = admin_operations_service(request).list_tasks(
+                limit=limit, cursor=cursor
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminTasksResponse(**result)
+
+    @app.get("/admin/runtime/health", response_model=AdminRuntimeHealthResponse)
+    async def admin_runtime_health(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        result = admin_operations_service(request).runtime_health(
+            runtime_ready=getattr(request.app.state, "runtime_ready", None),
+            event_hub_present=getattr(request.app.state, "event_hub", None) is not None,
+            model_directory_present=getattr(request.app.state, "model_directory", None)
+            is not None,
+        )
+        return AdminRuntimeHealthResponse(**result)
 
     @app.get("/admin/overview", response_model=AdminOverviewResponse)
     async def admin_overview(

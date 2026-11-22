@@ -180,3 +180,72 @@ class AdminModelView(Contract):
     access_scope: str
     revision: int
     updated_at: datetime
+
+
+class AdminCapabilityView(Contract):
+    account_id: str
+    email: str
+    display_name: str
+    model_policy: Literal["default", "allowlist", "disabled"]
+    allowed_models: list[str] = Field(default_factory=list)
+    skill_policy: Literal["default", "builtin_only", "disabled"]
+    can_upload_skill: bool
+    updated_at: datetime | None = None
+
+
+class AdminCapabilityUpdateRequest(Contract):
+    model_policy: Literal["default", "allowlist", "disabled"] | None = None
+    allowed_models: list[str] | None = None
+    skill_policy: Literal["default", "builtin_only", "disabled"] | None = None
+    can_upload_skill: bool | None = None
+
+
+class AdminCapabilitiesResponse(Contract):
+    accounts: list[AdminCapabilityView]
+
+
+class AdminSkillView(Contract):
+    id: str
+    name: str
+    summary: str
+    version: str
+    visibility: str
+    status: Literal["ready", "unavailable", "not_configured"]
+    owner_email: str | None = None
+    updated_at: datetime | None = None
+
+
+class AdminSkillsResponse(Contract):
+    status: Literal["ready", "degraded", "unavailable"]
+    total: int = Field(ge=0)
+    skills: list[AdminSkillView]
+
+
+class AdminTaskView(Contract):
+    run_id: str
+    account_id: str
+    account_email: str
+    conversation_id: str
+    question: str
+    status: str
+    model: str | None = None
+    provider: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+    elapsed_ms: int | None = Field(default=None, ge=0)
+    answer_chars: int = Field(ge=0)
+
+
+class AdminTasksResponse(Contract):
+    tasks: list[AdminTaskView]
+    next_cursor: str | None = None
+
+
+class AdminResourceHealthResponse(Contract):
+    status: Literal["ready", "degraded", "unavailable"]
+    sources: dict[str, dict]
+
+
+class AdminRuntimeHealthResponse(Contract):
+    status: Literal["ready", "degraded", "unavailable"]
+    components: dict[str, dict]

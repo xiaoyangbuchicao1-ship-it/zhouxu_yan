@@ -1,4 +1,4 @@
-import { Activity, ArrowLeft, LayoutDashboard, LogOut, Menu, ShieldCheck, Users } from "lucide-react";
+import { Activity, ArrowLeft, LayoutDashboard, LogOut, Menu, ShieldCheck, Users, Wrench } from "lucide-react";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Sheet, SheetClose, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -23,6 +23,7 @@ export function useAdminOutlet(): AdminOutletValue {
 const icons: Record<string, ReactNode> = {
   "/admin/overview": <LayoutDashboard size={17} />,
   "/admin/accounts": <Users size={17} />,
+  "/admin/operations": <Wrench size={17} />,
 };
 
 function Navigation({ mobile = false }: { mobile?: boolean }) {
