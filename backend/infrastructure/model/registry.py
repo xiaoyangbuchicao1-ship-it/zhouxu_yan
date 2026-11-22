@@ -18,6 +18,7 @@ from backend.contracts.model_profiles import (
     ModelProfile,
 )
 from backend.contracts.schemas.core import PortError
+from backend.infrastructure.model.directory import ModelDirectory, RuntimeModelRevision
 from backend.infrastructure.model.relay_config import (
     load_relay_config,
     relay_endpoint_for_protocol,
@@ -107,8 +108,13 @@ def relay_chat_endpoint(base: str) -> str:
 class ModelRegistry:
     """Build selectable profiles from checked-in facts and runtime state."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, directory: ModelDirectory | None = None):
         self.settings = settings
+        # The explicit SQLite directory is injected by the application after
+        # its migration.  Keeping this port optional preserves the checked-in
+        # TOML seed for offline tests and migration tooling; runtime callers
+        # should pass the database-backed implementation.
+        self.directory = directory
         with CATALOG_FILE.open("rb") as stream:
             self.catalog = tomllib.load(stream)
         with CAPABILITIES_FILE.open("rb") as stream:
@@ -116,6 +122,8 @@ class ModelRegistry:
         self.verification = json.loads(VERIFICATION_FILE.read_text(encoding="utf-8"))
 
     def profiles(self) -> list[ModelProfile]:
+        if self.directory is not None:
+            return [revision.profile for revision in self.directory.list_current()]
         providers = self.catalog["providers"]
         models = self.catalog["models"]
         verified_relay = set(models.get("verified_relay_models", []))
@@ -167,18 +175,77 @@ class ModelRegistry:
                 return profile
         raise PortError(self.settings.error("model_profile_invalid"))
 
-    def runtime_settings(self, profile_id: str) -> Settings:
-        """Return an isolated settings snapshot for one available profile."""
+    def resolve(
+        self, profile_id: str, *, profile_revision_id: str | None = None
+    ) -> RuntimeModelRevision:
+        """Resolve a current or historical immutable revision.
+
+        The legacy TOML path has no historical revisions, so it creates a
+        deterministic wrapper around the profile.  A database directory
+        supplies the actual immutable provider/profile revision identities.
+        """
+
+        if self.directory is not None:
+            try:
+                return self.directory.resolve(
+                    profile_id, profile_revision_id=profile_revision_id
+                )
+            except (KeyError, LookupError):
+                raise PortError(self.settings.error("model_profile_invalid")) from None
         profile = self.get(profile_id)
+        endpoint = profile.endpoint or self.settings.model.endpoint
+        provider_revision_id = profile.provider_revision_id or f"{profile.provider}:legacy"
+        revision_id = profile.profile_revision_id or f"{profile.profile_id}:legacy"
+        auth_style = "bearer"
+        if profile.protocol == "anthropic_messages":
+            auth_style = "x-api-key"
+        elif profile.protocol == "google_generative_language":
+            auth_style = "x-goog-api-key"
+        return RuntimeModelRevision(
+            profile=profile,
+            provider_revision_id=provider_revision_id,
+            profile_revision_id=revision_id,
+            endpoint=endpoint,
+            auth_style=auth_style,
+            credential_mode="file_ref",
+            credential_file=self.settings.model.credential_file,
+        )
+
+    def credential(self, revision: RuntimeModelRevision):
+        """Resolve a revision's secret through the injected directory.
+
+        The registry never stores or exposes secret text.  Database-backed
+        directories implement the actual env-ref/encrypted lookup; the legacy
+        seed path keeps using the existing settings loader.
+        """
+
+        if self.directory is not None and hasattr(self.directory, "credential"):
+            return self.directory.credential(revision)
+        if revision.profile.provider == "deepseek":
+            from backend.config.settings import load_key
+
+            return load_key(self.settings)
+        return load_relay_config(revision.credential_file or self.settings.model.credential_file).key
+
+    def runtime_settings(
+        self, profile_id: str, *, profile_revision_id: str | None = None
+    ) -> Settings:
+        """Return an isolated settings snapshot for one available profile."""
+        revision = self.resolve(profile_id, profile_revision_id=profile_revision_id)
+        profile = revision.profile
         if not profile.available:
             raise PortError(self.settings.error("model_profile_invalid"))
         selected = self.settings.model_copy(deep=True)
         model = selected.model
-        model.provider = profile.provider  # type: ignore[assignment]
+        # ModelSettings historically only accepted deepseek/relay.  All
+        # database providers use the relay transport family here; their true
+        # provider id remains in the immutable Run snapshot and directory
+        # revision.  The shared protocol adapter is selected independently.
+        model.provider = "deepseek" if profile.provider == "deepseek" else "relay"
         model.protocol = profile.protocol
         model.name = profile.model_id
-        model.endpoint = profile.endpoint or ""
-        if profile.provider == "relay":
+        model.endpoint = revision.endpoint or profile.endpoint or ""
+        if profile.provider != "deepseek":
             facts = self.relay_capabilities.get(profile.model_id, {})
             if model.thinking_mode not in profile.thinking_modes:
                 raise PortError(self.settings.error("model_profile_invalid"))
@@ -187,18 +254,17 @@ class ModelRegistry:
             # Tool transport belongs to the adapter; verification is historical
             # evidence and must not disable the shared execution contract.
             model.decision_protocol = "explicit"
-            model.endpoint = relay_endpoint_for_protocol(model.endpoint, profile.protocol).format(model=profile.model_id)
+            if self.directory is None:
+                model.endpoint = relay_endpoint_for_protocol(model.endpoint, profile.protocol).format(model=profile.model_id)
             hostname = urllib.parse.urlparse(model.endpoint).hostname
             if not hostname:
                 raise PortError(self.settings.error("invalid_endpoint"))
             model.allowed_hosts = [hostname]
-            model.credential_file = os.environ.get(
+            model.credential_file = revision.credential_file or os.environ.get(
                 "ZHOUXU_RELAY_CREDENTIAL_FILE", model.credential_file
             )
-            model.credential_names = [
-                "ZHOUXU_RELAY_API_KEY",
-                "RELAY_API_KEY",
-                "OPENAI_API_KEY",
+            model.credential_names = [revision.credential_ref] if revision.credential_ref else [
+                "ZHOUXU_RELAY_API_KEY", "RELAY_API_KEY", "OPENAI_API_KEY"
             ]
             selected.model_capabilities[profile.model_id] = ModelCapabilities(
                 provider="relay",

@@ -8,6 +8,11 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
+from backend.infrastructure.model.endpoint_policy import (
+    EndpointPolicyError,
+    validate_model_endpoint,
+)
+
 
 @dataclass(frozen=True)
 class RelayConfig:
@@ -56,10 +61,12 @@ def load_relay_config(path: str | Path | None = None) -> RelayConfig:
         source = str(selected)
     if not endpoint or not key:
         raise ValueError("relay_credentials_missing")
-    if not endpoint.startswith("https://"):
-        raise ValueError("relay_endpoint_must_use_https")
-    if not key.startswith("sk-"):
-        raise ValueError("relay_key_format_invalid")
+    try:
+        validate_model_endpoint(endpoint)
+    except EndpointPolicyError as exc:
+        # Keep the existing config loader's ValueError boundary while exposing
+        # the concrete policy reason to diagnostics.
+        raise ValueError(str(exc)) from exc
     return RelayConfig(endpoint=endpoint, key=SecretStr(key), source=source)
 
 

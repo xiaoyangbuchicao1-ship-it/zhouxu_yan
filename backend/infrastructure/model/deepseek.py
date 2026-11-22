@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from backend.infrastructure.model.compaction import COMPACT_PROMPT
 from backend.infrastructure.model.decision import DeliveryText
 from backend.infrastructure.model.public_text import PublicText
 from backend.infrastructure.model.reading import reading_view, reference_view
+from backend.infrastructure.model.endpoint_policy import EndpointPolicyError, validate_model_endpoint
 
 
 class DeepSeekModel:
@@ -42,16 +44,14 @@ class DeepSeekModel:
         self.settings, self.events = settings, events
         self._continuations: dict[str, dict] = {}
         self.budget = ModelBudget(settings)
-        url = httpx.URL(settings.model.endpoint)
-        if (
-            url.scheme != "https"
-            or url.host not in settings.model.allowed_hosts
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-        ):
-            raise PortError(settings.error("invalid_endpoint"))
+        try:
+            validate_model_endpoint(
+                settings.model.endpoint,
+                allowed_hosts=set(settings.model.allowed_hosts),
+                allow_local=os.environ.get("ZHOUXU_ALLOW_LOCAL_MODEL_HOSTS") == "1",
+            )
+        except EndpointPolicyError:
+            raise PortError(settings.error("invalid_endpoint")) from None
         self.client = httpx.AsyncClient(
             headers={"Authorization": "Bearer " + key.get_secret_value()},
             timeout=settings.model.timeout_seconds,
