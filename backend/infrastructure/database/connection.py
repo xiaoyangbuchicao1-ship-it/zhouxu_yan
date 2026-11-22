@@ -57,6 +57,13 @@ class Database:
         ``dynamic_admin_v1`` marker; ORM table creation never upgrades it.
         """
 
+        if self.url.startswith("sqlite:///"):
+            # A fresh runtime volume may not contain the configured parent
+            # directory yet.  Create it before SQLAlchemy tries to inspect
+            # the file; inspection itself opens the SQLite database.
+            database_path = Path(self.url.removeprefix("sqlite:///"))
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+
         existing_tables: set[str] = set()
         if self.url.startswith("sqlite"):
             existing_tables = set(inspect(self.engine).get_table_names())
@@ -72,9 +79,6 @@ class Database:
                         "SELECT 1 FROM schema_versions WHERE version='dynamic_admin_v1' LIMIT 1"
                     ).scalar():
                         raise RuntimeError("explicit_migration_required")
-        if self.url.startswith("sqlite:///"):
-            database_path = Path(self.url.removeprefix("sqlite:///"))
-            database_path.parent.mkdir(parents=True, exist_ok=True)
         # Additive SQLite migration for the run contract.  ``create_all`` does
         # not alter an existing table, and must therefore run after these
         # columns exist so the idempotency index can be created safely.
