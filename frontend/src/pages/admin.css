@@ -250,6 +250,35 @@
 .admin-run-label { display: inline-flex; align-items: flex-start; gap: 6px; color: var(--admin-muted); font-size: 12px; }
 .admin-run-message p { min-width: 0; margin: 0; color: var(--admin-text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; }
 .admin-run-answer p { color: #cdd7e1; }
+.admin-run-answer-copy { min-width: 0; }
+.admin-run-answer-text { position: relative; }
+.admin-run-answer-copy.is-collapsed .admin-run-answer-text {
+  max-height: 14.5rem;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+.admin-run-answer-copy.is-collapsed .admin-run-answer-text::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 4.5rem;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, #101720);
+  content: "";
+}
+.admin-run-expand {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  margin-top: 9px;
+  padding: 0 10px;
+  border: 1px solid var(--admin-line);
+  border-radius: 6px;
+  color: var(--admin-accent);
+  font-size: 12px;
+}
+.admin-run-expand:hover { border-color: #8ca9c4; background: #ffffff08; }
 .admin-run-facts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 20px 0 0; padding-top: 15px; border-top: 1px solid var(--admin-line-soft); }
 .admin-run-facts > div { display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .admin-run-facts dt { display: inline-flex; align-items: center; gap: 4px; color: var(--admin-muted); }

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { ArrowLeft, CircleCheck, CircleX, Clock3, Cpu, MessageSquare } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { createAdminApi, type AdminConversationRun } from "@/lib/admin-api";
@@ -33,8 +34,24 @@ function RunCard({ run }: { run: AdminConversationRun }) {
   return <article className={`admin-run-card ${statusClass}`}>
     <header className="admin-run-card-header"><div><span className="admin-run-status">{run.status === "succeeded" ? <CircleCheck size={15} /> : run.status === "failed" ? <CircleX size={15} /> : <Clock3 size={15} />}{statusLabel(run.status)}</span><time dateTime={run.created_at}>{formatAdminDate(run.created_at)}</time></div><span>{formatAdminDuration(run.elapsed_ms)}</span></header>
     <div className="admin-run-message"><span className="admin-run-label"><MessageSquare size={14} />用户</span><p>{run.user_question}</p></div>
-    {run.public_answer && <div className="admin-run-message admin-run-answer"><span className="admin-run-label"><CircleCheck size={14} />回答</span><p>{run.public_answer}</p></div>}
+    {run.public_answer && <div className="admin-run-message admin-run-answer"><span className="admin-run-label"><CircleCheck size={14} />回答</span><AdminAnswerText text={run.public_answer} /></div>}
     <dl className="admin-run-facts">{run.model && <div><dt><Cpu size={13} />模型</dt><dd>{run.model}</dd></div>}{run.protocol && <div><dt>协议</dt><dd>{run.protocol}</dd></div>}{run.thinking_mode && <div><dt>思考</dt><dd>{run.thinking_mode}</dd></div>}{run.error_code && <div><dt>错误</dt><dd>{run.error_code}</dd></div>}</dl>
     {run.nodes.length > 0 && <ol className="admin-run-nodes">{run.nodes.map(node => <li key={node.id}><span>{node.label}</span><small>{statusLabel(node.status)}{node.elapsed_ms == null ? "" : ` · ${formatAdminDuration(node.elapsed_ms)}`}</small></li>)}</ol>}
   </article>;
+}
+
+const LONG_ANSWER_LIMIT = 1200;
+
+function AdminAnswerText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > LONG_ANSWER_LIMIT;
+  return <div className={`admin-run-answer-copy ${isLong && !expanded ? "is-collapsed" : ""}`}>
+    <p className="admin-run-answer-text">{text}</p>
+    {isLong && <button
+      type="button"
+      className="admin-run-expand"
+      aria-expanded={expanded}
+      onClick={() => setExpanded(value => !value)}
+    >{expanded ? "收起回答" : "展开完整回答"}</button>}
+  </div>;
 }

@@ -785,6 +785,7 @@
 .ws-answer {
   margin-bottom: 42px;
   font-size: 16px;
+  overflow-anchor: none;
 }
 .ws-answer-byline {
   display: flex;
@@ -957,7 +958,12 @@
   font-size: 16px;
   line-height: 1.9;
   overflow-wrap: break-word;
+  text-wrap: pretty;
   color: #d5dde6;
+}
+.ws-prose p,
+.ws-prose li {
+  text-wrap: pretty;
 }
 .ws-prose > * + * {
   margin-top: 18px;
