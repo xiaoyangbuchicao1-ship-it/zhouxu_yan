@@ -83,6 +83,33 @@ class AdminRunNodeView(Contract):
     elapsed_ms: int | None = Field(default=None, ge=0)
 
 
+class AdminRunSourceView(Contract):
+    """Human-readable evidence attached to a public run projection."""
+
+    source_id: str
+    kind: Literal["law", "case", "paper"] | None = None
+    title: str
+    locator: str | None = None
+    section: str | None = None
+    version_date: str | None = None
+    version_label: str | None = None
+    authors: str | None = None
+    collection: str | None = None
+
+
+class AdminRunArtifactView(Contract):
+    """Safe deliverable metadata; storage paths and tool receipts stay private."""
+
+    artifact_id: str
+    name: str
+    media_type: str
+    size_bytes: int = Field(ge=0)
+    sha256: str
+    version: int = Field(default=1, ge=1)
+    kind: Literal["document", "preview", "file"] = "file"
+    preview_artifact_id: str | None = None
+
+
 class AdminRunLogView(Contract):
     run_id: str
     user_question: str
@@ -99,6 +126,8 @@ class AdminRunLogView(Contract):
     elapsed_ms: int | None = Field(default=None, ge=0)
     error_code: str | None = None
     nodes: list[AdminRunNodeView] = Field(default_factory=list)
+    sources: list[AdminRunSourceView] = Field(default_factory=list)
+    artifacts: list[AdminRunArtifactView] = Field(default_factory=list)
 
 
 class AdminConversationDetailResponse(Contract):

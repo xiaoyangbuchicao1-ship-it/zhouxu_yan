@@ -2,8 +2,6 @@ import { ThinkingModeSelect } from "./ThinkingModeSelect";
 import { ModelSelect } from "./ModelSelect";
 import { Fragment, memo, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   ArrowDown,
@@ -25,7 +23,6 @@ import {
 } from "lucide-react";
 import type { PendingTurn, useWorkspace } from "@/hooks/use-workspace";
 import type { Message } from "@/lib/workbench-api";
-import type { Components } from "react-markdown";
 import { mergeRunMessages } from "@/lib/workbench-api";
 import { effectiveModelSwitches, modelLabel, modelSwitchText, type ModelSwitchEvent } from "@/lib/model-selection";
 import { visibleAnswerActions } from "@/lib/answer-actions";
@@ -39,6 +36,7 @@ import { MaterialCards, MaterialDescription } from "./MaterialCards";
 import { WorkPackages } from "./WorkPackages";
 import { useStreamingText } from "@/hooks/use-streaming-text";
 import { SourceSummary } from "./ResearchPanel";
+import { Markdown } from "./PublicMarkdown";
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
@@ -147,30 +145,6 @@ const tasks = [
   },
 ];
 
-const markdownComponents = {
-          a: ({ children, href }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {children}
-              <ArrowUpRight size={13} aria-hidden="true" />
-            </a>
-          ),
-          table: ({ children }) => (
-            <div
-              className="ws-table-scroll"
-              tabIndex={0}
-              role="region"
-              aria-label="回答中的表格"
-            >
-              <table>{children}</table>
-            </div>
-          ),
-          img: ({ alt }) => (
-            <span className="ws-muted">
-              [图片：{alt || "未加载的外部图片"}]
-            </span>
-          ),
-};
-
 const INTERNAL_ARTIFACT_MARKDOWN = /!?(\[[^\]]*\])\((?:\/api)?\/workspace\/runs\/[^\s)]+\/artifacts\/[^\s)]+\)/gi;
 const INTERNAL_ARTIFACT_URL = /(?:\/api)?\/workspace\/runs\/[^\s<>]+\/artifacts\/[^\s<>]+/gi;
 const INTERNAL_ARTIFACT_PATH_LINE = /^\s*(?:[-*+]\s+)?(?:PDF|Word|DOCX|Excel|文件)?\s*[:：]\s*(?:papers|work)\/[^\s]+\.(?:pdf|docx|docm|xlsx|xlsm|pptx|pptm|csv|txt|md|json)\s*$/i;
@@ -185,23 +159,6 @@ function visibleAnswerContent(content: string) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
-
-export const Markdown = memo(function Markdown({ content, onSource }: { content: string; onSource?: (id: string) => void }) {
-  const components: Components = { ...markdownComponents, a: ({ children, href }) => {
-    const match = href?.match(/^(?:\/api)?\/workspace\/sources\/(paper-[A-Za-z0-9._-]+)$/);
-    return match && onSource ? <button type="button" className="ws-citation-link" onClick={() => onSource(match[1])}>{children}<BookOpen size={13} aria-hidden="true" /></button> : <a href={href} target="_blank" rel="noopener noreferrer">{children}<ArrowUpRight size={13} aria-hidden="true" /></a>;
-  } };
-  return (
-    <div className="ws-prose">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={components}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
-});
 
 function StreamingAnswer({ text, live, onSource }: { text: string; live: boolean; onSource: (id: string) => void }) {
   const visible = useStreamingText(text, live);

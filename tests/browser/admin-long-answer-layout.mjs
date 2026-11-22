@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
-// Long public answers in the admin log stay readable without making the whole
-// page a single wall of text. Existing short answers remain unchanged.
+// This journey deliberately reads a long answer that is already persisted in
+// the preview database. It must never manufacture answer text at the HTTP
+// boundary: that would only test a React fixture, not the real data path.
 const base = process.env.ZHOUXU_TEST_URL || 'http://127.0.0.1:18180';
 const email = process.env.ZHOUXU_TEST_ADMIN_EMAIL;
 const password = process.env.ZHOUXU_TEST_ADMIN_PASSWORD;
@@ -18,57 +19,59 @@ try {
   await page.goto(`${base}/admin/login`);
   await page.getByLabel('邮箱', { exact: true }).fill(email);
   await page.getByLabel('密码', { exact: true }).fill(password);
+  const loginResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/admin-login'));
   await page.getByRole('button', { name: '登录管理台', exact: true }).click();
-  await page.waitForURL(/\/admin$/);
+  const loginResponse = await loginResponsePromise;
+  const session = await loginResponse.json();
+  assert.equal(session.account.role, 'admin');
+  const token = session.session.token;
+  const request = (path) => context.request.get(`${base}/api${path}`, { headers: { Authorization: `Bearer ${token}` } });
+
+  const accounts = (await (await request('/admin/accounts')).json()).accounts;
+  let target = null;
+  for (const account of accounts) {
+    const response = await request(`/admin/accounts/${encodeURIComponent(account.id)}/conversations?limit=20`);
+    if (!response.ok()) continue;
+    const body = await response.json();
+    for (const conversation of body.conversations || []) {
+      const detailResponse = await request(`/admin/accounts/${encodeURIComponent(account.id)}/conversations/${encodeURIComponent(conversation.id)}?limit=50`);
+      if (!detailResponse.ok()) continue;
+      const detail = await detailResponse.json();
+      const longRun = detail.runs.find(run => (run.public_answer || '').length > 1200);
+      if (longRun) { target = { account, conversation, detail, longRun }; break; }
+    }
+    if (target) break;
+  }
+  assert.ok(target, '预览库没有已持久化的超长回答；请先通过真实用户入口生成测试回答');
+
   await page.getByRole('link', { name: '人员', exact: true }).click();
   await page.waitForURL(/\/admin\/accounts$/);
-  const accountLink = page.locator('a.admin-card-link').first();
-  await accountLink.waitFor();
-  await accountLink.click();
+  await page.getByRole('searchbox', { name: '搜索账户' }).fill(target.account.email);
+  await page.locator(`a[href="/admin/accounts/${target.account.id}/conversations"]`).click();
   await page.waitForURL(/\/conversations$/);
-  const conversation = page.locator('a.admin-conversation-card').first();
-  await conversation.waitFor();
-  // The preview seed contains short answers. Add a deterministic long-answer
-  // fixture at the HTTP boundary so this test exercises the real React page
-  // without writing to SQLite or the formal service.
-  await page.route('**/api/admin/accounts/**/conversations/**', async route => {
-    const url = new URL(route.request().url());
-    if (url.pathname.split('/').length < 7) return route.continue();
-    const response = await route.fetch();
-    const body = await response.json();
-    if (body.runs?.length) {
-      const seed = body.runs[0].public_answer || '回答正文';
-      body.runs[0].public_answer = `${seed}\n\n${Array.from({ length: 90 }, (_, index) => `第${index + 1}段：这是用于阅读布局验收的长回答。`).join('\n')}`;
-    }
-    await route.fulfill({ response, body: JSON.stringify(body) });
-  });
-  await conversation.click();
+  await page.locator(`a[href="/admin/accounts/${target.account.id}/conversations/${target.conversation.id}"]`).click();
   await page.waitForURL(/\/conversations\//);
-  await page.locator('.admin-run-card').first().waitFor();
-
-  const longAnswers = page.locator('.admin-run-answer-text');
-  const count = await longAnswers.count();
-  assert.ok(count > 0, '详情页应显示回答正文');
-  let longCount = 0;
-  for (let index = 0; index < count; index += 1) {
-    const answer = longAnswers.nth(index);
-    const text = await answer.innerText();
-    if (text.length <= 1200) continue;
-    longCount += 1;
-    const wrapper = answer.locator('..');
-    const button = wrapper.locator('button.admin-run-expand');
-    await button.click();
-    assert.equal(await button.getAttribute('aria-expanded'), 'true', '长回答展开后应有明确状态');
-    assert.equal((await answer.innerText()).length, text.length, '展开不能丢失回答正文');
-    await wrapper.getByRole('button', { name: '收起回答', exact: true }).click();
-  }
-  assert.ok(longCount > 0, '测试夹具应产生至少一条超长回答');
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '桌面详情页出现横向溢出');
+  const answer = page.locator('.admin-run-answer-text').filter({ hasText: target.longRun.public_answer.slice(0, 40) }).first();
+  await answer.waitFor();
+  // The full answer is visible on first render; the user can collapse it.
+  assert.ok((await answer.innerText()).length >= target.longRun.public_answer.length - 8, '管理员详情首屏应显示完整回答');
+  const collapse = answer.locator('..').getByRole('button', { name: '收起回答', exact: true });
+  await collapse.click();
+  assert.equal(await collapse.getAttribute('aria-expanded'), 'false');
+  const expand = answer.locator('..').getByRole('button', { name: '展开完整回答', exact: true });
+  await expand.click();
+  assert.equal(await expand.getAttribute('aria-expanded'), 'true');
+  assert.ok((await answer.innerText()).length >= target.longRun.public_answer.length - 8, '展开后不能丢失回答正文');
+  await page.reload({ waitUntil: 'networkidle' });
+  assert.ok((await page.locator('.admin-run-answer-text').filter({ hasText: target.longRun.public_answer.slice(0, 40) }).first().innerText()).length >= target.longRun.public_answer.length - 8, '刷新后仍显示完整回答');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '详情页出现横向溢出');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: 'networkidle' });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '手机详情页出现横向溢出');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, answers: count, long_answers: longCount }));
+  console.log(JSON.stringify({ passed: true, run_id: target.longRun.run_id, answer_length: target.longRun.public_answer.length }));
 } finally {
   await browser.close();
 }
+
+

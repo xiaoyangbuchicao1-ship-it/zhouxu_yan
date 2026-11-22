@@ -27,6 +27,7 @@ FORBIDDEN_KEYS = {
     "attachments",
     "attachment_content",
     "disk_path",
+    "relative_path",
     "storage_key",
     "payload_json",
     "system_prompt",
@@ -100,13 +101,25 @@ class AdminConversationHttpContractTests(unittest.IsolatedAsyncioTestCase):
                     "protocol": "openai_responses",
                     "thinking_mode": "low",
                     "context_tokens": 262144,
+                    "capabilities": {},
+                    "checked_on": "2026-11-22",
                 },
                 "facts": {"private_note": "must never leave the payload"},
                 "attachments": [{"disk_path": "C:/private/alice.pdf"}],
                 "system_prompt": "hidden prompt",
             },
             progress={
-                "source_refs": [{"source_id": "law-22", "title": "海商法"}],
+                "source_refs": [{"source_id": "law-22", "kind": "law", "title": "海商法"}],
+                "artifacts": [{
+                    "artifact_id": "report-pdf",
+                    "name": "海事报告.pdf",
+                    "relative_path": "private/report.pdf",
+                    "media_type": "application/pdf",
+                    "size_bytes": 24,
+                    "sha256": "a" * 64,
+                    "version": 1,
+                    "kind": "document",
+                }],
                 "nodes": [{"id": "retrieve", "label": "查找资料", "status": "succeeded"}],
                 "tool_receipts": [{"secret": "do-not-return"}],
             },
@@ -171,6 +184,13 @@ class AdminConversationHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["thinking_mode"], "low")
         self.assertGreaterEqual(first["elapsed_ms"], 0)
         self.assertEqual(first["nodes"][0]["label"], "查找资料")
+        # The administrator needs the same public evidence trail as the user:
+        # source cards and generated-file metadata.  Private tool receipts and
+        # storage paths must remain absent.
+        self.assertEqual(first["sources"][0]["source_id"], "law-22")
+        self.assertEqual(first["sources"][0]["title"], "海商法")
+        self.assertEqual(first["artifacts"][0]["artifact_id"], "report-pdf")
+        self.assertEqual(first["artifacts"][0]["name"], "海事报告.pdf")
         _assert_no_forbidden_keys(self, detail_body)
         serialized = json.dumps(detail_body, ensure_ascii=False)
         self.assertNotIn("C:/private/alice.pdf", serialized)
@@ -264,6 +284,22 @@ class AdminConversationHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runs["run-alice-long-answer"]["public_answer"], long_answer)
         self.assertEqual(runs["run-alice-long-paused"]["public_answer"], partial)
         _assert_no_forbidden_keys(self, detail.json())
+
+        # Read the same persisted rows through the ordinary user's HTTP
+        # conversation endpoint.  This closes the real data path before the
+        # administrator projection is checked.
+        user_headers = {"Authorization": f"Bearer {self.user_a.token}"}
+        user_detail = await self.client.get(
+            f"/workspace/conversations/{self.conversation_a.id}", headers=user_headers
+        )
+        self.assertEqual(user_detail.status_code, 200, user_detail.text)
+        assistant_messages = {
+            message["run_id"]: message
+            for message in user_detail.json()["messages"]
+            if message["role"] == "assistant"
+        }
+        self.assertEqual(assistant_messages["run-alice-long-answer"]["content"], long_answer)
+        self.assertEqual(assistant_messages["run-alice-long-paused"]["content"], partial)
 
 
 if __name__ == "__main__":

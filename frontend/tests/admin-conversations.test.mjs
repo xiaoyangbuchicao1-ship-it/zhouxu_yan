@@ -38,6 +38,8 @@ test("会话详情只接受公开正文和安全运行信息", async () => {
       protocol: "openai_responses", thinking_mode: "low", error_code: null,
       created_at: "2026-11-22T08:00:00Z", completed_at: "2026-11-22T08:00:02Z",
       elapsed_ms: 2000, nodes: [{ id: "retrieve", label: "查找资料", status: "succeeded" }],
+      sources: [{ source_id: "law-22", kind: "law", title: "海商法" }],
+      artifacts: [{ artifact_id: "artifact-1", name: "论文.pdf", media_type: "application/pdf", size_bytes: 12, sha256: "a".repeat(64), kind: "document" }],
     }],
     next_cursor: null,
   });
@@ -45,6 +47,8 @@ test("会话详情只接受公开正文和安全运行信息", async () => {
   const result = await createAdminApi("token").conversationDetail("a1", "c1", { limit: 50 });
   assert.equal(result.runs[0].user_question, "请查找条文");
   assert.equal(result.runs[0].public_answer, "已找到。");
+  assert.equal(result.runs[0].sources[0].title, "海商法");
+  assert.equal(result.runs[0].artifacts[0].name, "论文.pdf");
 });
 
 test("API若夹带路径、完整payload或提示词，管理台拒绝渲染", async () => {
@@ -62,7 +66,7 @@ test("API若夹带路径、完整payload或提示词，管理台拒绝渲染", a
         id: "c1", account_id: "a1", title: "测试", mode: "chat", archived: false,
         created_at: "2026-11-22T08:00:00Z", updated_at: "2026-11-22T08:00:00Z",
       },
-      runs: [{ run_id: "r1", user_question: "你好", public_answer: "你好", status: "succeeded", ...leaked }],
+      runs: [{ run_id: "r1", user_question: "你好", public_answer: "你好", status: "succeeded", nodes: [], sources: [], artifacts: [], ...leaked }],
       next_cursor: null,
     });
     await assert.rejects(

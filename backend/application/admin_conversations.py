@@ -233,6 +233,8 @@ class AdminConversationService:
             "elapsed_ms": elapsed_ms,
             "error_code": run.error_code,
             "nodes": nodes,
+            "sources": cls._public_sources(run.progress_json),
+            "artifacts": cls._public_artifacts(run.progress_json),
         }
 
     @staticmethod
@@ -274,6 +276,61 @@ class AdminConversationService:
             elapsed = node.get("elapsed_ms")
             if isinstance(elapsed, int) and elapsed >= 0:
                 item["elapsed_ms"] = elapsed
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _progress(raw: str | None) -> dict:
+        try:
+            progress = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return progress if isinstance(progress, dict) else {}
+
+    @classmethod
+    def _public_sources(cls, raw: str | None) -> list[dict]:
+        progress = cls._progress(raw)
+        values = progress.get("source_refs")
+        if not isinstance(values, list):
+            return []
+        allowed = {
+            "source_id", "kind", "title", "locator", "section", "version_date",
+            "version_label", "authors", "collection",
+        }
+        result = []
+        for value in values:
+            if not isinstance(value, dict) or not isinstance(value.get("source_id"), str):
+                continue
+            title = value.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            item = {key: value[key] for key in allowed if key in value and value[key] is not None}
+            if item.get("kind") not in {"law", "case", "paper"}:
+                item.pop("kind", None)
+            result.append(item)
+        return result
+
+    @classmethod
+    def _public_artifacts(cls, raw: str | None) -> list[dict]:
+        progress = cls._progress(raw)
+        values = progress.get("artifacts")
+        if not isinstance(values, list):
+            return []
+        allowed = {
+            "artifact_id", "name", "media_type", "size_bytes", "sha256", "version",
+            "kind", "preview_artifact_id",
+        }
+        result = []
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            if not all(isinstance(value.get(key), str) and value[key] for key in ("artifact_id", "name", "media_type", "sha256")):
+                continue
+            if not isinstance(value.get("size_bytes"), int) or value["size_bytes"] < 0:
+                continue
+            item = {key: value[key] for key in allowed if key in value and value[key] is not None}
+            if item.get("kind") not in {"document", "preview", "file"}:
+                item.pop("kind", None)
             result.append(item)
         return result
 

@@ -252,6 +252,18 @@
 .admin-run-answer p { color: #cdd7e1; }
 .admin-run-answer-copy { min-width: 0; }
 .admin-run-answer-text { position: relative; }
+.admin-run-answer-prose { min-width: 0; }
+.admin-run-answer-prose.ws-prose { font-size: 14px; line-height: 1.7; color: #cdd7e1; }
+.admin-run-answer-prose.ws-prose > * + * { margin-top: 14px; }
+.admin-run-answer-prose.ws-prose > :first-child { margin-top: 0; }
+.admin-run-answer-prose.ws-prose h1,
+.admin-run-answer-prose.ws-prose h2,
+.admin-run-answer-prose.ws-prose h3 { color: var(--admin-text); }
+.admin-run-answer-prose.ws-prose a { color: var(--admin-accent); text-decoration: underline; text-underline-offset: 3px; }
+.admin-run-source-list,.admin-run-artifact-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.admin-run-source-list li,.admin-run-artifact-list li { display: grid; gap: 2px; min-width: 0; }
+.admin-run-source-list strong,.admin-run-artifact-list strong { color: var(--admin-text); font-weight: 500; overflow-wrap: anywhere; }
+.admin-run-source-list small,.admin-run-artifact-list small { color: var(--admin-muted); overflow-wrap: anywhere; }
 .admin-run-answer-copy.is-collapsed .admin-run-answer-text {
   max-height: 14.5rem;
   overflow: hidden;

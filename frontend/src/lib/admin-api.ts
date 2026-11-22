@@ -58,6 +58,29 @@ export interface AdminConversationNode {
   elapsed_ms?: number | null;
 }
 
+export interface AdminConversationSource {
+  source_id: string;
+  kind: "law" | "case" | "paper" | null;
+  title: string;
+  locator?: string | null;
+  section?: string | null;
+  version_date?: string | null;
+  version_label?: string | null;
+  authors?: string | null;
+  collection?: string | null;
+}
+
+export interface AdminConversationArtifact {
+  artifact_id: string;
+  name: string;
+  media_type: string;
+  size_bytes: number;
+  sha256: string;
+  version: number;
+  kind: "document" | "preview" | "file";
+  preview_artifact_id?: string | null;
+}
+
 export interface AdminConversationRun {
   run_id: string;
   user_question: string;
@@ -74,6 +97,8 @@ export interface AdminConversationRun {
   completed_at?: string | null;
   elapsed_ms: number | null;
   nodes: AdminConversationNode[];
+  sources: AdminConversationSource[];
+  artifacts: AdminConversationArtifact[];
 }
 
 export interface AdminConversationDetail {
@@ -274,7 +299,8 @@ function conversationDetail(value: unknown): AdminConversationDetail {
     throw new AdminApiError("invalid_response");
   }
   for (const run of result.runs) {
-    if (!run.run_id || typeof run.user_question !== "string" || !run.status) {
+    if (!run.run_id || typeof run.user_question !== "string" || !run.status
+      || !Array.isArray(run.nodes) || !Array.isArray(run.sources) || !Array.isArray(run.artifacts)) {
       throw new AdminApiError("invalid_response");
     }
   }
