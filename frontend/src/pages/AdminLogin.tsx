@@ -19,7 +19,7 @@ export default function AdminLogin() {
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    if (session?.account.role === "admin") navigate("/admin", { replace: true });
+    if (session?.account.role === "admin") navigate("/admin/overview", { replace: true });
   }, [navigate, session]);
 
   async function submit(event: FormEvent) {
@@ -38,7 +38,7 @@ export default function AdminLogin() {
       const result = await authenticateAdmin({ email, password });
       saveSession(result);
       setPassword("");
-      navigate("/admin", { replace: true });
+      navigate("/admin/overview", { replace: true });
     } catch (cause) {
       setError(cause instanceof AuthApiError ? cause.message : "暂时无法登录，请稍后重试。");
     } finally {

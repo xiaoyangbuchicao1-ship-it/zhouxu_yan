@@ -69,12 +69,17 @@ try {
   // The full answer is visible on first render; the user can collapse it.
   const initialText = await answer.innerText();
   markers.forEach(marker => assert.ok(initialText.includes(marker), `完整回答缺少：${marker}`));
-  const collapse = answer.locator('..').getByRole('button', { name: '收起回答', exact: true });
+  const collapse = page.getByRole('button', { name: '收起回答', exact: true }).first();
+  await collapse.waitFor();
+  assert.equal(await collapse.getAttribute('aria-expanded'), 'true');
   await collapse.click();
-  assert.equal(await collapse.getAttribute('aria-expanded'), 'false');
-  const expand = answer.locator('..').getByRole('button', { name: '展开完整回答', exact: true });
+  const expand = page.getByRole('button', { name: '展开完整回答', exact: true }).first();
+  await expand.waitFor();
+  assert.equal(await expand.getAttribute('aria-expanded'), 'false');
   await expand.click();
-  assert.equal(await expand.getAttribute('aria-expanded'), 'true');
+  const expanded = page.getByRole('button', { name: '收起回答', exact: true }).first();
+  await expanded.waitFor();
+  assert.equal(await expanded.getAttribute('aria-expanded'), 'true');
   const expandedText = await answer.innerText();
   markers.forEach(marker => assert.ok(expandedText.includes(marker), `展开后缺少：${marker}`));
   await page.reload({ waitUntil: 'networkidle' });

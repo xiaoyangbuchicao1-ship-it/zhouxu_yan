@@ -34,3 +34,19 @@ test("模型目录只接收公开配置，不接受任何密钥字段", async ()
   });
   await assert.rejects(createAdminApi("t").modelDirectory(), error => error instanceof AdminApiError && error.code === "invalid_response");
 });
+
+test("未配置服务商可以保留空接口地址，模型管理页仍能加载", async () => {
+  const { createAdminApi } = await import("../src/lib/admin-api.ts");
+  globalThis.fetch = async () => Response.json({
+    providers: [{
+      id: "relay", name: "未配置服务商", preset_type: "custom",
+      default_protocol: "openai_responses", auth_style: "bearer",
+      base_url: "", credential_mode: "env_ref",
+      credential_ref: "MODEL_API_KEY", credential_configured: false, enabled: false,
+      revision: 1, updated_at: "2026-11-22T00:00:00Z",
+    }],
+    models: [],
+  });
+  const result = await createAdminApi("t").modelDirectory();
+  assert.equal(result.providers[0].base_url, "");
+});

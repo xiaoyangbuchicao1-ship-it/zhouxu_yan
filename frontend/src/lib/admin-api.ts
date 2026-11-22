@@ -324,7 +324,7 @@ function modelDirectory(value: unknown): AdminModelDirectory {
   const result = value as AdminModelDirectory;
   if (!Array.isArray(result.providers) || !Array.isArray(result.models)) throw new AdminApiError("invalid_response");
   for (const provider of result.providers) {
-    if (!provider.id || !provider.name || !provider.default_protocol || !provider.base_url || typeof provider.revision !== "number") {
+    if (!provider.id || !provider.name || !provider.default_protocol || typeof provider.base_url !== "string" || typeof provider.revision !== "number") {
       throw new AdminApiError("invalid_response");
     }
   }

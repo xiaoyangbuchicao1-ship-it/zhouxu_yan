@@ -110,6 +110,32 @@ class AdminConversationServiceTests(unittest.TestCase):
         ids = [item["run_id"] for item in first["runs"] + second["runs"]]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_source_author_lists_are_normalized_for_the_public_contract(self):
+        workspace = WorkspaceService(self.database)
+        workspace.record_run(
+            account_id=self.user.id,
+            conversation_id=self.conversation.id,
+            run_id="run-source-authors",
+            question="带作者列表的资料",
+            answer="公开回答",
+            status="succeeded",
+            progress={
+                "source_refs": [{
+                    "source_id": "paper-1",
+                    "kind": "paper",
+                    "title": "资料标题",
+                    "authors": ["甲", "乙"],
+                }],
+            },
+        )
+        detail = self.service.conversation_detail(
+            actor_id=self.admin.id,
+            account_id=self.user.id,
+            conversation_id=self.conversation.id,
+        )
+        run = next(item for item in detail["runs"] if item["run_id"] == "run-source-authors")
+        self.assertEqual(run["sources"][0]["authors"], "甲、乙")
+
 
 if __name__ == "__main__":
     unittest.main()

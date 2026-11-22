@@ -307,6 +307,13 @@ class AdminConversationService:
             item = {key: value[key] for key in allowed if key in value and value[key] is not None}
             if item.get("kind") not in {"law", "case", "paper"}:
                 item.pop("kind", None)
+            authors = item.get("authors")
+            if isinstance(authors, (list, tuple)):
+                item["authors"] = "、".join(
+                    str(author).strip() for author in authors if str(author).strip()
+                )
+            elif authors is not None and not isinstance(authors, str):
+                item.pop("authors", None)
             result.append(item)
         return result
 
