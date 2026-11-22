@@ -48,14 +48,28 @@ class Database:
             bind=self.engine, autoflush=False, expire_on_commit=False
         )
 
-    def initialize(self) -> None:
+    def initialize(self, *, require_explicit_migrations: bool = False) -> None:
         """Create the checked-in relational schema before authenticated traffic.
 
-        Unit 1 has one initial schema and no production migration history yet.
-        ``create_all`` is deliberately limited to missing tables; a later
-        migration adapter can replace this method without changing callers.
+        Fresh databases are bootstrapped.  When ``require_explicit_migrations``
+        is enabled, an existing database must already carry the explicit
+        ``dynamic_admin_v1`` marker; ORM table creation never upgrades it.
         """
 
+        existing_tables: set[str] = set()
+        if self.url.startswith("sqlite"):
+            existing_tables = set(inspect(self.engine).get_table_names())
+            if require_explicit_migrations and existing_tables:
+                with self.engine.connect() as connection:
+                    marker_exists = bool(
+                        connection.exec_driver_sql(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_versions'"
+                        ).scalar()
+                    )
+                    if not marker_exists or not connection.exec_driver_sql(
+                        "SELECT 1 FROM schema_versions WHERE version='dynamic_admin_v1' LIMIT 1"
+                    ).scalar():
+                        raise RuntimeError("explicit_migration_required")
         if self.url.startswith("sqlite:///"):
             database_path = Path(self.url.removeprefix("sqlite:///"))
             database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +81,14 @@ class Database:
         Base.metadata.create_all(self.engine)
         if self.url.startswith("sqlite"):
             self._migrate_sqlite()
+            if not existing_tables:
+                with self.engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        "CREATE TABLE IF NOT EXISTS schema_versions (version TEXT PRIMARY KEY, applied_at DATETIME NOT NULL)"
+                    )
+                    connection.exec_driver_sql(
+                        "INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES ('dynamic_admin_v1', datetime('now'))"
+                    )
 
     def _migrate_sqlite(self) -> None:
         inspector = inspect(self.engine)
