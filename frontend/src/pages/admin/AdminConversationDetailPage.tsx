@@ -22,7 +22,7 @@ export default function AdminConversationDetailPage() {
     {!detail && detailQuery.isPending ? <InitialLoading label="正在读取会话…" />
       : !detail ? <LoadError message={detailQuery.error instanceof Error ? detailQuery.error.message : "会话暂时不可用。"} onRetry={() => void detailQuery.refetch()} />
       : <>
-        <PageHeader eyebrow={`${modeLabel(detail.conversation.mode)} · 会话日志`} title={detail.conversation.title} description="只显示公开回答和安全运行信息。" action={<RefreshButton loading={detailQuery.isFetching} onClick={() => void detailQuery.refetch()} />} />
+        <PageHeader eyebrow={`${modeLabel(detail.conversation.mode)} · 会话日志`} title={detail.conversation.title} description="显示用户问题、公开回答和运行信息。" action={<RefreshButton loading={detailQuery.isFetching} onClick={() => void detailQuery.refetch()} />} />
         {detailQuery.isError && <InlineError message={detailQuery.error instanceof Error ? detailQuery.error.message : "刷新没有完成。"} onRetry={() => void detailQuery.refetch()} />}
         <section className="admin-run-list" aria-label="会话运行记录">{detail.runs.length === 0 ? <p className="admin-empty">还没有运行记录。</p> : detail.runs.map(run => <RunCard key={run.run_id} run={run} />)}</section>
       </>}
@@ -45,7 +45,7 @@ const LONG_ANSWER_LIMIT = 1200;
 function AdminAnswerText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = text.length > LONG_ANSWER_LIMIT;
-  return <div className={`admin-run-answer-copy ${isLong && !expanded ? "is-collapsed" : ""}`}>
+  return <div className={`admin-run-answer-copy ${isLong && !expanded ? "is-collapsed" : ""}`} aria-label="公开回答正文">
     <p className="admin-run-answer-text">{text}</p>
     {isLong && <button
       type="button"
