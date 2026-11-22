@@ -9,15 +9,13 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from pydantic import SecretStr
 from sqlalchemy import select
 
-from backend.config.settings import BACKEND_ROOT, Settings, load_key
+from backend.config.settings import Settings, load_key
 from backend.contracts.model_profiles import ModelCapabilityFlags, ModelProfile
 from backend.contracts.schemas.core import PortError
 from backend.infrastructure.database.connection import Database
@@ -28,20 +26,10 @@ from backend.infrastructure.database.models import (
     ProviderRevisionModel,
 )
 from backend.infrastructure.model.directory import RuntimeModelRevision
-from backend.infrastructure.model.endpoint_policy import validate_model_endpoint
 from backend.infrastructure.model.relay_config import (
     load_relay_config,
     relay_endpoint_for_protocol,
 )
-
-
-_PROTOCOLS = {
-    "deepseek_chat_completions",
-    "openai_chat_completions",
-    "openai_responses",
-    "anthropic_messages",
-    "google_generative_language",
-}
 
 
 def _now() -> datetime:
@@ -65,12 +53,6 @@ def _endpoint_for(base_url: str, protocol: str, model_id: str) -> str:
     if ":generateContent" in base_url:
         return base_url
     return relay_endpoint_for_protocol(base_url, protocol).format(model=model_id)
-
-
-class ModelDirectoryError(Exception):
-    def __init__(self, code: str):
-        super().__init__(code)
-        self.code = code
 
 
 class SqliteModelDirectory:
@@ -304,4 +286,4 @@ class SqliteModelDirectory:
         return True
 
 
-__all__ = ["ModelDirectoryError", "SqliteModelDirectory"]
+__all__ = ["SqliteModelDirectory"]
