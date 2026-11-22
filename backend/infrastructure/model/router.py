@@ -56,9 +56,16 @@ class RoutedModel:
         self._active_run: ContextVar[str | None] = ContextVar(
             f"model_run_{id(self)}", default=None
         )
-        self._adapters["deepseek-flash"] = DeepSeekModel(
-            settings, load_key(settings), events
-        )
+        # Legacy callers expect the default adapter to be warm, but a
+        # database-backed directory may contain only relay credentials.  Do
+        # not make construction of an otherwise valid router depend on an
+        # unrelated DeepSeek key; the selected revision is opened lazily.
+        try:
+            self._adapters["deepseek-flash"] = DeepSeekModel(
+                settings, load_key(settings), events
+            )
+        except PortError:
+            pass
 
     def bind_run(
         self,

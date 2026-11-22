@@ -231,13 +231,37 @@ def migrate(path: Path, *, apply: bool = False, backup: Path | None = None) -> d
         db.close()
 
 
+def seed_static_catalog(path: Path) -> dict[str, int]:
+    """Explicitly copy the checked-in model facts into an already migrated DB."""
+
+    from backend.config.settings import load_settings
+    from backend.infrastructure.database.connection import Database
+    from backend.infrastructure.model.sqlite_directory import SqliteModelDirectory
+
+    database = Database(f"sqlite:///{path.resolve().as_posix()}")
+    try:
+        directory = SqliteModelDirectory(database, load_settings())
+        directory.ensure_seed(explicit=True)
+        with database.session() as session:
+            from backend.infrastructure.database.models import ModelProfileModel
+
+            count = len(session.query(ModelProfileModel.profile_id).all())
+        return {"model_profiles": count}
+    finally:
+        database.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--backup", type=Path)
+    parser.add_argument("--seed", action="store_true", help="seed the checked-in model catalog after migration")
     args = parser.parse_args()
-    print(json.dumps(migrate(args.database, apply=args.apply, backup=args.backup), ensure_ascii=False))
+    result = migrate(args.database, apply=args.apply, backup=args.backup)
+    if args.seed:
+        result["seed"] = seed_static_catalog(args.database)
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":

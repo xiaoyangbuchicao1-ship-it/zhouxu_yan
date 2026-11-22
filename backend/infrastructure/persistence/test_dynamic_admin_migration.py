@@ -6,6 +6,8 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
+from backend.config.settings import DatabaseSettings
+from backend.infrastructure.database.connection import Database
 from backend.infrastructure.persistence.migrate_dynamic_admin import migrate
 
 
@@ -61,6 +63,22 @@ class DynamicAdminMigrationTests(unittest.TestCase):
                 db.execute("CREATE TABLE accounts(id TEXT PRIMARY KEY)")
             with self.assertRaisesRegex(ValueError, "apply_requires_new_backup_path"):
                 migrate(source, apply=True)
+
+    def test_runtime_gate_rejects_existing_unmigrated_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.sqlite3"
+            with closing(sqlite3.connect(path)) as db:
+                db.execute("CREATE TABLE accounts(id TEXT PRIMARY KEY)")
+                db.commit()
+            database = Database(DatabaseSettings(url=f"sqlite:///{path}"))
+            try:
+                with self.assertRaisesRegex(RuntimeError, "explicit_migration_required"):
+                    database.initialize(require_explicit_migrations=True)
+            finally:
+                database.close()
+            with closing(sqlite3.connect(path)) as db:
+                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                self.assertNotIn("model_profiles", tables)
 
 
 if __name__ == "__main__":

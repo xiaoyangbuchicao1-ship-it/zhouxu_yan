@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import secrets
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -314,4 +313,4 @@ class ModelDirectoryAdminService:
         }
 
 
-__all__ = ["ModelDirectoryAdminService", "ModelDirectoryError"]
+__all__ = ["ModelDirectoryAdminService"]

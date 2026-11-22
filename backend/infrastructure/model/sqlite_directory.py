@@ -63,12 +63,14 @@ class SqliteModelDirectory:
         self.settings = settings
 
     # -- seed -------------------------------------------------------------
-    def ensure_seed(self) -> None:
+    def ensure_seed(self, *, explicit: bool = False) -> None:
         """Seed the checked-in catalog exactly once into an empty directory."""
 
         with self.database.session() as session:
             if session.scalar(select(ModelProfileModel.profile_id).limit(1)):
                 return
+            if not explicit and not getattr(self.database, "fresh_bootstrap", False):
+                raise RuntimeError("model_catalog_seed_required")
             # Import locally: the legacy registry is the documented one-time
             # TOML seed and itself has no database dependency.
             from backend.infrastructure.model.registry import ModelRegistry

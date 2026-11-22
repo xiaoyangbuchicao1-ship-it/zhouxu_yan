@@ -47,6 +47,7 @@ class Database:
         self.session_factory = sessionmaker(
             bind=self.engine, autoflush=False, expire_on_commit=False
         )
+        self.fresh_bootstrap = False
 
     def initialize(self, *, require_explicit_migrations: bool = False) -> None:
         """Create the checked-in relational schema before authenticated traffic.
@@ -59,6 +60,7 @@ class Database:
         existing_tables: set[str] = set()
         if self.url.startswith("sqlite"):
             existing_tables = set(inspect(self.engine).get_table_names())
+            self.fresh_bootstrap = not existing_tables
             if require_explicit_migrations and existing_tables:
                 with self.engine.connect() as connection:
                     marker_exists = bool(
