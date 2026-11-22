@@ -167,6 +167,9 @@ class AdminService:
                     "actor_email": actor_account.email,
                     "target_account_id": event.target_account_id,
                     "target_email": target_account.email if target_account else None,
+                    "resource_type": getattr(event, "resource_type", "account") or "account",
+                    "resource_id": getattr(event, "resource_id", None),
+                    "outcome": getattr(event, "outcome", "succeeded") or "succeeded",
                     "details": json.loads(event.details_json) if event.details_json else {},
                     "created_at": event.created_at,
                 }
@@ -181,6 +184,9 @@ class AdminService:
         target_account_id: str | None,
         action: str,
         details: dict,
+        resource_type: str = "account",
+        resource_id: str | None = None,
+        outcome: str = "succeeded",
     ) -> None:
         session.add(
             BusinessAuditModel(
@@ -188,6 +194,9 @@ class AdminService:
                 actor_id=actor_id,
                 target_account_id=target_account_id,
                 action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                outcome=outcome,
                 details_json=json.dumps(details, ensure_ascii=False, separators=(",", ":")),
                 created_at=AdminService._now(),
             )

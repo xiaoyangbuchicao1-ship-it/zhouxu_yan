@@ -545,6 +545,10 @@ class WorkspaceService:
         first_delta_at: datetime | None = None,
         last_event_at: datetime | None = None,
         progress: dict | None = None,
+        model_profile_id: str | None = None,
+        model_profile_revision_id: str | None = None,
+        provider_revision_id: str | None = None,
+        model_snapshot: dict | None = None,
         created_at: datetime | None = None,
         completed_at: datetime | None = None,
         include_archived: bool = False,
@@ -588,6 +592,11 @@ class WorkspaceService:
                     progress_json=json.dumps(progress or {}, ensure_ascii=False),
                     error=error,
                     error_code=error_code,
+                    model_profile_id=model_profile_id,
+                    model_profile_revision_id=model_profile_revision_id,
+                    provider_revision_id=provider_revision_id,
+                    model_snapshot_json=json.dumps(model_snapshot, ensure_ascii=False)
+                    if model_snapshot is not None else None,
                     created_at=created_at or now,
                     completed_at=completed_at or (now if status in {"succeeded", "failed", "cancelled"} else None),
                 )
@@ -618,6 +627,16 @@ class WorkspaceService:
                 record.last_event_at = last_event_at or record.last_event_at
                 if progress is not None:
                     record.progress_json = json.dumps(progress, ensure_ascii=False)
+                if model_profile_id is not None:
+                    record.model_profile_id = model_profile_id
+                if model_profile_revision_id is not None:
+                    record.model_profile_revision_id = model_profile_revision_id
+                if provider_revision_id is not None:
+                    record.provider_revision_id = provider_revision_id
+                if model_snapshot is not None:
+                    record.model_snapshot_json = json.dumps(
+                        model_snapshot, ensure_ascii=False
+                    )
                 if record.client_request_id is None:
                     record.client_request_id = client_request_id
                 if record.retry_of_run_id is None:

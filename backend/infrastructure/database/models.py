@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -78,7 +78,160 @@ class BusinessAuditModel(Base):
     target_account_id: Mapped[str | None] = mapped_column(
         ForeignKey("accounts.id", ondelete="SET NULL"), index=True
     )
+    resource_type: Mapped[str] = mapped_column(String(40), default="account")
+    resource_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    outcome: Mapped[str] = mapped_column(String(24), default="succeeded")
     details_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class AccountCapabilityGrantModel(Base):
+    """Per-account model and skill access policy.
+
+    The policy is deliberately separate from the public account record.  The
+    execution layer reads it when accepting a Run; hiding a selector is never
+    treated as an authorization check.
+    """
+
+    __tablename__ = "account_capability_grants"
+
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    model_policy: Mapped[str] = mapped_column(String(24), default="default")
+    allowed_models_json: Mapped[str | None] = mapped_column(Text)
+    skill_policy: Mapped[str] = mapped_column(String(24), default="default")
+    can_upload_skill: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ModelProviderModel(Base):
+    """A user-visible provider connection, without a plaintext credential."""
+
+    __tablename__ = "model_providers"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    preset_type: Mapped[str] = mapped_column(String(32), default="custom")
+    default_protocol: Mapped[str] = mapped_column(String(64))
+    auth_style: Mapped[str] = mapped_column(String(32), default="bearer")
+    base_url: Mapped[str] = mapped_column(Text)
+    extra_headers_json: Mapped[str | None] = mapped_column(Text)
+    credential_mode: Mapped[str] = mapped_column(String(24), default="env_ref")
+    credential_ref: Mapped[str | None] = mapped_column(String(120))
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    api_key_hint: Mapped[str | None] = mapped_column(String(32))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    revisions: Mapped[list["ProviderRevisionModel"]] = relationship(
+        back_populates="provider", cascade="all, delete-orphan"
+    )
+    profiles: Mapped[list["ModelProfileModel"]] = relationship(
+        back_populates="provider", cascade="all, delete-orphan"
+    )
+
+
+class ProviderRevisionModel(Base):
+    """Immutable provider facts used by one or more model revisions."""
+
+    __tablename__ = "model_provider_revisions"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "revision", name="uq_provider_revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(
+        ForeignKey("model_providers.id", ondelete="CASCADE"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    default_protocol: Mapped[str] = mapped_column(String(64))
+    auth_style: Mapped[str] = mapped_column(String(32), default="bearer")
+    base_url: Mapped[str] = mapped_column(Text)
+    credential_mode: Mapped[str] = mapped_column(String(24), default="env_ref")
+    credential_ref: Mapped[str | None] = mapped_column(String(120))
+    config_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    provider: Mapped[ModelProviderModel] = relationship(back_populates="revisions")
+
+
+class ModelProfileModel(Base):
+    """The single selectable model directory shared by chat and work modes."""
+
+    __tablename__ = "model_profiles"
+
+    profile_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(
+        ForeignKey("model_providers.id", ondelete="CASCADE"), index=True
+    )
+    upstream_model_id: Mapped[str] = mapped_column(String(200))
+    label: Mapped[str] = mapped_column(String(160))
+    family: Mapped[str] = mapped_column(String(32))
+    protocol_override: Mapped[str | None] = mapped_column(String(64))
+    context_tokens: Mapped[int] = mapped_column(Integer)
+    max_output_tokens: Mapped[int] = mapped_column(Integer)
+    thinking_modes_json: Mapped[str] = mapped_column(Text, default='["none"]')
+    default_thinking: Mapped[str] = mapped_column(String(16), default="none")
+    capabilities_json: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    access_scope: Mapped[str] = mapped_column(String(24), default="all")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100)
+    verification_json: Mapped[str | None] = mapped_column(Text)
+    current_revision: Mapped[int] = mapped_column(Integer, default=1)
+    source: Mapped[str] = mapped_column(String(120), default="admin")
+    checked_on: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    provider: Mapped[ModelProviderModel] = relationship(back_populates="profiles")
+    revisions: Mapped[list["ModelProfileRevisionModel"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
+
+
+class ModelProfileRevisionModel(Base):
+    """Immutable model facts paired with an immutable provider revision."""
+
+    __tablename__ = "model_profile_revisions"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "revision", name="uq_profile_revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(220), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("model_profiles.profile_id", ondelete="CASCADE"), index=True
+    )
+    provider_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("model_provider_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    facts_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    profile: Mapped[ModelProfileModel] = relationship(back_populates="revisions")
+
+
+class ModelCallMetricModel(Base):
+    """Durable, secret-free model call metrics for admin diagnostics."""
+
+    __tablename__ = "model_call_metrics"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    provider_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    provider_revision_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    profile_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    profile_revision_id: Mapped[str | None] = mapped_column(String(220), index=True)
+    protocol: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24))
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
@@ -212,6 +365,10 @@ class ConversationRunModel(Base):
     last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(String(80))
+    model_profile_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    model_profile_revision_id: Mapped[str | None] = mapped_column(String(220), index=True)
+    provider_revision_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    model_snapshot_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

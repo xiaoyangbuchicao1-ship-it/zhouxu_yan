@@ -37,6 +37,12 @@ class ModelProfile(Contract):
 
     profile_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
+    # Immutable revision identities let a new Run follow the current model
+    # configuration while an existing Run keeps the exact connection/profile
+    # facts it accepted.  They are optional only for pre-migration history.
+    provider_revision_id: str | None = None
+    profile_revision_id: str | None = None
+    revision: int = Field(default=1, ge=1)
     family: ModelFamily
     label: str = Field(min_length=1)
     model_id: str = Field(min_length=1)
@@ -75,6 +81,9 @@ class ModelRunSnapshot(Contract):
 
     profile_id: str
     provider: str
+    provider_revision_id: str | None = None
+    profile_revision_id: str | None = None
+    profile_revision: int | None = Field(default=None, ge=1)
     model_id: str
     protocol: ModelProtocol
     thinking_mode: Literal["none", "low", "medium", "high", "xhigh", "max"]
@@ -82,3 +91,5 @@ class ModelRunSnapshot(Contract):
     max_generation_tokens: int | None = None
     capabilities: ModelCapabilityFlags
     checked_on: str
+    provider_revision_id: str | None = None
+    profile_revision_id: str | None = None

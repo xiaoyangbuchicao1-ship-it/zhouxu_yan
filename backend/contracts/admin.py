@@ -40,6 +40,9 @@ class AdminAuditView(Contract):
     actor_email: str
     target_account_id: str | None = None
     target_email: str | None = None
+    resource_type: str = "account"
+    resource_id: str | None = None
+    outcome: Literal["succeeded", "failed"] = "succeeded"
     details: dict = Field(default_factory=dict)
     created_at: datetime
 
@@ -54,3 +57,51 @@ class AdminOverviewResponse(Contract):
 
 class AdminAuditResponse(Contract):
     events: list[AdminAuditView]
+
+
+class AdminConversationSummaryView(Contract):
+    id: str
+    account_id: str
+    title: str
+    mode: Literal["chat", "work"]
+    archived: bool
+    run_count: int = Field(ge=0)
+    latest_status: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminConversationListResponse(Contract):
+    conversations: list[AdminConversationSummaryView]
+    next_cursor: str | None = None
+
+
+class AdminRunNodeView(Contract):
+    id: str
+    label: str
+    status: str | None = None
+    elapsed_ms: int | None = Field(default=None, ge=0)
+
+
+class AdminRunLogView(Contract):
+    run_id: str
+    user_question: str
+    public_answer: str | None = None
+    status: str
+    model: str | None = None
+    provider: str | None = None
+    protocol: str | None = None
+    thinking_mode: str | None = None
+    created_at: datetime
+    first_event_at: datetime | None = None
+    first_delta_at: datetime | None = None
+    completed_at: datetime | None = None
+    elapsed_ms: int | None = Field(default=None, ge=0)
+    error_code: str | None = None
+    nodes: list[AdminRunNodeView] = Field(default_factory=list)
+
+
+class AdminConversationDetailResponse(Contract):
+    conversation: AdminConversationSummaryView
+    runs: list[AdminRunLogView]
+    next_cursor: str | None = None

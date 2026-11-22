@@ -80,6 +80,10 @@ class RunProjection:
                 payload=value.model_dump(mode="json"), material_ids=value.material_ids,
                 error=run.error.message if run.error else None,
                 error_code=run.error.code if run.error else None,
+                model_profile_id=(value.model_snapshot.profile_id if value.model_snapshot else value.model_profile_id),
+                model_profile_revision_id=(getattr(value.model_snapshot, "profile_revision_id", None) if value.model_snapshot else None),
+                provider_revision_id=(getattr(value.model_snapshot, "provider_revision_id", None) if value.model_snapshot else None),
+                model_snapshot=(value.model_snapshot.model_dump(mode="json") if value.model_snapshot else None),
                 last_sequence=run.last_sequence, first_event_at=run.first_event_at,
                 first_delta_at=run.first_delta_at, last_event_at=run.completed_at,
                 progress={
