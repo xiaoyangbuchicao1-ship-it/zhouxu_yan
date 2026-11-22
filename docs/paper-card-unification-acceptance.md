@@ -16,7 +16,7 @@
 4. 未登录读取原文会被拒绝，伪造 PDF 版本号会被拒绝；下载文件的 SHA-256 与目录记录一致。
 5. 手机宽度下仍能看到页码、缩放和下载按钮，PDF 真实画面可以显示。
 
-浏览器结果保存在 `.ai-tmp/paper-cards-unification-20261121/browser/result.json`，5 项全绿，页面错误为 0。后端原文和迁移测试在 Docker Linux 中为 `Ran 4 tests ... OK`；Windows 直接运行会受 SQLite 文件锁和临时路径影响，不能代替支持的 Docker 测试。
+浏览器验收 5 项全绿，页面错误为 0。过程结果目录已在正式迁入后清理；后端原文和迁移测试在 Docker Linux 中为 `Ran 4 tests ... OK`，正式发布文件与临时发布包的核心哈希已在清理前核对一致。Windows 直接运行会受 SQLite 文件锁和临时路径影响，不能代替支持的 Docker 测试。
 
 本次还修正了阅读器的根因：Nginx 没有声明 PDF.js 的 `.mjs` 文件类型，浏览器因此无法加载阅读器 worker。现在 `.mjs` 按 JavaScript 返回，论文页面已实际渲染。
 

@@ -62,6 +62,6 @@ docker run --rm zhouxu-api:local python -m unittest -v backend.application.accou
 - [手机人员页](assets/admin/mobile.png)
 - [管理员登录](assets/admin/login.png)
 
-## 尚未完成的范围
+## 后续完成状态
 
-整个 P0-E 还包括成员模型/Skill 细分权限、资料健康状态和其他业务操作记录，均不在本节点的完成声明中。当前角色只有管理员和普通用户；服务器技术日志仍属于后续运维工作。
+成员模型/Skill 权限、资料健康、最近任务、服务状态、模型目录与账号会话日志已经在后续节点完成，并随正式迁入一起验收。角色仍只有管理员和普通用户；服务器堆栈、密钥、Token 与模型原始请求不向管理台公开。

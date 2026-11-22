@@ -85,7 +85,7 @@ python opensearch/opensearch_delivery/scripts/information_cards_index.py embed -
 GPU 预处理可使用 `--device cuda --embedding-batch-size 8`；运行时仍使用镜像内
 CPU 编码查询。输出在 `opensearch/import/information_cards/`。manifest 与 JSONL
 逐条记录身份、输入哈希和截断情况。发布脚本拒绝不匹配的向量或未知别名替换。
-后续已有 v3 数据的更新需使用新的索引版本并审阅切换，不在启动时静默覆盖。
+后续已有 v4 数据的更新需使用新的索引版本并审阅切换，不在启动时静默覆盖。
 变更来源的切换必须显式传入 `--previous-source-sha256`，且与旧索引记录的哈希相符。
 
 已有启动命令保持：

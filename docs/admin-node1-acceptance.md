@@ -50,10 +50,10 @@ python -m unittest backend.application.accounts.test_admin_roles backend.infrast
 
 结果：**7 项全部通过**。
 
-正式关系库 `data/relational/zhouxu.db` 已完成角色迁移：完整性检查为 `ok`，账户数仍为 225，当前尚未注入部署管理员凭证。部署时填写 `.env` 中的 `ZHOUXU_ADMIN_EMAIL` 和 `ZHOUXU_ADMIN_PASSWORD` 后，服务第一次启动会幂等创建管理员。
+本节点执行时，正式关系库 `data/relational/zhouxu.db` 完成角色迁移且完整性检查为 `ok`，账户数为 225。后续正式迁入已创建指定管理员并完成动态管理台迁移；当前正式统计以 `plan.md` 顶部记录为准。
 
 回滚副本：`data/backups/admin-role-20261122/zhouxu.db`。它是迁移前的原库副本，完整性检查为 `ok`。
 
-## 尚未声称完成的内容
+## 后续完成状态
 
-管理员人员表、停用/启用接口、业务审计接口、资料和模型健康面板，以及登录后的前端页面属于后续节点；服务器日志、堆栈、密钥、Token 和原始模型请求留给运维范围。
+管理员人员表、停用/启用、业务审计、资料和模型健康、模型目录及登录后页面已经在后续节点完成并迁入正式环境。服务器堆栈、密钥、Token 和原始模型请求继续不向管理台公开。

@@ -50,7 +50,7 @@
 
 本机体验：在项目根目录运行 `./start/windows/start-compose.cmd`，或访问已启动的 `http://127.0.0.1:18080`。第二步的并行图、人工门禁与精准重试尚未实施。
 
-收尾限制：自动审批拒绝了任务过程文件的移动/清理命令，仅返回 `blocked by policy`。样稿已用不删除原件的复制方式保存并复核哈希；`.ai-tmp/step1-20261120/` 暂时保留。正式测试与交付不依赖该目录，所存临时登录资料仅属于本轮专用验收账号。
+收尾状态：正式迁入和最终端到端验收完成后，`.ai-tmp/step1-20261120/` 及同批过程截图、临时登录资料已经清理；正式测试与交付不依赖这些目录。
 
 ## 模式确认界面补充验收（2026-11-20）
 
@@ -73,7 +73,7 @@
 
 参考 Framesbase [AI Chat 2](https://framesbase.app/reactbits-pro/app-ui/ai-chat/ai-chat-2) 的对话/侧栏分工和滚动位置处理，只借用布局关系，未引入示例数据或逐词模糊特效。
 
-真实入口：`node tests/browser/step2.mjs`。脚本使用实际登录、公开 HTTP、Chromium 和已配置的 DeepSeek；账号、令牌和对话信息只保存在本次 `.ai-tmp/step2-20261120/` 过程目录，不是平台凭证。最终任务的对话为 `4312abd6b643f9be1fd027e9a93e540d`，同一 Run `1687e39c97694cc7b1fd80b31e20565e`；第二个问题 Run `f3012013a5a342fa9409108285da3c1f`。结果文件见 `.ai-tmp/step2-20261120/results.json`，截图为 `desktop.png` 与 `mobile.png`。
+真实入口：`node tests/browser/step2.mjs`。脚本使用实际登录、公开 HTTP、Chromium 和已配置的 DeepSeek。最终任务的对话为 `4312abd6b643f9be1fd027e9a93e540d`，同一 Run `1687e39c97694cc7b1fd80b31e20565e`；第二个问题 Run `f3012013a5a342fa9409108285da3c1f`。本轮过程账号、令牌、结果文件和截图已在正式迁入收尾时清理。
 
 | 检查 | 实际结果 |
 |---|---|
