@@ -29,6 +29,51 @@
   --zx-fast: 140ms;
   --zx-base: 220ms;
   --zx-slow: 360ms;
+
+  /* 字号 */
+  --zx-t-xs:   12px;
+  --zx-t-sm:   13px;
+  --zx-t-base: 14px;
+  --zx-t-md:   16px;
+  --zx-t-lg:   20px;
+  --zx-t-xl:   28px;
+
+  /* 圆角 */
+  --zx-r-ctl:  6px;
+  --zx-r-card: 10px;
+  --zx-r-dlg:  14px;
+  --zx-r-pill: 999px;
+
+  /* 间距（4px 为基准） */
+  --zx-sp-1:  4px;
+  --zx-sp-2:  8px;
+  --zx-sp-3:  12px;
+  --zx-sp-4:  16px;
+  --zx-sp-6:  24px;
+  --zx-sp-8:  32px;
+  --zx-sp-10: 40px;
+  --zx-sp-12: 48px;
+  --zx-sp-16: 64px;
+
+  /* 控件高度 */
+  --zx-h-sm: 32px;
+  --zx-h-md: 36px;
+
+  /* 窗口宽度 */
+  --zx-dlg-s:  440px;
+  --zx-dlg-m:  640px;
+  --zx-dlg-l:  920px;
+  --zx-drawer: 420px;
+
+  /* 阴影层级 */
+  --zx-elev-1: 0 2px 8px rgba(0, 0, 0, .35);
+  --zx-elev-2: 0 8px 32px rgba(0, 0, 0, .50);
+  --zx-elev-3: 0 24px 80px rgba(0, 0, 0, .60);
+
+  /* z-index */
+  --zx-z-menu:   100;
+  --zx-z-dialog: 200;
+  --zx-z-toast:  300;
 }
 
 @media (prefers-reduced-motion: reduce) {

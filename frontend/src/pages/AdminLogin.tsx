@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import AuthVaultBackground from "@/components/AuthVaultBackground";
 import { authenticateAdmin, AuthApiError, validateCredentials, type AuthCredentials } from "@/lib/auth";
 import { saveSession, useAuthSession } from "@/lib/auth-session";
+import "./auth.css";
 import "./admin.css";
 
 export default function AdminLogin() {
@@ -17,10 +18,13 @@ export default function AdminLogin() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof AuthCredentials, string>>>({});
   const formRef = useRef<HTMLFormElement>(null);
+  const alertRef = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
     if (session?.account.role === "admin") navigate("/admin/overview", { replace: true });
   }, [navigate, session]);
+
+  useEffect(() => { if (error) alertRef.current?.focus(); }, [error]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -47,32 +51,97 @@ export default function AdminLogin() {
   }
 
   return (
-    <main className="admin-login-page">
-      <div className="admin-login-bg" aria-hidden="true"><AuthVaultBackground /><div /></div>
-      <header className="admin-login-header">
-        <Link className="admin-login-brand" to="/" aria-label="舟序，返回首页">
-          <img src="/zhou-xu-mark.png" alt="" width="32" height="32" />
-          <span>Zhouxu<span aria-hidden="true">.</span></span><b>舟序</b>
+    <main className="auth-page admin-page">
+      <div className="auth-background" aria-hidden="true">
+        <AuthVaultBackground />
+        <div className="auth-background-shade" />
+      </div>
+
+      <header className="auth-page-header">
+        <Link className="auth-brand" to="/" aria-label="舟序，返回首页">
+          <img src="/zhou-xu-mark.png" alt="" width="34" height="34" />
+          <span className="auth-wordmark" lang="en">Zhouxu<span aria-hidden="true">.</span></span>
+          <span className="auth-brand-name">舟序</span>
         </Link>
-        <Link className="admin-login-back" to="/login"><ArrowLeft size={15} aria-hidden="true" />普通登录</Link>
+        <Link className="auth-back" to="/login"><ArrowLeft size={15} aria-hidden="true" />普通登录</Link>
       </header>
-      <section className="admin-login-panel" aria-labelledby="admin-login-title">
-        <p className="admin-kicker"><ShieldCheck size={15} aria-hidden="true" />管理员入口</p>
-        <h1 id="admin-login-title">进入管理台</h1>
-        <p className="admin-login-intro">管理账户与业务记录。</p>
-        {typeof location.state?.notice === "string" && <p className="admin-login-notice" role="status">{location.state.notice}</p>}
-        <form ref={formRef} onSubmit={submit} noValidate aria-busy={busy}>
-          <fieldset disabled={busy}>
-            <label className="admin-field" htmlFor="admin-email"><span>邮箱</span><input id="admin-email" name="email" type="email" autoComplete="username" value={email} onChange={event => { setEmail(event.target.value); setFieldErrors(current => ({ ...current, email: undefined })); }} placeholder="admin@example.com" aria-invalid={Boolean(fieldErrors.email)} /></label>
-            {fieldErrors.email && <p className="admin-field-error">{fieldErrors.email}</p>}
-            <label className="admin-field" htmlFor="admin-password"><span>密码</span><span className="admin-password-wrap"><input id="admin-password" name="password" type={reveal ? "text" : "password"} autoComplete="current-password" value={password} onChange={event => { setPassword(event.target.value); setFieldErrors(current => ({ ...current, password: undefined })); }} placeholder="输入密码" aria-invalid={Boolean(fieldErrors.password)} /><button type="button" onClick={() => setReveal(value => !value)} aria-label={reveal ? "隐藏密码" : "显示密码"}>{reveal ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>
-            {fieldErrors.password && <p className="admin-field-error">{fieldErrors.password}</p>}
-            <button className="admin-submit" type="submit"><span>{busy ? "正在登录…" : "登录管理台"}</span>{busy ? <LoaderCircle className="admin-spin" size={17} /> : <ArrowRight size={17} />}</button>
-          </fieldset>
-        </form>
-        {error && <p className="admin-login-error" role="alert">{error}</p>}
-        <p className="admin-login-note">普通账户请从<Link to="/login">普通登录</Link>进入。</p>
-      </section>
+
+      <div className="auth-stage">
+        <section className="auth-panel" aria-labelledby="admin-login-title">
+          <div className="auth-form-wrap">
+            <div className="auth-form-heading">
+              <p className="admin-kicker"><ShieldCheck size={15} aria-hidden="true" />管理员入口</p>
+              <h1 id="admin-login-title" className="font-editorial">进入管理台</h1>
+              <p className="auth-intro">管理账户与业务记录。</p>
+            </div>
+
+            {typeof location.state?.notice === "string" && (
+              <p className="auth-notice" role="status">{location.state.notice}</p>
+            )}
+
+            <form ref={formRef} onSubmit={submit} noValidate aria-busy={busy}>
+              <fieldset disabled={busy} className="auth-fields">
+                <div className="auth-field">
+                  <label htmlFor="admin-email">邮箱地址</label>
+                  <input
+                    id="admin-email"
+                    name="email"
+                    type="email"
+                    autoComplete="username"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    value={email}
+                    onChange={e => { setEmail(e.target.value); setFieldErrors(c => ({ ...c, email: undefined })); }}
+                    placeholder="admin@example.com"
+                    aria-invalid={Boolean(fieldErrors.email)}
+                    aria-describedby={fieldErrors.email ? "admin-email-error" : undefined}
+                  />
+                  {fieldErrors.email && <p id="admin-email-error" className="auth-field-error">{fieldErrors.email}</p>}
+                </div>
+                <div className="auth-field">
+                  <label htmlFor="admin-password">密码</label>
+                  <div className="auth-password-wrap">
+                    <input
+                      id="admin-password"
+                      name="password"
+                      type={reveal ? "text" : "password"}
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={e => { setPassword(e.target.value); setFieldErrors(c => ({ ...c, password: undefined })); }}
+                      placeholder="输入密码"
+                      aria-invalid={Boolean(fieldErrors.password)}
+                      aria-describedby={fieldErrors.password ? "admin-password-error" : undefined}
+                    />
+                    <button className="auth-reveal" type="button" onClick={() => setReveal(v => !v)} aria-label={reveal ? "隐藏密码" : "显示密码"} aria-pressed={reveal}>
+                      {reveal ? <EyeOff size={17} aria-hidden="true" /> : <Eye size={17} aria-hidden="true" />}
+                    </button>
+                  </div>
+                  {fieldErrors.password && <p id="admin-password-error" className="auth-field-error">{fieldErrors.password}</p>}
+                </div>
+                <button className="auth-submit" type="submit" disabled={busy}>
+                  <span>{busy ? "正在登录…" : "登录管理台"}</span>
+                  {busy ? <LoaderCircle className="auth-spinner" size={17} aria-hidden="true" /> : <ArrowRight size={17} aria-hidden="true" />}
+                </button>
+              </fieldset>
+            </form>
+
+            {error && (
+              <p className="auth-error" ref={alertRef} role="alert" tabIndex={-1}>{error}</p>
+            )}
+
+            <p className="auth-panel-assurance">
+              <ShieldCheck size={14} aria-hidden="true" />
+              <span>普通账户请从<Link to="/login">普通登录</Link>进入。</span>
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <footer className="auth-page-footer">
+        <p className="font-editorial">让事实有序，让判断有据。</p>
+        <span lang="en">RESEARCH <span className="auth-dot">/</span> REASON <span className="auth-dot">/</span> RESOLVE</span>
+      </footer>
     </main>
   );
 }

@@ -223,7 +223,6 @@ export default function Sidebar({
                       .sort((a, b) => Number(b.pinned) - Number(a.pinned));
                     const open = isProjectOpen(project.id);
                     const selected = ws.projectFilter === project.id;
-                    const count = ws.history.data ? projectChats.length : project.conversation_count;
                     const FolderIcon = open ? FolderOpen : Folder;
                     return (
                     <div className="ws-project-branch" key={project.id}>
@@ -252,7 +251,6 @@ export default function Sidebar({
                           </span>
                           <FolderIcon size={15} />
                           <span className="ws-project-name">{project.name}</span>
-                          <span className="ws-count">{count}</span>
                         </button>
                         <Menu
                           trigger={

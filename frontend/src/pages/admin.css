@@ -1,4 +1,4 @@
-:where(.admin-login-page, .admin-page, .admin-dialog, .admin-select-menu, .admin-mobile-sheet) {
+:where(.admin-page, .admin-dialog, .admin-select-menu, .admin-mobile-sheet) {
   --admin-bg: var(--zx-bg);
   --admin-panel: var(--zx-surface);
   --admin-panel-soft: #151f2d;
@@ -18,43 +18,17 @@
   font-family: var(--font-body);
   color-scheme: dark;
 }
-.admin-login-page,
 .admin-page {
   min-height: 100dvh;
   color: var(--admin-text);
   background: var(--admin-bg);
 }
-.admin-login-page { position: relative; display: grid; place-items: center; overflow: hidden; padding: 84px 20px 40px; }
-.admin-login-bg { position: absolute; inset: 0; opacity: .52; pointer-events: none; }
-.admin-login-bg > div:last-child { position: absolute; inset: 0; background: linear-gradient(180deg, #080c10aa, #080c10 78%); }
-.admin-login-header { position: absolute; inset: 24px 32px auto; display: flex; justify-content: space-between; align-items: center; z-index: 1; }
-.admin-login-brand,.admin-header-brand { display: inline-flex; align-items: center; gap: 9px; color: var(--admin-text); text-decoration: none; }
-.admin-login-brand img,.admin-header-brand img { border-radius: 50%; background: #f3f6fa; }
-.admin-login-brand > span,.admin-header-brand > span { font-family: var(--font-display); font-size: 28px; font-style: italic; line-height: 1; }
-.admin-login-brand b,.admin-header-brand b { color: var(--admin-muted); font-size: 13px; font-weight: 500; padding-left: 4px; border-left: 1px solid var(--admin-line); }
-.admin-login-back { display: inline-flex; align-items: center; gap: 7px; color: var(--admin-muted); font-size: 13px; text-decoration: none; }
-.admin-login-back:hover { color: var(--admin-text); }
-.admin-login-panel { position: relative; z-index: 1; width: min(100%, 440px); padding: 42px 44px; border: 1px solid #ffffff12; border-radius: 18px; background: #101720e8; box-shadow: 0 24px 90px #0008; }
-.admin-kicker { display: flex; align-items: center; gap: 7px; margin: 0 0 14px; color: var(--admin-accent); font-size: 12px; letter-spacing: .08em; }
-.admin-login-panel h1,.admin-title-row h1 { margin: 0; font-family: var(--font-editorial); font-size: clamp(30px, 4vw, 42px); font-weight: 500; letter-spacing: -.02em; }
-.admin-login-intro { margin: 9px 0 30px; color: var(--admin-muted); font-size: 14px; }
-.admin-login-notice { margin: -12px 0 20px; color: var(--admin-accent); font-size: 13px; }
-.admin-login-panel fieldset { border: 0; margin: 0; padding: 0; }
-.admin-field { display: grid; gap: 8px; margin: 0 0 14px; color: #cdd7e1; font-size: 13px; }
-.admin-field input { width: 100%; height: 44px; border: 1px solid var(--admin-line); border-radius: 9px; background: #0c1219; color: var(--admin-text); padding: 0 13px; font: inherit; outline: none; }
-.admin-field input:focus { border-color: #8ca9c4; box-shadow: 0 0 0 3px #89aacc22; }
-.admin-password-wrap { position: relative; display: block; }
-.admin-password-wrap input { padding-right: 45px; }
-.admin-password-wrap button { position: absolute; inset: 0 0 0 auto; display: grid; place-items: center; width: 44px; color: var(--admin-muted); }
-.admin-field-error { margin: -7px 0 12px; color: #e5a4a4; font-size: 12px; }
-.admin-login-error { margin: 14px 0 0; color: #e5a4a4; font-size: 12px; line-height: 1.5; }
-.admin-submit { display: inline-flex; align-items: center; justify-content: space-between; width: 100%; height: 45px; margin-top: 10px; padding: 0 15px; border-radius: 9px; background: var(--admin-accent); color: #0c1219; font-weight: 600; }
-.admin-submit:hover { background: #d5e3f1; }
-.admin-submit:disabled { opacity: .6; }
-.admin-login-note { margin: 25px 0 0; color: #748394; text-align: center; font-size: 12px; }
-.admin-login-note a { color: #b6cee5; text-decoration: underline; text-underline-offset: 3px; }
-.admin-spin { animation: admin-spin 1s linear infinite; }
-@keyframes admin-spin { to { transform: rotate(360deg); } }
+/* admin-kicker: used in AdminLogin (overlaid on auth-panel) */
+.admin-kicker { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; color: var(--zx-accent); font-size: 12px; letter-spacing: .08em; }
+.admin-header-brand { display: inline-flex; align-items: center; gap: 9px; color: var(--admin-text); text-decoration: none; }
+.admin-header-brand img { border-radius: 50%; background: #f3f6fa; }
+.admin-header-brand > span { font-family: var(--font-display); font-size: 28px; font-style: italic; line-height: 1; }
+.admin-header-brand b { color: var(--admin-muted); font-size: 13px; font-weight: 500; padding-left: 4px; border-left: 1px solid var(--admin-line); }
 
 .admin-page { background: #0a0f14; }
 .admin-header { display: flex; align-items: center; justify-content: space-between; height: 72px; padding: 0 clamp(20px, 4vw, 56px); border-bottom: 1px solid var(--admin-line-soft); background: #0c1218cc; }
@@ -169,8 +143,6 @@
   .admin-mobile-account .admin-row-action { padding: 0 10px; }
 }
 @media (max-width: 760px) {
-  .admin-login-header { inset: 18px 20px auto; }
-  .admin-login-panel { padding: 34px 24px; }
   .admin-header { height: 64px; padding: 0 18px; }
   .admin-header-brand > span { font-size: 24px; }
   .admin-header-actions { gap: 8px; }
@@ -194,6 +166,7 @@
   .admin-dialog > div:last-child { gap: 8px; }
 }
 @media (prefers-reduced-motion: reduce) { .admin-spin { animation: none; } .admin-tabs .admin-tab-trigger { transition: none; } }
+@keyframes admin-spin { to { transform: rotate(360deg); } }
 
 /* Unified admin shell and the account → conversation vertical slice.  These
    rules intentionally reuse the existing dark admin tokens rather than
