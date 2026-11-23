@@ -75,9 +75,19 @@ class Database:
                             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_versions'"
                         ).scalar()
                     )
-                    if not marker_exists or not connection.exec_driver_sql(
-                        "SELECT 1 FROM schema_versions WHERE version='dynamic_admin_v1' LIMIT 1"
-                    ).scalar():
+                    if not marker_exists:
+                        raise RuntimeError("explicit_migration_required")
+                    has_v3 = bool(
+                        connection.exec_driver_sql(
+                            "SELECT 1 FROM schema_versions WHERE version='dynamic_admin_v3' LIMIT 1"
+                        ).scalar()
+                    )
+                    has_ws_v1 = bool(
+                        connection.exec_driver_sql(
+                            "SELECT 1 FROM schema_versions WHERE version='user_workspace_v1' LIMIT 1"
+                        ).scalar()
+                    )
+                    if not has_v3 or not has_ws_v1:
                         raise RuntimeError("explicit_migration_required")
         # Additive SQLite migration for the run contract.  ``create_all`` does
         # not alter an existing table, and must therefore run after these
@@ -92,9 +102,15 @@ class Database:
                     connection.exec_driver_sql(
                         "CREATE TABLE IF NOT EXISTS schema_versions (version TEXT PRIMARY KEY, applied_at DATETIME NOT NULL)"
                     )
-                    connection.exec_driver_sql(
-                        "INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES ('dynamic_admin_v1', datetime('now'))"
-                    )
+                    for version in (
+                        "dynamic_admin_v1",
+                        "dynamic_admin_v2",
+                        "dynamic_admin_v3",
+                        "user_workspace_v1",
+                    ):
+                        connection.exec_driver_sql(
+                            f"INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES ('{version}', datetime('now'))"
+                        )
 
     def _migrate_sqlite(self) -> None:
         inspector = inspect(self.engine)

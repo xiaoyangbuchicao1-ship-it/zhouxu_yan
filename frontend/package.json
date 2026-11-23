@@ -8,7 +8,7 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --experimental-transform-types --test tests/admin-auth.test.mjs tests/admin-api.test.mjs tests/admin.test.mjs tests/admin-conversations.test.mjs tests/admin-navigation.test.mjs tests/model-selection.test.mjs",
+    "test": "node --experimental-transform-types --test tests/admin-auth.test.mjs tests/admin-api.test.mjs tests/admin.test.mjs tests/admin-conversations.test.mjs tests/admin-navigation.test.mjs tests/model-selection.test.mjs tests/workspace-ux.test.mjs",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "dependencies": {

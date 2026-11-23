@@ -142,7 +142,7 @@ class DynamicDirectoryRoutingTests(unittest.TestCase):
             self.assertEqual(old_adapter.endpoint, "https://old.example/v1/responses")
             self.assertEqual(new_adapter.endpoint, "https://new.example/v1/responses")
             self.assertIsNot(old_adapter, new_adapter)
-            self.assertEqual(len(router._adapters), 3)  # default DeepSeek + two revisions
+            self.assertEqual(len(router._adapters), 2)
             self.assertEqual(old_adapter.client.headers["Authorization"], "Bearer old-secret")
             self.assertEqual(new_adapter.client.headers["Authorization"], "Bearer new-secret")
 

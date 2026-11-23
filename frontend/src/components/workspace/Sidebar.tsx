@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -6,17 +7,19 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Folder,
+  FolderOpen,
   ChevronDown,
+  ChevronRight,
   MoreHorizontal,
   Pin,
   PinOff,
   Trash2,
   LogOut,
-  ArrowUpRight,
   BriefcaseBusiness,
   Compass,
   MessageCircle,
   Search,
+  Settings,
 } from "lucide-react";
 import logo from "../../../zhou-xu-mark.png";
 import { IconButton, Menu, MenuItem, Loading, LoadError } from "./Primitives";
@@ -24,6 +27,7 @@ import type { useWorkspace } from "@/hooks/use-workspace";
 import type { AuthSession } from "@/lib/auth";
 import type { Conversation } from "@/lib/workbench-api";
 import { isUntitledConversation } from "@/lib/conversation-title";
+import type { UserCenterTab } from "./UserCenterDialog";
 
 type Workspace = ReturnType<typeof useWorkspace>;
 export interface SidebarProps {
@@ -38,6 +42,7 @@ export interface SidebarProps {
   deleteProject: (id: string, name: string) => void;
   deleteChat: (chat: Conversation) => void;
   moveChat: (chat: Conversation) => void;
+  onOpenUserCenter?: (tab?: UserCenterTab) => void;
   logout: () => void;
 }
 
@@ -53,25 +58,30 @@ export default function Sidebar({
   deleteProject,
   deleteChat,
   moveChat,
+  onOpenUserCenter,
   logout,
 }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const officePage = location.pathname.match(/^\/workspace\/(skills|research|cases)\/?$/)?.[1];
+  const officePage = location.pathname.match(/^\/workspace\/(skills|research)\/?$/)?.[1];
   const conversations = ws.history.data?.conversations || [];
-  const list = ws.projectFilter
-    ? conversations.filter((c) => c.project_id === ws.projectFilter)
-    : conversations;
-  const pinned = list.filter((c) => c.pinned);
-  const recent = list.filter((c) => !c.pinned);
-  const row = (chat: Conversation) => {
+  const activeChat = id ? conversations.find((c) => c.id === id) : undefined;
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const isProjectOpen = (projectId: string) => {
+    if (projectId in expandedProjects) return expandedProjects[projectId];
+    return ws.projectFilter === projectId || activeChat?.project_id === projectId;
+  };
+  const standalone = conversations.filter((c) => !c.project_id);
+  const pinned = standalone.filter((c) => c.pinned);
+  const recent = standalone.filter((c) => !c.pinned);
+  const row = (chat: Conversation, insideProject = false) => {
     const title = isUntitledConversation(chat.title) ? "待提问" : chat.title;
     const ModeIcon = chat.mode === "work" ? BriefcaseBusiness : MessageCircle;
     const modeLabel = chat.mode === "work" ? "工作会话" : "聊天会话";
     return (
     <div
       key={chat.id}
-      className={`ws-history-row ${id === chat.id ? "is-selected" : ""}`}
+      className={`ws-history-row ${insideProject ? "is-nested" : ""} ${id === chat.id ? "is-selected" : ""}`}
     >
       {id === chat.id && (
         <motion.span
@@ -84,7 +94,11 @@ export default function Sidebar({
         to={`/workspace/chat/${chat.id}`}
         className="ws-history-link"
         title={title}
-        onClick={onNavigate}
+        onClick={() => {
+          if (!insideProject) ws.setProjectFilter(null);
+          else if (chat.project_id) ws.setProjectFilter(chat.project_id);
+          onNavigate();
+        }}
         aria-current={id === chat.id ? "page" : undefined}
       >
         <span>{title}</span>
@@ -167,7 +181,6 @@ export default function Sidebar({
         {([
           ["skills", "技能", Compass],
           ["research", "海事检索", Search],
-          ["cases", "案件协作", BriefcaseBusiness],
         ] as const).map(([path, label, Icon]) => (
           <Link
             key={path}
@@ -204,46 +217,70 @@ export default function Sidebar({
                 <LoadError retry={() => void ws.projects.refetch()} />
               ) : (
                 <>
-                  {(ws.projects.data?.projects || []).map((project) => (
-                    <div
-                      className={`ws-project-row ${ws.projectFilter === project.id ? "is-selected" : ""}`}
-                      key={project.id}
-                    >
-                      <button
-                        className="ws-project-link"
-                        onClick={() =>
-                          ws.setProjectFilter(
-                            ws.projectFilter === project.id ? null : project.id,
-                          )
-                        }
-                        aria-pressed={ws.projectFilter === project.id}
+                  {(ws.projects.data?.projects || []).map((project) => {
+                    const projectChats = conversations
+                      .filter((c) => c.project_id === project.id)
+                      .sort((a, b) => Number(b.pinned) - Number(a.pinned));
+                    const open = isProjectOpen(project.id);
+                    const selected = ws.projectFilter === project.id;
+                    const count = ws.history.data ? projectChats.length : project.conversation_count;
+                    const FolderIcon = open ? FolderOpen : Folder;
+                    return (
+                    <div className="ws-project-branch" key={project.id}>
+                      <div
+                        className={`ws-project-row ${selected ? "is-selected" : ""}`}
                       >
-                        <Folder size={16} />
-                        <span>{project.name}</span>
-                        <span className="ws-count">
-                          {project.conversation_count}
-                        </span>
-                      </button>
-                      <Menu
-                        trigger={
-                          <IconButton label={`${project.name}，项目操作`}>
-                            <MoreHorizontal size={16} />
-                          </IconButton>
-                        }
-                      >
-                        <MenuItem
-                          danger
-                          disabled={ws.busy}
-                          onSelect={() =>
-                            deleteProject(project.id, project.name)
+                        <button
+                          type="button"
+                          className="ws-project-link"
+                          onClick={() => {
+                            if (selected) {
+                              ws.setProjectFilter(null);
+                              setExpandedProjects((prev) => ({ ...prev, [project.id]: false }));
+                            } else {
+                              ws.setProjectFilter(project.id);
+                              setExpandedProjects((prev) => ({ ...prev, [project.id]: true }));
+                              if (location.pathname !== "/workspace") navigate("/workspace");
+                              onNavigate();
+                            }
+                          }}
+                          aria-expanded={open}
+                          aria-pressed={selected}
+                        >
+                          <span className="ws-project-chevron" aria-hidden="true">
+                            {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                          </span>
+                          <FolderIcon size={15} />
+                          <span className="ws-project-name">{project.name}</span>
+                          <span className="ws-count">{count}</span>
+                        </button>
+                        <Menu
+                          trigger={
+                            <IconButton label={`${project.name}，项目操作`}>
+                              <MoreHorizontal size={16} />
+                            </IconButton>
                           }
                         >
-                          <Trash2 size={16} />
-                          删除分组
-                        </MenuItem>
-                      </Menu>
+                          <MenuItem
+                            danger
+                            disabled={ws.busy}
+                            onSelect={() =>
+                              deleteProject(project.id, project.name)
+                            }
+                          >
+                            <Trash2 size={16} />
+                            删除分组
+                          </MenuItem>
+                        </Menu>
+                      </div>
+                      {open && projectChats.length > 0 && (
+                        <div className="ws-project-children" role="group" aria-label={`${project.name} 中的对话`}>
+                          {projectChats.map((chat) => row(chat, true))}
+                        </div>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                   {!ws.projects.data?.projects.length && (
                     <p className="ws-sidebar-hint">将相关对话，归于一处。</p>
                   )}
@@ -251,17 +288,6 @@ export default function Sidebar({
               )}
             </section>
             <section className="ws-history" aria-label="历史对话">
-              {ws.projectFilter && (
-                <div className="ws-section-label">
-                  <h2>项目中的对话</h2>
-                  <button
-                    className="ws-text-button"
-                    onClick={() => ws.setProjectFilter(null)}
-                  >
-                    全部
-                  </button>
-                </div>
-              )}
               {ws.history.isPending ? (
                 <Loading label="载入对话…" />
               ) : ws.history.isError ? (
@@ -274,20 +300,18 @@ export default function Sidebar({
                         置顶
                         <Pin size={14} aria-hidden="true" />
                       </h3>
-                      {pinned.map(row)}
+                      {pinned.map((chat) => row(chat, false))}
                     </div>
                   )}
                   {recent.length > 0 && (
                     <div className="ws-history-group">
                       <h3>最近</h3>
-                      {recent.map(row)}
+                      {recent.map((chat) => row(chat, false))}
                     </div>
                   )}
-                  {!list.length && (
+                  {!conversations.length && !ws.projects.data?.projects.length && (
                     <p className="ws-sidebar-hint">
-                      {ws.projectFilter
-                        ? "这个项目还没有对话。新对话将归入此项目。"
-                        : "从一个问题开始，思路会留在这里。"}
+                      从一个问题开始，思路会留在这里。
                     </p>
                   )}
                 </>
@@ -313,19 +337,24 @@ export default function Sidebar({
               <span className="ws-account-text">
                 <span className="ws-account-name-line">
                   <strong>{session.account.display_name || "我的账户"}</strong>
-                  <small className="ws-beta-badge">（内测中）</small>
                 </span>
-                <span>个人工作空间</span>
+                <span className="ws-account-subline">
+                  <span>个人工作空间</span>
+                  <span className="ws-account-dot" aria-hidden="true">·</span>
+                  <span className="ws-beta-tag">内测版</span>
+                </span>
               </span>
               <ChevronDown size={16} />
             </button>
           }
         >
           <div className="ws-menu-caption">{session.account.email}</div>
-          <MenuItem onSelect={() => navigate("/account")}>
-            <ArrowUpRight size={16} />
-            账户信息
-          </MenuItem>
+          {onOpenUserCenter && (
+            <MenuItem onSelect={() => onOpenUserCenter("account")}>
+              <Settings size={16} />
+              设置
+            </MenuItem>
+          )}
           <MenuItem onSelect={logout}>
             <LogOut size={16} />
             退出登录

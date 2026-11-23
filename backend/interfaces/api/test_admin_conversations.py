@@ -301,6 +301,179 @@ class AdminConversationHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assistant_messages["run-alice-long-answer"]["content"], long_answer)
         self.assertEqual(assistant_messages["run-alice-long-paused"]["content"], partial)
 
+    async def test_admin_conversation_detail_includes_retrieval_traces_materials_and_error(self):
+        from backend.infrastructure.database.models import MaterialModel
+
+        now = datetime.now(timezone.utc)
+        with self.database.session() as session:
+            session.add(
+                MaterialModel(
+                    id="mat-alice-1",
+                    account_id=self.user_a.account.id,
+                    session_id=self.conversation_a.id,
+                    filename="租船合同纠纷材料.pdf",
+                    media_type="application/pdf",
+                    size_bytes=4096,
+                    checksum="b" * 64,
+                    storage_key="C:/private/should-never-leak.pdf",
+                    status="ready",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+
+        self.workspace.record_run(
+            account_id=self.user_a.account.id,
+            conversation_id=self.conversation_a.id,
+            run_id="run-alice-rich-trace",
+            question="核查海商法船舶优先权条文",
+            status="failed",
+            error="上游服务暂时繁忙，请稍后重试。",
+            error_code="upstream_busy",
+            material_ids=["mat-alice-1"],
+            created_at=now,
+            first_event_at=now + timedelta(milliseconds=120),
+            first_delta_at=now + timedelta(milliseconds=640),
+            completed_at=now + timedelta(seconds=2),
+            progress={
+                "current_unit": "retrieval",
+                "context_compaction_count": 1,
+                "continuation_guidance": ["优先补充船舶登记时间"],
+                "tool_traces": [
+                    {
+                        "tool_name": "dynamic_rag_search",
+                        "tool_label": "海商法规检索",
+                        "query": "海商法 船舶优先权",
+                        "result_count": 5,
+                        "status": "succeeded",
+                        "summary": "命中 5 条",
+                    }
+                ],
+                "source_refs": [
+                    {
+                        "source_id": "law-1",
+                        "kind": "law",
+                        "title": "中华人民共和国海商法",
+                        "locator": "第二十二条",
+                        "section": "第二章 船舶 / 第三节 船舶优先权",
+                        "version_date": "2025-10-28",
+                        "version_label": "现行版本",
+                    },
+                    {
+                        "source_id": "case-1",
+                        "kind": "case",
+                        "title": "某轮扣押拍卖优先权案",
+                        "locator": "案例原文",
+                    },
+                ],
+            },
+        )
+        admin_headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        detail = await self.client.get(
+            f"/admin/accounts/{self.user_a.account.id}/conversations/{self.conversation_a.id}?limit=50",
+            headers=admin_headers,
+        )
+        self.assertEqual(detail.status_code, 200, detail.text)
+        body = detail.json()
+        self.assertEqual(body["account"]["email"], "alice@example.com")
+        runs = {item["run_id"]: item for item in body["runs"]}
+        rich = runs["run-alice-rich-trace"]
+        self.assertEqual(rich["error_message"], "上游服务暂时繁忙，请稍后重试。")
+        self.assertEqual(rich["first_delta_ms"], 640)
+        self.assertEqual(rich["current_unit"], "retrieval")
+        self.assertEqual(rich["context_compaction_count"], 1)
+        self.assertEqual(rich["continuation_guidance"], ["优先补充船舶登记时间"])
+        self.assertEqual(rich["source_summary"], {"total": 2, "law": 1, "case": 1})
+        self.assertEqual(rich["materials"][0]["filename"], "租船合同纠纷材料.pdf")
+        self.assertEqual(rich["tool_traces"][0]["tool_label"], "海商法规检索")
+        self.assertEqual(rich["tool_traces"][0]["query"], "海商法 船舶优先权")
+        self.assertEqual(rich["tool_traces"][0]["result_count"], 5)
+        _assert_no_forbidden_keys(self, body)
+        self.assertNotIn("should-never-leak.pdf", detail.text)
+
+        missing_source = await self.client.get("/admin/sources/law-missing", headers=admin_headers)
+        self.assertEqual(missing_source.status_code, 404)
+
+    async def test_admin_can_filter_conversations_by_status_bucket_and_read_counts(self):
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        t0 = datetime.now(timezone.utc) - timedelta(hours=3)
+        c_ok = self.workspace.create(account_id=self.user_a.account.id, title="已完成会话", mode="chat")
+        c_wait = self.workspace.create(account_id=self.user_a.account.id, title="待确认会话", mode="chat")
+        c_pause = self.workspace.create(account_id=self.user_a.account.id, title="已暂停会话", mode="work")
+        c_fail = self.workspace.create(account_id=self.user_a.account.id, title="失败会话", mode="work")
+        c_empty = self.workspace.create(account_id=self.user_a.account.id, title="空白会话", mode="chat")
+
+        self.workspace.record_run(
+            account_id=self.user_a.account.id,
+            conversation_id=c_ok.id,
+            run_id="run-bucket-ok",
+            question="已完成问题",
+            status="succeeded",
+            answer="已完成公开回答",
+            created_at=t0 + timedelta(minutes=5),
+        )
+        self.workspace.record_run(
+            account_id=self.user_a.account.id,
+            conversation_id=c_wait.id,
+            run_id="run-bucket-wait",
+            question="等待补充确认",
+            status="waiting_user",
+            created_at=t0 + timedelta(minutes=10),
+        )
+        self.workspace.record_run(
+            account_id=self.user_a.account.id,
+            conversation_id=c_pause.id,
+            run_id="run-bucket-pause",
+            question="已暂停长任务",
+            status="paused",
+            created_at=t0 + timedelta(minutes=20),
+        )
+        self.workspace.record_run(
+            account_id=self.user_a.account.id,
+            conversation_id=c_fail.id,
+            run_id="run-bucket-fail",
+            question="超时失败任务",
+            status="failed",
+            created_at=t0 + timedelta(minutes=30),
+        )
+
+        overview_res = await self.client.get(
+            f"/admin/accounts/{self.user_a.account.id}/conversations?limit=20",
+            headers=headers,
+        )
+        self.assertEqual(overview_res.status_code, 200, overview_res.text)
+        overview_body = overview_res.json()
+        self.assertEqual(
+            overview_body["status_counts"],
+            {"all": 6, "succeeded": 1, "active": 3, "failed": 1, "no_runs": 1},
+        )
+        items_by_id = {row["id"]: row for row in overview_body["conversations"]}
+        self.assertIsNotNone(items_by_id[c_fail.id]["latest_run_at"])
+        self.assertIsNone(items_by_id[c_empty.id]["latest_run_at"])
+
+        for status_filter, expected_ids in (
+            ("succeeded", {c_ok.id}),
+            ("active", {self.conversation_a.id, c_wait.id, c_pause.id}),
+            ("failed", {c_fail.id}),
+            ("no_runs", {c_empty.id}),
+        ):
+            res = await self.client.get(
+                f"/admin/accounts/{self.user_a.account.id}/conversations?status={status_filter}",
+                headers=headers,
+            )
+            self.assertEqual(res.status_code, 200, (status_filter, res.text))
+            body = res.json()
+            self.assertEqual({row["id"] for row in body["conversations"]}, expected_ids)
+            self.assertEqual(body["status_counts"]["all"], 6)
+
+        bad = await self.client.get(
+            f"/admin/accounts/{self.user_a.account.id}/conversations?status=not_a_real_status",
+            headers=headers,
+        )
+        self.assertEqual(bad.status_code, 422)
+        self.assertEqual(bad.json()["detail"], "invalid_conversation_status")
+
 
 if __name__ == "__main__":
     unittest.main()

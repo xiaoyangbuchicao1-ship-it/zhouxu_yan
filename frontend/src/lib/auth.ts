@@ -13,6 +13,7 @@ export interface AuthSession {
 
 export type AccountRole = AuthSession["account"]["role"];
 export type AccountView = AuthSession["account"];
+export type AuthAccount = AccountView;
 
 export class AuthApiError extends Error {
   constructor(public code: string, public status = 0) {
@@ -63,6 +64,7 @@ export function isAuthSession(value: unknown): value is AuthSession {
 const runtimeEnv: Record<string, string | undefined> =
   (import.meta as ImportMeta & { env?: Record<string, string> }).env ?? {};
 const apiBase = (runtimeEnv.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+export function resolveAuthApiBase() { return apiBase; }
 
 async function request(path: string, options: RequestInit = {}, signal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController();

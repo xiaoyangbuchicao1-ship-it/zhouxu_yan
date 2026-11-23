@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.application.admin import AdminService, AdminServiceError
+from backend.application.admin_conversations import resolve_status_filter
 from backend.config.settings import Settings
 from backend.infrastructure.database.connection import Database
 from backend.infrastructure.database.models import (
@@ -42,6 +43,109 @@ class AdminOperationsService:
     def __init__(self, database: Database, settings: Settings):
         self.database = database
         self.settings = settings
+
+    def account_grant(self, account_id: str) -> dict:
+        with self.database.session() as session:
+            grant = session.get(AccountCapabilityGrantModel, account_id)
+            if grant is None:
+                return {
+                    "model_policy": "default",
+                    "allowed_models": [],
+                    "skill_policy": "default",
+                    "can_upload_skill": True,
+                }
+            allowed: list[str] = []
+            if grant.allowed_models_json:
+                try:
+                    parsed = json.loads(grant.allowed_models_json)
+                except json.JSONDecodeError as exc:
+                    raise AdminServiceError("capability_policy_corrupt") from exc
+                if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+                    raise AdminServiceError("capability_policy_corrupt")
+                allowed = parsed
+            return {
+                "model_policy": grant.model_policy,
+                "allowed_models": allowed,
+                "skill_policy": grant.skill_policy,
+                "can_upload_skill": bool(grant.can_upload_skill),
+            }
+
+    def is_model_permitted(
+        self,
+        *,
+        account_id: str,
+        account_role: str,
+        profile_id: str,
+        access_scope: str,
+        grant: dict | None = None,
+    ) -> bool:
+        policy = grant if grant is not None else self.account_grant(account_id)
+        model_policy = policy["model_policy"]
+        allowed_models = set(policy["allowed_models"])
+        if model_policy == "disabled":
+            return False
+        if model_policy == "allowlist" and profile_id not in allowed_models:
+            return False
+        if access_scope == "admin_only":
+            return account_role == "admin"
+        if access_scope == "allowlist":
+            return account_role == "admin" or profile_id in allowed_models
+        return True
+
+    def filter_model_revisions(
+        self,
+        *,
+        account_id: str,
+        account_role: str,
+        revisions: list,
+    ) -> list:
+        grant = self.account_grant(account_id)
+        return [
+            revision
+            for revision in revisions
+            if self.is_model_permitted(
+                account_id=account_id,
+                account_role=account_role,
+                profile_id=revision.profile.profile_id,
+                access_scope=getattr(revision, "access_scope", "all"),
+                grant=grant,
+            )
+        ]
+
+    def assert_model_allowed(
+        self,
+        *,
+        account_id: str,
+        account_role: str,
+        profile_id: str,
+        access_scope: str,
+    ) -> None:
+        if not self.is_model_permitted(
+            account_id=account_id,
+            account_role=account_role,
+            profile_id=profile_id,
+            access_scope=access_scope,
+        ):
+            raise AdminServiceError("model_not_permitted")
+
+    def is_skill_permitted(
+        self,
+        *,
+        account_id: str,
+        skill_id: str,
+        is_builtin: bool,
+        grant: dict | None = None,
+    ) -> bool:
+        policy = grant if grant is not None else self.account_grant(account_id)
+        skill_policy = policy["skill_policy"]
+        if skill_policy == "disabled":
+            return False
+        if skill_policy == "builtin_only":
+            return bool(is_builtin)
+        return True
+
+    def can_upload_skill(self, account_id: str) -> bool:
+        return bool(self.account_grant(account_id)["can_upload_skill"])
 
     def list_capabilities(self) -> list[dict]:
         with self.database.session() as session:
@@ -148,16 +252,26 @@ class AdminOperationsService:
             return self._capability_view(account, grant)
 
     def list_skills(self) -> dict:
+        from backend.application.maritime.catalog import READY_BUILTIN_METADATA
+
         skills = []
         for descriptor in default_skill_registry().descriptors():
+            ready_meta = READY_BUILTIN_METADATA.get(descriptor.skill_id)
+            if not descriptor.ready:
+                skill_status = "coming_soon"
+            elif descriptor.path.is_file():
+                skill_status = "ready"
+            else:
+                skill_status = "unavailable"
             skills.append(
                 {
                     "id": descriptor.skill_id,
-                    "name": descriptor.name,
-                    "summary": descriptor.description,
+                    "name": ready_meta["display_name"] if ready_meta else descriptor.name,
+                    "summary": (ready_meta.get("summary") if ready_meta else None) or descriptor.description,
                     "version": descriptor.version,
                     "visibility": "builtin",
-                    "status": "ready" if descriptor.path.is_file() else "unavailable",
+                    "mode_scope": ready_meta.get("mode_scope") if ready_meta else descriptor.mode_scope,
+                    "status": skill_status,
                     "owner_email": None,
                     "updated_at": datetime.fromtimestamp(
                         descriptor.path.stat().st_mtime, tz=timezone.utc
@@ -166,12 +280,24 @@ class AdminOperationsService:
                     else None,
                 }
             )
-        status = "ready" if skills and all(item["status"] == "ready" for item in skills) else "degraded"
+        active = [item for item in skills if item["status"] != "coming_soon"]
+        status = "ready" if active and all(item["status"] == "ready" for item in active) else "degraded"
         return {"status": status, "total": len(skills), "skills": skills}
 
-    def list_tasks(self, *, limit: int = 50, cursor: str | None = None) -> dict:
+    def list_tasks(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str | None = None,
+        status: str | None = None,
+    ) -> dict:
         if limit < 1 or limit > 100:
             raise AdminServiceError("invalid_task_limit")
+        _, status_values = resolve_status_filter(
+            status,
+            allow_no_runs=False,
+            error_code="invalid_task_status",
+        )
         # The cursor is intentionally a simple opaque run id.  The first
         # implementation has stable ordering and a bounded page; a malformed
         # cursor is an input error rather than a silent restart at page one.
@@ -185,6 +311,8 @@ class AdminOperationsService:
                 .order_by(ConversationRunModel.created_at.desc(), ConversationRunModel.run_id.desc())
                 .limit(limit + 1)
             )
+            if status_values:
+                statement = statement.where(ConversationRunModel.status.in_(status_values))
             if cursor:
                 current = session.get(ConversationRunModel, cursor)
                 if current is None:
@@ -207,19 +335,53 @@ class AdminOperationsService:
 
     def resource_health(self) -> dict:
         sources: dict[str, dict] = {}
-        corpus = MaritimeCorpus()
-        status = corpus.status()
-        if status.get("indexed"):
-            for kind, count in status.get("counts", {}).items():
-                sources[str(kind)] = {"status": "ready", "count": int(count)}
-        else:
-            sources["laws"] = {"status": "unavailable", "reason": "本地法规索引未就绪"}
-            sources["cases"] = {"status": "unavailable", "reason": "本地案例索引未就绪"}
+        corpus = MaritimeCorpus(settings=self.settings)
+        local_status = corpus.status()
+        local_counts = local_status.get("counts", {}) if local_status.get("indexed") else {}
+        remote_status = corpus.opensearch_status()
+        remote_counts = remote_status.get("counts", {})
+        remote_errors = remote_status.get("errors", {})
+
+        for kind, label in (("laws", "法规"), ("cases", "案例")):
+            remote_count = remote_counts.get(kind)
+            local_count = local_counts.get(kind)
+            if isinstance(remote_count, int) and remote_count > 0:
+                reason = (
+                    f"OpenSearch 在线索引与本地{label}精确索引均已就绪"
+                    if isinstance(local_count, int) and local_count > 0
+                    else f"OpenSearch 在线{label}索引已就绪"
+                )
+                sources[kind] = {"status": "ready", "count": remote_count, "reason": reason}
+            elif isinstance(local_count, int) and local_count > 0:
+                sources[kind] = {
+                    "status": "ready",
+                    "count": local_count,
+                    "reason": f"本地{label}语料索引已就绪",
+                }
+            else:
+                sources[kind] = {
+                    "status": "unavailable",
+                    "reason": f"在线 OpenSearch 与本地{label}索引均未就绪",
+                }
         if self.settings.research_cards.enabled:
-            sources["papers"] = {
-                "status": "ready" if Path(self.settings.research_cards.skill_dir).is_dir() else "degraded",
-                "reason": "论文 Skill 已注册" if Path(self.settings.research_cards.skill_dir).is_dir() else "论文索引由运行服务提供",
-            }
+            remote_papers = remote_counts.get("papers")
+            if isinstance(remote_papers, int) and remote_papers > 0:
+                sources["papers"] = {
+                    "status": "ready",
+                    "count": remote_papers,
+                    "reason": "OpenSearch 在线论文信息卡索引已就绪",
+                }
+            elif "papers" in remote_errors or "cluster" in remote_errors:
+                sources["papers"] = {
+                    "status": "unavailable",
+                    "reason": "OpenSearch 在线论文信息卡索引未就绪",
+                }
+            else:
+                skill_ready = Path(self.settings.research_cards.skill_dir).is_dir()
+                sources["papers"] = {
+                    "status": "ready" if skill_ready else "degraded",
+                    "reason": "论文信息卡与写作规范已启用" if skill_ready else "论文索引由运行服务提供",
+                }
         else:
             sources["papers"] = {"status": "not_configured", "reason": "论文资料服务未启用"}
         states = {item["status"] for item in sources.values()}

@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -24,7 +25,7 @@ from backend.interfaces.api.app import create_app
 class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.key_name = "ZHOUXU_TEST_MODEL_KEY"
+        self.key_name = "ZHOUXU_MODEL_KEY_TEST"
         self.previous_key = os.environ.get(self.key_name)
         os.environ[self.key_name] = "test-only-key"
         settings = DatabaseSettings(url=f"sqlite:///{Path(self.tmp.name) / 'models.sqlite3'}")
@@ -49,6 +50,26 @@ class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app), base_url="http://test"
         )
+
+    async def _verify_and_enable(self, profile_id: str) -> dict:
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        encoded = profile_id.replace(":", "%3A")
+
+        async def ok_upstream(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"id": "ok", "choices": [{"message": {"content": "你好"}}]})
+
+        with patch(
+            "backend.infrastructure.model.health.pinned_async_transport",
+            return_value=httpx.MockTransport(ok_upstream),
+        ):
+            probed = await self.client.post(f"/admin/models/{encoded}/test", headers=headers)
+            self.assertEqual(probed.status_code, 200, probed.text)
+            self.assertTrue(probed.json()["ok"])
+        enabled = await self.client.patch(
+            f"/admin/models/{encoded}", headers=headers, json={"enabled": True}
+        )
+        self.assertEqual(enabled.status_code, 200, enabled.text)
+        return enabled.json()
 
     async def create_model(self, *, provider_id: str = "preview-relay", profile_id: str = "preview-relay:gpt-preview"):
         headers = {"Authorization": f"Bearer {self.admin_login.token}"}
@@ -82,13 +103,14 @@ class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
                 "max_output_tokens": 16000,
                 "thinking_modes": ["none", "low"],
                 "default_thinking": "low",
-                "enabled": True,
+                "enabled": False,
                 "access_scope": "all",
                 "sort_order": 20,
             },
         )
         self.assertEqual(model.status_code, 201, model.text)
-        return provider.json(), model.json()
+        enabled = await self._verify_and_enable(profile_id)
+        return provider.json(), enabled
 
     async def asyncTearDown(self):
         await self.client.aclose()
@@ -133,13 +155,14 @@ class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
                 "max_output_tokens": 16000,
                 "thinking_modes": ["none", "low"],
                 "default_thinking": "low",
-                "enabled": True,
+                "enabled": False,
                 "access_scope": "all",
             },
         )
         self.assertEqual(model.status_code, 201, model.text)
-        self.assertEqual(model.json()["profile_id"], "preview-relay:gpt-preview")
-        first_revision = model.json()["revision"]
+        enabled = await self._verify_and_enable("preview-relay:gpt-preview")
+        self.assertEqual(enabled["profile_id"], "preview-relay:gpt-preview")
+        first_revision = enabled["revision"]
 
         user_headers = {"Authorization": f"Bearer {self.user_login.token}"}
         catalog = await self.client.get("/workspace/models", headers=user_headers)
@@ -268,7 +291,7 @@ class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(changed.status_code, 200, changed.text)
-        self.assertEqual(changed.json()["revision"], 2)
+        self.assertGreater(changed.json()["revision"], created["revision"])
 
         current = directory.resolve(profile_id)
         pinned = directory.resolve(profile_id, profile_revision_id=old_revision_id)

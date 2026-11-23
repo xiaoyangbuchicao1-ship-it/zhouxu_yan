@@ -86,6 +86,8 @@ class ModelRoutingTests(unittest.IsolatedAsyncioTestCase):
             "backend.infrastructure.model.router.load_key", return_value=SecretStr("test")
         ), patch("backend.infrastructure.model.router.ModelRegistry"):
             self.router = RoutedModel(self.settings, self.events)
+        self.deepseek = _Adapter(self.settings)
+        self.router._adapters["deepseek-flash"] = self.deepseek
         relay_settings = self.settings.model_copy(deep=True)
         relay_settings.model.name = "relay-test"
         self.relay = _Adapter(relay_settings)

@@ -19,7 +19,7 @@ ModelProtocol = Literal[
     "google_generative_language",
 ]
 CapabilityState = Literal["confirmed", "unsupported", "unconfirmed"]
-ModelFamily = Literal["deepseek", "gpt", "claude", "gemini", "glm", "other"]
+ModelFamily = Literal["deepseek", "gpt", "claude", "gemini", "glm", "qwen", "kimi", "other"]
 
 
 class ModelCapabilityFlags(Contract):

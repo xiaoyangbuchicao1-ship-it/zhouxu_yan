@@ -129,7 +129,7 @@
 .md-skill-content { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .md-skill-copy { flex: 1; min-width: 0; }
 .md-skill-copy strong { font-size: 16px; font-weight: 500; line-height: 1.6; }
-.md-skill-summary { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 7px; color: var(--ws-muted); font-size: 13px; line-height: 1.8; }
+.md-skill-summary { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 7px; color: var(--ws-muted); font-size: 13px; line-height: 1.65; }
 .md-skill-chevron { margin-top: 4px; color: var(--ws-muted); transition: transform 160ms ease, color 160ms ease; }
 .md-skill-content:hover .md-skill-chevron { transform: translateX(2px); color: var(--ws-text); }
 .md-skill-package .md-skill-actions { margin-left: 33px; font-size: 12px; }
@@ -361,6 +361,11 @@
 .md-result-kind.is-case {
   background: #433b38;
   color: #dec8b8;
+}
+
+.md-result-kind.is-paper {
+  background: #2f3d4d;
+  color: #b7d4f0;
 }
 .md-result-copy {
   display: grid;
@@ -948,4 +953,31 @@
   .md-delivery-header p {
     font-size: 11px;
   }
+}
+
+/* Ready vs Coming Soon Built-in Skill Sections */
+.md-skill-coming-list {
+  opacity: 0.72;
+}
+.md-skill-coming {
+  border-color: rgba(137, 170, 204, 0.12);
+  background: rgba(12, 18, 26, 0.55);
+}
+.md-skill-content-static {
+  cursor: default;
+}
+.md-skill-content-static:hover {
+  background: transparent;
+}
+.md-skill-soon-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(137, 170, 204, 0.22);
+  background: rgba(137, 170, 204, 0.08);
+  color: #8ea4bc;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
 }

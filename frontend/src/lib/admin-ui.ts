@@ -26,8 +26,18 @@ export function auditActionLabel(action: string): string {
   const labels: Record<string, string> = {
     "account.status_changed": "调整账户状态",
     "account.role_changed": "调整账户角色",
+    "account.capability_changed": "调整能力授权",
+    "conversation.log_viewed": "查阅会话日志",
+    "model.provider_created": "新建模型服务商",
+    "model.provider_updated": "更新服务商设置",
+    "model.provider_archived": "归档模型服务商",
+    "model.provider_tested": "检测服务商连通性",
+    "model.profile_created": "新增模型档案",
+    "model.profile_updated": "更新模型设置",
+    "model.profile_archived": "归档模型档案",
+    "model.profile_tested": "测试模型连通性",
   };
-  return labels[action] ?? "业务操作";
+  return labels[action] ?? "管理操作";
 }
 
 export function selectAccountPage(accounts: readonly AdminAccount[], filters: AccountFilters, requestedPage: number) {

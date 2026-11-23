@@ -9,10 +9,11 @@ from typing import Any
 
 from backend.config.settings import Settings
 from backend.contracts.modules.loop import ActionResult, ToolSpec
-from backend.contracts.schemas.core import ModuleRequest, PortError
+from backend.contracts.schemas.core import Error, ModuleRequest, PortError
 from backend.skills.registry import SkillNotFound, SkillRegistry
 
 AccountSkillLoader = Callable[[str, str, int | None], dict[str, Any]]
+SkillPermissionChecker = Callable[[str, str, bool], bool]
 
 
 class SkillReadTool:
@@ -22,28 +23,35 @@ class SkillReadTool:
         settings: Settings,
         account_skill_loader: AccountSkillLoader | None = None,
         package_installer: Callable[..., Awaitable[str]] | None = None,
+        skill_permission_checker: SkillPermissionChecker | None = None,
     ):
         self.registry = registry
         self.settings = settings
         self.account_skill_loader = account_skill_loader
         self.package_installer = package_installer
+        self.skill_permission_checker = skill_permission_checker
 
-    @property
-    def spec(self) -> ToolSpec:
-        descriptors = self.registry.descriptors()
+    def _spec_for(self, mode: str | None = None) -> ToolSpec:
+        descriptors = self.registry.descriptors(ready_only=True, mode=mode)
         catalog = "\n".join(
             f"- {item.name} (v{item.version}): {item.description}"
             for item in descriptors
+        )
+        mode_note = (
+            "当前处于聊天模式，仅开放只读检索类 Skill，不可调用写入或编译交付流程。\n\n"
+            if mode == "chat"
+            else ""
         )
         return ToolSpec(
             name="read_skill",
             description=(
                 "读取已注册的专业 Skill 规范。遇到具体海事法律问答、法规版本、"
-                "海事案例或其他工具描述明确匹配的专业流程时，先读取对应 Skill；"
+                "海事案例、学术论文检索或其他工具描述明确匹配的专业流程时，先读取对应 Skill；"
                 "如果当前用户事实中有已选 skill_id，必须先读取该 Skill。"
                 "Skill 只是流程说明，不是本次问题的证据。只能选择内置或当前账户"
-                "有权使用的 Skill，不要传路径、URL 或内部文件名。\n\n"
-                "已注册的内置 Skill：\n"
+                "有权使用的 Skill，不要传路径、URL 或内部文件名。\n"
+                f"{mode_note}\n"
+                "已注册的可用 Skill：\n"
                 f"{catalog}"
             ),
             parameters={
@@ -65,14 +73,21 @@ class SkillReadTool:
                 "required": ["skill_id"],
                 "additionalProperties": False,
             },
-            # Loading a Skill changes the model's execution contract: it can
-            # introduce a workflow, required tools, file writes, or other
-            # side effects. Even when the Skill file itself is read-only,
-            # activation is therefore a work-mode capability.
-            read_only=False,
+            # Chat mode only exposes read-only retrieval Skills; work mode
+            # retains full activation for workflows, writes, compiles and ZIPs.
+            read_only=(mode == "chat"),
             reuse_identical_results=True,
             kind="skill_activation",
         )
+
+    @property
+    def spec(self) -> ToolSpec:
+        return self._spec_for(mode=None)
+
+    def spec_for_mode(self, mode: str | None) -> ToolSpec:
+        """Return a mode-scoped read_skill contract for chat vs work execution."""
+
+        return self._spec_for(mode=mode)
 
     async def execute_context(self, request: ModuleRequest) -> ActionResult:
         try:
@@ -103,8 +118,40 @@ class SkillReadTool:
             ):
                 raise ValueError
 
+            account_id = (request.context or {}).get("account_id")
+            run_mode = (request.context or {}).get("mode")
             if self.registry.contains(name):
                 descriptor = self.registry.descriptor(name)
+                if not descriptor.ready:
+                    raise SkillNotFound("skill_not_found")
+                if (
+                    self.skill_permission_checker is not None
+                    and isinstance(account_id, str)
+                    and account_id
+                    and not self.skill_permission_checker(account_id, descriptor.skill_id, True)
+                ):
+                    return ActionResult(
+                        tool_name=request.input.tool_name,
+                        action_id=request.input.action_id,
+                        result={"status": "error"},
+                        outcome="error",
+                        error=Error(
+                            code="skill_not_permitted",
+                            message="当前账户无权使用该 Skill。",
+                        ),
+                    )
+                requires_work_mode = (
+                    descriptor.mode_scope != "chat"
+                    or bool(descriptor.metadata.get("requires_work_mode"))
+                )
+                if run_mode == "chat" and requires_work_mode:
+                    return ActionResult(
+                        tool_name=request.input.tool_name,
+                        action_id=request.input.action_id,
+                        result={"status": "error"},
+                        outcome="error",
+                        error=self.settings.error("tool_not_available_in_mode"),
+                    )
                 if version is not None and str(version) not in {
                     descriptor.version,
                     *descriptor.compatible_versions,
@@ -112,29 +159,22 @@ class SkillReadTool:
                     raise SkillNotFound("skill_version_not_found")
                 body = self.registry.read_resource(name, resource) if resource else self.registry.read(name)
                 resources = self.registry.resources(name)
-                if name == "csl-law-paper-generator":
-                    runtime_instructions = (
-                        "舟序运行适配：先按选题调用 capability_card_select，匹配时用 capability_card_read "
-                        "读取方法；用 information_card_search/read 获取论文观点，法规与案例分别用现有工具核对。"
-                        "没有匹配方法时继续研究，不套用无关能力卡。包内引注指南可通过 read_skill 的 resource 参数读取。"
-                        "长篇 .typ 源稿请先用 write 创建头部与前半章，再用 write(..., append=true) 分 2~3 次按章节稳步追加，"
-                        "避免单次生成超过输出长度上限；源稿写完后调用 paper_compile(source_path=相对路径)。"
-                        "paper_compile 执行本 Skill 原始固定脚本并提供模板；不要用 bash 猜测宿主路径或自行重写编译器。"
-                        "只有双端编译成功才能交付 PDF 和 Word；错误信息可用于局部 edit 修正源稿后重新编译。"
-                        "引注中的作者、出版信息、案号和具体页码必须有真实来源；卡片没有页码时不能据此编造印刷页码。"
-                        "能力卡、信息卡、工具名和检索状态只供内部组织工作，不写进论文正文。"
-                    )
+                runtime_instructions = descriptor.runtime_instructions
                 method = self.registry.method(name)
-                # Every Skill activation is privileged. Method metadata may
-                # omit this flag, but that must not make a Skill callable in
-                # chat mode.
-                requires_work_mode = True
                 skill_name = descriptor.name
                 skill_id = descriptor.skill_id
                 skill_version = descriptor.version
                 skill_description = descriptor.description
                 source = "builtin"
             else:
+                if run_mode == "chat":
+                    return ActionResult(
+                        tool_name=request.input.tool_name,
+                        action_id=request.input.action_id,
+                        result={"status": "error"},
+                        outcome="error",
+                        error=self.settings.error("tool_not_available_in_mode"),
+                    )
                 account_id = (request.context or {}).get("account_id")
                 if (
                     not isinstance(account_id, str)
@@ -142,6 +182,20 @@ class SkillReadTool:
                     or self.account_skill_loader is None
                 ):
                     raise SkillNotFound("skill_not_found")
+                if (
+                    self.skill_permission_checker is not None
+                    and not self.skill_permission_checker(account_id, name, False)
+                ):
+                    return ActionResult(
+                        tool_name=request.input.tool_name,
+                        action_id=request.input.action_id,
+                        result={"status": "error"},
+                        outcome="error",
+                        error=Error(
+                            code="skill_not_permitted",
+                            message="当前账户无权使用该 Skill。",
+                        ),
+                    )
                 selected = self.account_skill_loader(
                     account_id, name, int(version) if version is not None else None
                 )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
@@ -50,22 +51,14 @@ class RoutedModel:
         self.settings = settings
         self.events = events
         self.registry = registry or ModelRegistry(settings)
-        self._adapters: dict[str, DeepSeekModel] = {}
+        self._adapters: dict[str | tuple[str, str], DeepSeekModel] = {}
+        self._retired_adapters: list = []
+        self._closing_tasks: set[asyncio.Task] = set()
         self._run_profiles: dict[str, str] = {}
         self._run_revisions: dict[str, str | None] = {}
         self._active_run: ContextVar[str | None] = ContextVar(
             f"model_run_{id(self)}", default=None
         )
-        # Legacy callers expect the default adapter to be warm, but a
-        # database-backed directory may contain only relay credentials.  Do
-        # not make construction of an otherwise valid router depend on an
-        # unrelated DeepSeek key; the selected revision is opened lazily.
-        try:
-            self._adapters["deepseek-flash"] = DeepSeekModel(
-                settings, load_key(settings), events
-            )
-        except PortError:
-            pass
 
     def bind_run(
         self,
@@ -78,7 +71,13 @@ class RoutedModel:
                 code="model_profile_changed",
                 message="本次任务保存的模型与当前选择不一致，请重新开始。",
             ))
-        selected = profile_id or (snapshot.profile_id if snapshot is not None else "deepseek-flash")
+        if profile_id:
+            selected = profile_id
+        elif snapshot is not None:
+            selected = snapshot.profile_id
+        else:
+            default_fn = getattr(self.registry, "default_profile_id", None)
+            selected = default_fn() if callable(default_fn) else self.settings.model.name
         requested_revision = getattr(snapshot, "profile_revision_id", None) if snapshot is not None else None
         if hasattr(self.registry, "resolve"):
             revision = self.registry.resolve(selected, profile_revision_id=requested_revision)
@@ -165,7 +164,52 @@ class RoutedModel:
         if revision is not None and hasattr(adapter, "client"):
             _apply_provider_headers(adapter, revision, key)
         self._adapters[cache_key] = adapter
+        self._evict_unused_stale_adapters(profile_id, keep_key=cache_key)
         return adapter
+
+    @staticmethod
+    async def _close_adapter(adapter) -> None:
+        if hasattr(adapter, "__aexit__"):
+            await adapter.__aexit__(None, None, None)
+        elif hasattr(adapter, "aclose"):
+            await adapter.aclose()
+
+    def _schedule_close(self, adapter) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._retired_adapters.append(adapter)
+            return
+        task = loop.create_task(self._close_adapter(adapter))
+        self._closing_tasks.add(task)
+        task.add_done_callback(self._closing_tasks.discard)
+
+    def _evict_unused_stale_adapters(
+        self, profile_id: str, *, keep_key: str | tuple[str, str] | None = None
+    ) -> None:
+        active_keys: set[str | tuple[str, str]] = {
+            bound_profile
+            if self._run_revisions.get(bound_run) is None
+            else (bound_profile, self._run_revisions[bound_run])
+            for bound_run, bound_profile in self._run_profiles.items()
+        }
+        profile_keys = [
+            key
+            for key in list(self._adapters)
+            if (key == profile_id) or (isinstance(key, tuple) and key[0] == profile_id)
+        ]
+        if keep_key is None and len(profile_keys) <= 1:
+            return
+        for key in profile_keys:
+            if keep_key is not None and key == keep_key:
+                continue
+            if key in active_keys:
+                continue
+            # If called from close_run without an explicit keep_key, keep the newest adapter unless inactive ones remain.
+            if keep_key is None and key == profile_keys[-1]:
+                continue
+            stale = self._adapters.pop(key)
+            self._schedule_close(stale)
 
     def _current(self) -> DeepSeekModel:
         return self._adapter_for(self._active_run.get() or "")
@@ -205,6 +249,8 @@ class RoutedModel:
         adapter = self._adapters.get(cache_key)
         if adapter is not None:
             adapter.close_run(run_id)
+        if profile_id is not None:
+            self._evict_unused_stale_adapters(profile_id)
         if self._active_run.get() == run_id:
             self._active_run.set(None)
 
@@ -212,8 +258,13 @@ class RoutedModel:
         return self
 
     async def __aexit__(self, *_):
-        for adapter in self._adapters.values():
-            await adapter.__aexit__(None, None, None)
+        for adapter in list(self._adapters.values()):
+            await self._close_adapter(adapter)
+        while self._retired_adapters:
+            await self._close_adapter(self._retired_adapters.pop())
+        if self._closing_tasks:
+            await asyncio.gather(*list(self._closing_tasks), return_exceptions=True)
+            self._closing_tasks.clear()
         self._adapters.clear()
         self._run_profiles.clear()
         self._run_revisions.clear()

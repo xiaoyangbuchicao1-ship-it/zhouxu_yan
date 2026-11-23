@@ -33,6 +33,8 @@ FAMILY_LABELS: dict[ModelFamily, str] = {
     "claude": "Claude",
     "gemini": "Gemini",
     "glm": "GLM",
+    "qwen": "Qwen",
+    "kimi": "Kimi",
     "other": "其他",
 }
 
@@ -53,21 +55,31 @@ RELAY_FAMILY_FALLBACK_BUDGETS: dict[ModelFamily, tuple[int, int]] = {
     "gemini": (1_048_576, 65_536),
     "glm": (131_072, 32_768),
     "deepseek": (131_072, 32_768),
+    "qwen": (131_072, 16_384),
+    "kimi": (131_072, 16_384),
     "other": (32_768, 8_192),
 }
 
 
 def model_family(model_id: str) -> ModelFamily:
     name = model_id.lower()
-    for prefix, family in (
-        ("deepseek", "deepseek"),
-        ("gpt-", "gpt"),
-        ("claude-", "claude"),
-        ("gemini-", "gemini"),
-        ("glm-", "glm"),
-    ):
-        if name.startswith(prefix):
-            return family  # type: ignore[return-value]
+    tail = name.rsplit("/", 1)[-1]
+    for target in (name, tail):
+        for prefix, family in (
+            ("deepseek", "deepseek"),
+            ("gpt-", "gpt"),
+            ("o1", "gpt"),
+            ("o3", "gpt"),
+            ("o4", "gpt"),
+            ("claude-", "claude"),
+            ("gemini-", "gemini"),
+            ("glm-", "glm"),
+            ("qwen", "qwen"),
+            ("kimi", "kimi"),
+            ("moonshot-", "kimi"),
+        ):
+            if target.startswith(prefix):
+                return family  # type: ignore[return-value]
     return "other"
 
 
@@ -115,11 +127,16 @@ class ModelRegistry:
         # TOML seed for offline tests and migration tooling; runtime callers
         # should pass the database-backed implementation.
         self.directory = directory
-        with CATALOG_FILE.open("rb") as stream:
-            self.catalog = tomllib.load(stream)
-        with CAPABILITIES_FILE.open("rb") as stream:
-            self.relay_capabilities = tomllib.load(stream)["models"]
-        self.verification = json.loads(VERIFICATION_FILE.read_text(encoding="utf-8"))
+        if self.directory is None:
+            with CATALOG_FILE.open("rb") as stream:
+                self.catalog = tomllib.load(stream)
+            with CAPABILITIES_FILE.open("rb") as stream:
+                self.relay_capabilities = tomllib.load(stream)["models"]
+            self.verification = json.loads(VERIFICATION_FILE.read_text(encoding="utf-8"))
+        else:
+            self.catalog = {}
+            self.relay_capabilities = {}
+            self.verification = {}
 
     def profiles(self) -> list[ModelProfile]:
         if self.directory is not None:
@@ -153,8 +170,31 @@ class ModelRegistry:
         )
         return result
 
-    def catalog_view(self) -> ModelCatalogView:
+    def default_profile_id(self) -> str:
+        """Resolve active default profile from directory first, then settings."""
+
+        if self.directory is not None:
+            configured = getattr(self.directory, "default_profile_id", None)
+            if callable(configured):
+                value = configured()
+                if isinstance(value, str) and value:
+                    return value
         profiles = self.profiles()
+        if profiles:
+            settings_default = getattr(self.settings.model, "name", "")
+            for profile in profiles:
+                if profile.profile_id == settings_default:
+                    return profile.profile_id
+            return profiles[0].profile_id
+        return getattr(self.settings.model, "name", "deepseek-flash")
+
+    def catalog_view(
+        self,
+        profiles: list[ModelProfile] | None = None,
+        *,
+        default_profile_id: str | None = None,
+    ) -> ModelCatalogView:
+        profiles = self.profiles() if profiles is None else list(profiles)
         groups = []
         for family in FAMILY_LABELS:
             entries = [profile for profile in profiles if profile.family == family]
@@ -164,16 +204,13 @@ class ModelRegistry:
                         family=family, label=FAMILY_LABELS[family], models=entries
                     )
                 )
-        default_profile_id = "deepseek-flash"
-        if self.directory is not None:
-            configured_default = getattr(self.directory, "default_profile_id", None)
-            if callable(configured_default):
-                configured_default = configured_default()
-            if isinstance(configured_default, str) and configured_default:
-                default_profile_id = configured_default
+        resolved_default = default_profile_id or self.default_profile_id()
+        visible_ids = {profile.profile_id for profile in profiles}
+        if visible_ids and resolved_default not in visible_ids:
+            resolved_default = profiles[0].profile_id
         return ModelCatalogView(
             groups=groups,
-            default_profile_id=default_profile_id,
+            default_profile_id=resolved_default,
         )
 
     def get(self, profile_id: str) -> ModelProfile:
@@ -244,51 +281,58 @@ class ModelRegistry:
             raise PortError(self.settings.error("model_profile_invalid"))
         selected = self.settings.model_copy(deep=True)
         model = selected.model
-        # ModelSettings historically only accepted deepseek/relay.  All
-        # database providers use the relay transport family here; their true
-        # provider id remains in the immutable Run snapshot and directory
-        # revision.  The shared protocol adapter is selected independently.
-        model.provider = "deepseek" if profile.provider == "deepseek" else "relay"
+        model.provider = profile.provider
         model.protocol = profile.protocol
         model.name = profile.model_id
         model.endpoint = revision.endpoint or profile.endpoint or ""
-        if self.directory is not None:
+        if self.directory is None and profile.provider != "deepseek" and model.endpoint:
+            model.endpoint = relay_endpoint_for_protocol(model.endpoint, profile.protocol).format(
+                model=profile.model_id
+            )
+        if model.endpoint:
             hostname = urllib.parse.urlparse(model.endpoint).hostname
             if not hostname:
                 raise PortError(self.settings.error("invalid_endpoint"))
             model.allowed_hosts = [hostname]
-        if profile.provider != "deepseek":
-            facts = self.relay_capabilities.get(profile.model_id, {})
-            if model.thinking_mode not in profile.thinking_modes:
-                raise PortError(self.settings.error("model_profile_invalid"))
-            model.relay_effort_supported = profile.capabilities.thinking == "confirmed"
+        elif self.directory is not None or profile.provider != "deepseek":
+            raise PortError(self.settings.error("invalid_endpoint"))
+        if model.thinking_mode not in profile.thinking_modes:
+            raise PortError(self.settings.error("model_profile_invalid"))
+        facts = self.relay_capabilities.get(profile.model_id, {})
+        if profile.protocol != "deepseek_chat_completions" or profile.provider != "deepseek":
+            model.relay_effort_supported = (
+                any(mode != "none" for mode in profile.thinking_modes)
+                and profile.capabilities.thinking != "unsupported"
+            )
             model.relay_thinking_style = facts.get("thinking_style", "adaptive")
             # Tool transport belongs to the adapter; verification is historical
             # evidence and must not disable the shared execution contract.
             model.decision_protocol = "explicit"
-            if self.directory is None:
-                model.endpoint = relay_endpoint_for_protocol(model.endpoint, profile.protocol).format(model=profile.model_id)
-            hostname = urllib.parse.urlparse(model.endpoint).hostname
-            if not hostname:
-                raise PortError(self.settings.error("invalid_endpoint"))
-            model.allowed_hosts = [hostname]
-            model.credential_file = revision.credential_file or os.environ.get(
-                "ZHOUXU_RELAY_CREDENTIAL_FILE", model.credential_file
-            )
-            model.credential_names = [revision.credential_ref] if revision.credential_ref else [
-                "ZHOUXU_RELAY_API_KEY", "RELAY_API_KEY", "OPENAI_API_KEY"
-            ]
+        if revision.credential_file:
+            model.credential_file = revision.credential_file
+        elif profile.provider != "deepseek":
+            model.credential_file = os.environ.get("ZHOUXU_RELAY_CREDENTIAL_FILE", model.credential_file)
+        if revision.credential_ref:
+            model.credential_names = [revision.credential_ref]
+        elif profile.provider != "deepseek":
+            model.credential_names = ["ZHOUXU_RELAY_API_KEY", "RELAY_API_KEY", "OPENAI_API_KEY"]
+
+        existing_cap = selected.model_capabilities.get(profile.model_id)
+        if profile.provider != "deepseek" or existing_cap is None or existing_cap.provider != profile.provider:
+            image_transport = "chat_user_data_url" if profile.capabilities.vision == "confirmed" else "none"
+            raw_tokens = facts.get("raw_context_tokens")
             selected.model_capabilities[profile.model_id] = ModelCapabilities(
-                provider="relay",
+                provider=profile.provider,
                 model_id=profile.model_id,
                 version_or_alias=profile.model_id,
-                raw_context_tokens=facts.get("raw_context_tokens"),
+                raw_context_tokens=raw_tokens,
                 input_limit_tokens=facts.get("input_limit_tokens"),
-                max_generation_tokens=facts.get("max_generation_tokens"),
+                max_generation_tokens=facts.get("max_generation_tokens") or profile.max_generation_tokens,
                 generation_includes_thinking=True,
-                image_transport="none",
+                image_transport=image_transport,
+                image_token_upper_bound=2048 if image_transport != "none" else None,
                 counting_method="utf8_upper_bound_estimate",
-                source=facts.get("source", ["Capacity not published for this exact model"]),
+                source=facts.get("source", [profile.source]),
                 checked_on=profile.checked_on,
                 conservative_context_tokens=profile.context_tokens,
                 conservative_generation_tokens=profile.max_generation_tokens,

@@ -1,4 +1,4 @@
-import { Activity, ArrowLeft, Bot, LayoutDashboard, LogOut, Menu, ShieldCheck, Users, Wrench } from "lucide-react";
+import { Activity, ArrowLeft, Bot, History, LayoutDashboard, LogOut, Menu, ShieldCheck, Users, Wrench } from "lucide-react";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Sheet, SheetClose, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -25,6 +25,7 @@ const icons: Record<string, ReactNode> = {
   "/admin/accounts": <Users size={17} />,
   "/admin/operations": <Wrench size={17} />,
   "/admin/models": <Bot size={17} />,
+  "/admin/audit": <History size={17} />,
 };
 
 function Navigation({ mobile = false }: { mobile?: boolean }) {

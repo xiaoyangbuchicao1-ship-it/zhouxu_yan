@@ -131,7 +131,7 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
   const sourceDocument = (raw: any): SourceDocument => ({ ...sourceReference(raw), text: String(raw.text || ""), source_url: raw.source_url ?? null, original: raw.original ?? null, notices: Array.isArray(raw.notices) ? raw.notices.filter((value: unknown): value is string => typeof value === "string") : [] });
   return {
     conversations: async (signal?: AbortSignal) => ({ conversations: (await request<any>("/workspace/conversations", {}, signal)).conversations.map(conversation) }),
-    create: async (title = "", mode?: ConversationMode) => conversation((await request<any>("/workspace/conversations", { method: "POST", body: JSON.stringify({ title, ...(mode ? { mode } : {}) }) })).conversation),
+    create: async (title = "", mode?: ConversationMode, projectId?: string | null) => conversation((await request<any>("/workspace/conversations", { method: "POST", body: JSON.stringify({ title, ...(mode ? { mode } : {}), ...(projectId ? { project_id: projectId } : {}) }) })).conversation),
     update: async (id: string, input: { title?: string; pinned?: boolean; mode?: ConversationMode }) => conversation((await request<any>(conversationPath(id), { method: "PATCH", body: JSON.stringify(input) })).conversation),
     deleteChat: (id: string) => request<void>(conversationPath(id), { method: "DELETE" }),
     pin: (id: string, pinned: boolean) => request<void>(conversationPath(id), { method: "PATCH", body: JSON.stringify({ pinned }) }),

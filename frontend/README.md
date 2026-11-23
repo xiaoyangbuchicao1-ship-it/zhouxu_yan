@@ -30,10 +30,6 @@ npm run preview -- --port 4173
 
 ## 维护资料
 
-- [设计规范](DESIGN.md)
-- [产品边界](PRODUCT.md)
-- [登录注册对接](docs/auth-integration.md)
-- [Harness 接口、状态与验证](docs/harness-integration.md)
 - [本地字体及许可说明](public/fonts/FONT-NOTICE.md)
 
-不提交 `.env`、运行数据、用户材料、密钥、依赖目录、构建产物或 `.ai-tmp/` 过程文件。旧测试执行代码与依赖已移除；固定验收输入见 [datasets](../datasets/README.md)。
+不提交 `.env`、运行数据、用户材料、密钥、依赖目录、构建产物或 `.ai-tmp/` 过程文件。

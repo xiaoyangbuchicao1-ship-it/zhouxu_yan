@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from backend.config.settings import BACKEND_ROOT, Settings
+from backend.config.settings import BACKEND_ROOT, Settings, resolve_case_snapshot_dir
 from backend.contracts.modules.sources import (
     PaperOriginal,
     SourceDocument,
@@ -181,10 +181,22 @@ class CorpusSourceRepository:
             return self._paper(source_id)
         return None
 
+    def _information_release_dir(self) -> Path:
+        default_release = self.root.parent / "import" / "information_cards"
+        if (default_release / "cards.jsonl").is_file():
+            return default_release
+        configured = (self.settings.research_cards.information_cards_dir or "").strip()
+        if configured:
+            candidate = Path(configured)
+            resolved = candidate.resolve() if candidate.is_absolute() else (BACKEND_ROOT.parent / candidate).resolve()
+            if (resolved / "cards.jsonl").is_file():
+                return resolved
+        return default_release
+
     def _load_paper_offsets(self) -> dict[str, int]:
         if self._paper_offsets is not None:
             return self._paper_offsets
-        release = self.root.parent / "import" / "information_cards"
+        release = self._information_release_dir()
         cards = release / "cards.jsonl"
         index = release / "cards.offsets.json"
         if not cards.is_file() or not index.is_file():
@@ -212,14 +224,14 @@ class CorpusSourceRepository:
         offset = self._load_paper_offsets().get(card_id)
         if offset is None:
             return None
-        path = self.root.parent / "import" / "information_cards" / "cards.jsonl"
+        path = self._information_release_dir() / "cards.jsonl"
         with path.open("rb") as stream:
             stream.seek(offset)
             row = json.loads(stream.readline())
         return row if isinstance(row, dict) else None
 
     def _papers(self) -> dict[str, dict[str, Any]]:
-        path = self.root.parent / "import/information_cards/papers.jsonl"
+        path = self._information_release_dir() / "papers.jsonl"
         stamp = path.stat().st_mtime_ns
         if self._paper_catalog is None or self._paper_catalog[0] != stamp:
             papers = {}
@@ -354,8 +366,7 @@ class CorpusSourceRepository:
         if self._cases is not None:
             return self._cases
         result: dict[str, dict[str, Any]] = {}
-        configured = Path(self.settings.cases.snapshot_dir)
-        path = configured if configured.is_absolute() else (BACKEND_ROOT / configured).resolve()
+        path = resolve_case_snapshot_dir(self.settings)
         manifest_path = path / "manifest.json"
         cases_path = path / "cases.jsonl"
         if not cases_path.is_file():

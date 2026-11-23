@@ -31,6 +31,23 @@ export function formatAdminDuration(value: number | null | undefined): string {
   return `${(value / 1000).toFixed(1)} 秒`;
 }
 
+export type StatusBucket = "succeeded" | "active" | "failed" | "no_runs";
+
+export function statusBucket(value: string | null | undefined): StatusBucket {
+  if (!value) return "no_runs";
+  if (value === "succeeded") return "succeeded";
+  if (value === "failed" || value === "cancelled") return "failed";
+  return "active";
+}
+
+export function statusToneClass(value: string | null | undefined): string {
+  const bucket = statusBucket(value);
+  if (bucket === "succeeded") return "is-verified";
+  if (bucket === "failed") return "is-failed";
+  if (bucket === "active") return "is-unverified";
+  return "";
+}
+
 export function statusLabel(value: string | null | undefined): string {
   const labels: Record<string, string> = {
     queued: "等待中", running: "处理中", pausing: "暂停中", paused: "已暂停",

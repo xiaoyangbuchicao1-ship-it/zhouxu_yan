@@ -7,6 +7,7 @@ import { saveSession } from "@/lib/auth-session";
 import { createClientRequestId } from "@/lib/client-request-id";
 import { modelLabel, type ModelSwitchEvent } from "@/lib/model-selection";
 import type { AuthSession } from "@/lib/auth";
+import { mergeProgressActivity } from "@/lib/run-progress";
 import { workbenchApi, WorkbenchError, acceptStreamSequence, type ModelProfile, type ModelCatalog, type ModelRunSnapshot, type RunStage, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunNodeState, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
 
 export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; modelSnapshot?: ModelRunSnapshot | null; contextCompactionCount?: number; materials: Material[]; updates: string[]; activities: Activity[]; stages?: RunStage[]; observedAt?: number; nodes: RunNodeState[]; activeElapsedMs?: number | null; wallElapsedMs?: number | null; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "pausing" | "waiting" | "succeeded" | "failed" | "cancelled" | "paused"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; kind?: string; question: string; options: { value: string; label: string }[]; allowFreeText: boolean }; }
@@ -26,6 +27,8 @@ export interface WorkspaceTaskContext {
   skillId?: string;
   caseId?: string;
   initialMode?: ConversationMode;
+  defaultMode?: ConversationMode;
+  defaultThinkingMode?: ThinkingMode;
 }
 
 export function useWorkspace(session: AuthSession, id?: string, taskContext: WorkspaceTaskContext = {}) {
@@ -39,9 +42,9 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const modelKey = `zhouxu.model.v1.${session.account.id}`;
   const suppressedRunsKey = `zhouxu.suppressed-runs.v1.${session.account.id}`;
   const [thinkingMode, updateThinkingMode] = useState<ThinkingMode>(() => readThinkingMode(thinkingKey));
-  const [modelProfileId, setModelProfileId] = useState(() => sessionStorage.getItem(modelKey) || "deepseek-flash");
+  const [modelProfileId, setModelProfileId] = useState(() => sessionStorage.getItem(modelKey) || "");
   const [modelSwitchEvents, setModelSwitchEvents] = useState<Record<string, ModelSwitchEvent>>({});
-  const [draftConversationMode, setDraftConversationMode] = useState<ConversationMode>(taskContext.initialMode || "chat");
+  const [draftConversationMode, setDraftConversationMode] = useState<ConversationMode>(taskContext.initialMode || taskContext.defaultMode || "chat");
   const setThinkingMode = useCallback((mode: ThinkingMode) => {
     updateThinkingMode(mode);
     try { sessionStorage.setItem(thinkingKey, mode); } catch { /* Keep the in-memory choice. */ }
@@ -105,14 +108,26 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   }, [detail.data, id, modelKey, modelProfileId, setThinkingMode, thinkingMode]);
   useEffect(() => {
     const profiles = modelCatalog.data?.groups.flatMap(group => group.models) || [];
-    const current = profiles.find(profile => profile.profile_id === modelProfileId);
+    const preferredDefaultId = modelCatalog.data?.default_profile_id;
+    const current = modelProfileId ? profiles.find(profile => profile.profile_id === modelProfileId) : undefined;
     if (current?.available) {
       if (!current.thinking_modes.includes(thinkingMode)) setThinkingMode(current.default_thinking_mode);
+      else if (!sessionStorage.getItem(thinkingKey) && taskContext.defaultThinkingMode && current.thinking_modes.includes(taskContext.defaultThinkingMode) && thinkingMode !== taskContext.defaultThinkingMode) {
+        updateThinkingMode(taskContext.defaultThinkingMode);
+      }
       return;
     }
-    const fallback = profiles.find(profile => profile.available);
-    if (fallback) setModelProfile(fallback, false);
-  }, [modelCatalog.data, modelProfileId, thinkingMode, setModelProfile, setThinkingMode]);
+    const preferred =
+      (preferredDefaultId ? profiles.find(profile => profile.profile_id === preferredDefaultId && profile.available) : undefined)
+      || profiles.find(profile => profile.available);
+    if (preferred) {
+      setModelProfileId(preferred.profile_id);
+      if (!preferred.thinking_modes.includes(thinkingMode)) setThinkingMode(preferred.default_thinking_mode);
+      else if (!sessionStorage.getItem(thinkingKey) && taskContext.defaultThinkingMode && preferred.thinking_modes.includes(taskContext.defaultThinkingMode) && thinkingMode !== taskContext.defaultThinkingMode) {
+        updateThinkingMode(taskContext.defaultThinkingMode);
+      }
+    }
+  }, [modelCatalog.data, modelProfileId, thinkingKey, thinkingMode, taskContext.defaultThinkingMode, setThinkingMode]);
   const currentCards = Object.values(cards).filter(c => c.conversationId === id);
   const turn = currentCards.find(c => ["running", "pausing", "resuming", "retrying"].includes(c.status)) || currentCards.find(c => c.status === "queued") || currentCards.find(c => c.status === "waiting_user") || currentCards.at(-1) || null;
   const queuedRuns = currentCards
@@ -123,8 +138,8 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const setDraft = (value: string) => setDrafts(current => ({ ...current, [id || "new"]: value }));
   useEffect(() => {
     if (detail.data?.conversation.mode) setDraftConversationMode(detail.data.conversation.mode);
-    if (!id) setDraftConversationMode(taskContext.initialMode || "chat");
-  }, [detail.data?.conversation.mode, id, taskContext.initialMode]);
+    if (!id) setDraftConversationMode(taskContext.initialMode || taskContext.defaultMode || "chat");
+  }, [detail.data?.conversation.mode, id, taskContext.initialMode, taskContext.defaultMode]);
   useEffect(() => { try { sessionStorage.setItem(attachmentKey, JSON.stringify(attachments)); } catch { /* memory state remains usable */ } }, [attachmentKey, attachments]);
   useEffect(() => {
     if (lifetime.signal.aborted) setLifetime(new AbortController());
@@ -157,9 +172,11 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
       void nameConversation(id, firstQuestion).catch(report);
     }
   }, [detail.data, id, nameConversation, report]);
-  async function ensureConversation(title = "") {
+  async function ensureConversation(title = "", modeOverride?: ConversationMode, projectOverride?: string | null) {
     if (id) return id;
-    if (!creation.current) creation.current = (draftConversationMode === "chat" ? api.create(title) : api.create(title, draftConversationMode)).then(chat => {
+    const targetMode = modeOverride || draftConversationMode;
+    const targetProject = projectOverride !== undefined ? projectOverride : projectFilter;
+    if (!creation.current) creation.current = api.create(title, targetMode === "chat" ? undefined : targetMode, targetProject).then(chat => {
       if (lifetime.signal.aborted) throw new DOMException("Aborted", "AbortError");
       setDrafts(current => { const next = { ...current, [chat.id]: current.new || current[chat.id] || "" }; delete next.new; return next; });
       setModelSwitchEvents(current => {
@@ -172,7 +189,9 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
       if (taskContext.skillId) query.set("skill", taskContext.skillId);
       if (taskContext.caseId) query.set("case", taskContext.caseId);
       navigate(`/workspace/chat/${chat.id}${query.toString() ? `?${query}` : ""}`, { replace: true });
-      void client.invalidateQueries({ queryKey: [...scope, "history"] }); return chat.id;
+      void client.invalidateQueries({ queryKey: [...scope, "history"] });
+      void client.invalidateQueries({ queryKey: [...scope, "projects"] });
+      return chat.id;
     }).finally(() => { creation.current = undefined; });
     return creation.current;
   }
@@ -244,7 +263,7 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
             if (event.type !== "lifecycle") sequences.current[runId] = event.sequence;
             if (event.type === "delta") update(runId, c => ({ ...c, answer: c.answer + event.text }));
             if (event.type === "answer" || event.type === "done") update(runId, c => ({ ...c, answer: event.text }));
-            if (event.type === "progress") update(runId, c => ({ ...c, activities: [...c.activities.filter(a => a.id !== event.activity.id), event.activity] }));
+            if (event.type === "progress") update(runId, c => ({ ...c, activities: mergeProgressActivity(c.activities, event.activity, event.sequence) }));
             if (event.type === "error") update(runId, c => ({ ...c, error: event.message }));
             if (event.type === "lifecycle") void applyRun(conversationId, event.run).catch(report);
           }, controller.signal, sequences.current[runId] || 0);

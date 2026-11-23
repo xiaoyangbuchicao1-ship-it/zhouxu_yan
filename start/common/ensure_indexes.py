@@ -123,7 +123,11 @@ def alias_count(client: OpenSearch, alias: str, expected_index: str) -> int | No
 
 def information_source(project_root: Path) -> Path:
     configured = os.environ.get("ZHOUXU_INFORMATION_CARDS_DIR", "").strip()
-    return Path(configured).resolve() if configured else (project_root.parent / "信息卡").resolve()
+    return (
+        Path(configured).resolve()
+        if configured
+        else (project_root / "data" / "research" / "information_cards").resolve()
+    )
 
 
 def expected_counts(project_root: Path) -> tuple[int, int, str, int]:

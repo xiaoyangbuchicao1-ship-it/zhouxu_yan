@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import tomllib
 import urllib.parse
 from io import StringIO
@@ -43,7 +42,7 @@ class GenerationMode(BaseModel):
 
 
 class ModelSettings(BaseModel):
-    provider: Literal["deepseek", "relay"] = "deepseek"
+    provider: str = Field(default="deepseek", min_length=1)
     protocol: Literal[
         "deepseek_chat_completions",
         "openai_chat_completions",
@@ -117,8 +116,8 @@ class MaterialSettings(BaseModel):
 
 
 class ModelProfile(BaseModel):
-    main_provider: Literal["deepseek", "relay"]
-    review_provider: Literal["deepseek", "relay"]
+    main_provider: str = Field(min_length=1)
+    review_provider: str = Field(min_length=1)
     decision_protocol: Literal["text", "explicit"] = "text"
     main_effort: Literal["low", "medium", "high"] | None = None
     review_effort: Literal["low", "medium", "high"] | None = None
@@ -199,7 +198,7 @@ class RagSettings(BaseModel):
 
 class CaseSettings(BaseModel):
     enabled: bool = False
-    snapshot_dir: str = "../data/cases/current"
+    snapshot_dir: str = "../data/cases/case_eb1be2c7fa1cd1fb"
     read_alias: str = "maritime_cases_read"
     candidates: int = Field(default=50, ge=10, le=1000)
     max_results: int = Field(default=10, ge=1, le=20)
@@ -222,6 +221,7 @@ class ResearchCardSettings(BaseModel):
     information_index: str = "maritime_information_cards_v4"
     information_max_results: int = Field(default=6, ge=1, le=20)
     information_result_budget_chars: int = Field(default=12000, ge=1000)
+    information_cards_dir: str = "data/research/information_cards"
     originals_root: str = ""
     capability_dir: str = ""
     capability_file: str = "capability_cards.jsonl"
@@ -327,6 +327,7 @@ def load_settings(path: Path | None = None) -> Settings:
     if path is None:
         research = data.setdefault("research_cards", {})
         for env_name, field_name in (
+            ("ZHOUXU_INFORMATION_CARDS_DIR", "information_cards_dir"),
             ("ZHOUXU_CAPABILITY_CARDS_DIR", "capability_dir"),
             ("ZHOUXU_CSL_PAPER_SKILL_DIR", "skill_dir"),
             ("ZHOUXU_PAPER_ORIGINALS_DIR", "originals_root"),
@@ -341,6 +342,21 @@ def load_settings(path: Path | None = None) -> Settings:
     return Settings.model_validate(data)
 
 
+def resolve_case_snapshot_dir(settings: Settings) -> Path:
+    """Resolve the active case snapshot directory without relying on a stale literal."""
+
+    configured = Path(settings.cases.snapshot_dir)
+    path = configured if configured.is_absolute() else (BACKEND_ROOT / configured).resolve()
+    if (path / "manifest.json").is_file():
+        return path
+    cases_root = BACKEND_ROOT.parent / "data" / "cases"
+    if cases_root.is_dir():
+        manifests = sorted(cases_root.glob("*/manifest.json"))
+        if manifests:
+            return manifests[-1].parent.resolve()
+    return path
+
+
 def load_key(settings: Settings) -> SecretStr:
     # Read only the explicitly selected credential file. Never execute/interpolate it.
     for name in settings.model.credential_names:
@@ -351,7 +367,7 @@ def load_key(settings: Settings) -> SecretStr:
         path = BACKEND_ROOT / path
     if path.is_file():
         raw = path.read_text(encoding="utf-8-sig").strip()
-        if re.fullmatch(r"sk-[A-Za-z0-9_-]+", raw):
+        if raw and "=" not in raw and "\n" not in raw:
             return SecretStr(raw)
         values = dotenv_values(stream=StringIO(raw), interpolate=False)
         for name in settings.model.credential_names:

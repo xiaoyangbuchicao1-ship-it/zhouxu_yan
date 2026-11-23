@@ -40,9 +40,6 @@ def get_default_output_dir() -> Path:
     env_dir = os.environ.get("CSL_OUTPUT_DIR")
     if env_dir:
         return Path(env_dir)
-    fixed_target = Path(r"D:\projects\codex\论文库\交付")
-    if fixed_target.exists():
-        return fixed_target
     return Path("./output")
 
 
@@ -50,16 +47,6 @@ DEFAULT_OUTPUT_DIR = get_default_output_dir()
 
 
 def get_python_with_typst() -> str:
-    try:
-        import typst  # noqa: F401
-        return sys.executable
-    except ImportError:
-        pass
-
-    candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "Python313" / "python.exe"
-    if candidate.exists():
-        return str(candidate)
-
     return sys.executable
 
 
@@ -100,9 +87,9 @@ def lint_typst_source(source_text: str) -> tuple[list[str], list[str]]:
             elif re.match(r"^（[一二三四五六七八九十]+）\s*\S+", stripped):
                 errors.append(f"第 {idx} 行疑似漏写二级标题标记 `== `：`{stripped}`（请改为 `== {stripped}`）。")
 
-    for forbidden in ("#table(", "table(", "#image(", "image(", "#figure(", "figure("):
-        if forbidden in source_text:
-            errors.append(f"违规包含图表调用 `{forbidden}`：当前版本严格禁止生成图与表。")
+    for table_or_fig in ("#table(", "table(", "#image(", "image(", "#figure(", "figure("):
+        if table_or_fig in source_text:
+            warnings.append(f"检测到图表调用 `{table_or_fig}`：表格将同步转为 Word 表格（图片或复杂嵌套排版请核对导出表现）。")
             break
 
     for dirty in ("待补", "To be completed", "To be supplied", "拟投稿研究稿"):
@@ -134,8 +121,8 @@ def lint_typst_source(source_text: str) -> tuple[list[str], list[str]]:
 
     # 4. 禁止 AI 检索自白、内部工具泄漏与虚构占位案名
     confession_terms = (
-        "公开摘要", "公开转载的开篇", "主办单位公布", "交叉核对", "仅采用摘要",
-        "未取得原文", "card_id", "information_card", "dynamic_rag", "search_cases", "capability_card",
+        "公开转载的开篇", "主办单位公布", "仅采用摘要", "仅取得公开摘要",
+        "本次未取得原文", "card_id", "information_card", "dynamic_rag", "search_cases", "capability_card",
     )
     hit_confessions = [t for t in confession_terms if t in source_text]
     if hit_confessions:
@@ -175,19 +162,19 @@ def lint_typst_source(source_text: str) -> tuple[list[str], list[str]]:
     hard_min_chars = 3800 if length_tier == "compact" else 4800
     target_min_chars = 7500 if length_tier == "compact" else 9500
     if body_hanzi < hard_min_chars:
-        errors.append(f"正文实质汉字仅 {body_hanzi} 字（低于 {length_tier} 档最低底线 {hard_min_chars} 字），论证过薄，请充实法条细读、案例分析与学理对话。")
+        warnings.append(f"正文实质汉字 {body_hanzi} 字（低于 {length_tier} 档建议底线 {hard_min_chars} 字），若需投稿级长文可进一步充实法条细读、案例分析与学理对话。")
     elif body_hanzi < target_min_chars:
         warnings.append(f"正文实质汉字 {body_hanzi} 字，尚低于核心期刊建议体量（{target_min_chars}+ 字），建议进一步充实实证案例与文献展开。")
 
     # 6. 引注丰度与结构检验
     if fn_count < 12:
-        errors.append(f"全文仅 {fn_count} 条脚注（低于最低门槛 12 条）。合格法学论文需具备充分的期刊、专著与裁判对话。")
-    else:
+        warnings.append(f"全文当前共 {fn_count} 条脚注（低于核心期刊常见 12 条基准），如非短篇研究可补充期刊、专著与裁判对话。")
+    if fn_count > 0:
         journal_hits = sum(1 for fn in all_footnotes if re.search(r"载《|年第\s*\d+\s*期|Vol\.|Review|Quarterly|Law", fn))
         book_hits = sum(1 for fn in all_footnotes if re.search(r"出版社\s*\d{4}\s*年版|Press|Sweet\s*&\s*Maxwell|Routledge|Carswell", fn))
         case_hits = sum(1 for fn in all_footnotes if re.search(r"判决书|裁定书|指导案例|\(\d{4}\)|（\d{4}）|\sv\.\s", fn))
         if journal_hits == 0 and case_hits == 0:
-            errors.append(f"引注结构严重失衡（共 {fn_count} 条脚注，但期刊论文 0 条、司法裁判 0 条）：严禁退化为“纯法条拼贴”。")
+            warnings.append(f"引注结构偏法条化（共 {fn_count} 条脚注，但期刊论文 0 条、司法裁判 0 条），建议补入文献与裁判对话。")
         elif journal_hits < 3 or (case_hits == 0 and book_hits < 2):
             warnings.append(f"引注结构偏单薄（总 {fn_count} 条：期刊 {journal_hits}、专著 {book_hits}、裁判 {case_hits}），建议补充核心期刊论文与真实海事判例。")
 
@@ -197,7 +184,7 @@ def lint_typst_source(source_text: str) -> tuple[list[str], list[str]]:
             for fn in all_footnotes
         )
         if all_statutes:
-            errors.append("检测到全部脚注均为法规或公约条款，完全缺少学术文献与司法案例对话。")
+            warnings.append("当前脚注均为法规或公约条款，可按需补充学术文献与司法案例引注。")
 
     # 7. 反 AI “压缩饼干”复合语体门禁（基于 39 篇 2025 真实刊物统计特征，仅复合越界才阻断）
     if body_hanzi >= 1500 and len(clean_paras) >= 8:

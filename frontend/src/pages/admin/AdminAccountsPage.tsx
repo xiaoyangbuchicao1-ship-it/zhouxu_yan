@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Check, ChevronLeft, ChevronRight, Search, Users } from "lucide-react";
+import { AlertCircle, Check, ChevronLeft, ChevronRight, Search, Shield, Users } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { createAdminApi, AdminApiError, type AdminAccount, type AdminAccountUpdate } from "@/lib/admin-api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -63,7 +63,7 @@ function AccountList({ accounts, ownId, disabled, onRequest }: { accounts: Admin
     {accounts.map(account => <article className="admin-account-card" key={account.id}>
       <div className="admin-account-card-main"><span className="admin-avatar" aria-hidden="true">{(account.display_name || account.email).slice(0, 1).toUpperCase()}</span><div><h2>{account.display_name || account.email}</h2>{account.display_name && <p>{account.email}</p>}</div></div>
       <div className="admin-account-card-meta"><span className={`admin-pill ${account.role === "admin" ? "is-admin" : ""}`}>{account.role === "admin" ? "管理员" : "普通用户"}</span><span className={`admin-pill ${account.status === "active" ? "is-active" : "is-disabled"}`}>{account.status === "active" ? "正常" : "已停用"}</span><time dateTime={account.created_at}>{formatAdminDate(account.created_at)}</time></div>
-      <div className="admin-card-actions"><Link className="admin-card-link" to={accountConversationPath(account.id)}><Users size={15} />查看会话</Link>{account.id !== ownId && <><button type="button" className="admin-row-action" disabled={disabled} onClick={() => onRequest({ account, update: { status: account.status === "active" ? "disabled" : "active" } })}>{account.status === "active" ? "停用" : "启用"}</button><button type="button" className="admin-row-action" disabled={disabled} onClick={() => onRequest({ account, update: { role: account.role === "admin" ? "user" : "admin" } })}>{account.role === "admin" ? "改为普通用户" : "设为管理员"}</button></>}</div>
+      <div className="admin-card-actions"><Link className="admin-card-link" to={accountConversationPath(account.id)}><Users size={15} />查看会话</Link><Link className="admin-card-link" to={`/admin/operations?account=${encodeURIComponent(account.id)}`}><Shield size={15} />能力授权</Link>{account.id !== ownId && <><button type="button" className="admin-row-action" disabled={disabled} onClick={() => onRequest({ account, update: { status: account.status === "active" ? "disabled" : "active" } })}>{account.status === "active" ? "停用" : "启用"}</button><button type="button" className="admin-row-action" disabled={disabled} onClick={() => onRequest({ account, update: { role: account.role === "admin" ? "user" : "admin" } })}>{account.role === "admin" ? "改为普通用户" : "设为管理员"}</button></>}</div>
     </article>)}
   </section>;
 }

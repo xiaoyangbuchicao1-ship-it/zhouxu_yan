@@ -14,7 +14,8 @@ from contextlib import closing
 from pathlib import Path
 
 
-MIGRATION_ID = "dynamic_admin_v1"
+MIGRATION_ID = "dynamic_admin_v3"
+COMPAT_MIGRATION_IDS = ("dynamic_admin_v1", "dynamic_admin_v2")
 
 
 DDL = (
@@ -38,6 +39,7 @@ DDL = (
     CREATE TABLE IF NOT EXISTS model_providers (
         id VARCHAR(64) PRIMARY KEY,
         name VARCHAR(120) NOT NULL,
+        notes VARCHAR(240) NOT NULL DEFAULT '',
         preset_type VARCHAR(32) NOT NULL DEFAULT 'custom',
         default_protocol VARCHAR(64) NOT NULL,
         auth_style VARCHAR(32) NOT NULL DEFAULT 'bearer',
@@ -90,7 +92,8 @@ DDL = (
         source VARCHAR(120) NOT NULL DEFAULT 'admin',
         checked_on VARCHAR(40),
         created_at DATETIME NOT NULL,
-        updated_at DATETIME NOT NULL
+        updated_at DATETIME NOT NULL,
+        archived_at DATETIME
     )
     """,
     """
@@ -133,6 +136,14 @@ def _columns(db: sqlite3.Connection, table: str) -> set[str]:
 
 
 def _additive_columns(db: sqlite3.Connection) -> None:
+    if "model_providers" in _tables(db):
+        existing = _columns(db, "model_providers")
+        if "notes" not in existing:
+            db.execute("""ALTER TABLE model_providers ADD COLUMN "notes" VARCHAR(240) NOT NULL DEFAULT ''""")
+    if "model_profiles" in _tables(db):
+        existing = _columns(db, "model_profiles")
+        if "archived_at" not in existing:
+            db.execute('ALTER TABLE model_profiles ADD COLUMN "archived_at" DATETIME')
     if "business_audits" in _tables(db):
         existing = _columns(db, "business_audits")
         additions = {
@@ -154,6 +165,53 @@ def _additive_columns(db: sqlite3.Connection) -> None:
         for name, declaration in additions.items():
             if name not in existing:
                 db.execute(f'ALTER TABLE conversation_runs ADD COLUMN "{name}" {declaration}')
+
+
+def _backfill_profile_connectivity(db: sqlite3.Connection) -> None:
+    """Backfill verified connectivity metadata for pre-v2 catalog models."""
+
+    if "model_profiles" not in _tables(db):
+        return
+    latest_revisions: dict[str, str] = {}
+    if "model_provider_revisions" in _tables(db):
+        for provider_id, rev_id in db.execute(
+            """
+            SELECT mpr.provider_id, mpr.id
+            FROM model_provider_revisions mpr
+            JOIN (
+                SELECT provider_id, MAX(revision) AS max_rev
+                FROM model_provider_revisions
+                GROUP BY provider_id
+            ) latest ON latest.provider_id = mpr.provider_id AND latest.max_rev = mpr.revision
+            """
+        ).fetchall():
+            latest_revisions[provider_id] = rev_id
+    rows = db.execute(
+        "SELECT profile_id, provider_id, current_revision, verification_json, checked_on "
+        "FROM model_profiles"
+    ).fetchall()
+    for profile_id, provider_id, current_revision, raw_verification, checked_on in rows:
+        payload: dict[str, object] = {}
+        if raw_verification:
+            try:
+                loaded = json.loads(raw_verification)
+                if isinstance(loaded, dict):
+                    payload = loaded
+            except json.JSONDecodeError:
+                payload = {}
+        if isinstance(payload.get("connectivity"), dict):
+            continue
+        payload["connectivity"] = {
+            "status": "verified",
+            "checked_at": checked_on or "migrated-v2",
+            "provider_revision_id": latest_revisions.get(provider_id),
+            "profile_revision": current_revision,
+            "note": "migrated from dynamic_admin_v1 baseline",
+        }
+        db.execute(
+            "UPDATE model_profiles SET verification_json=? WHERE profile_id=?",
+            (json.dumps(payload, ensure_ascii=False, separators=(",", ":")), profile_id),
+        )
 
 
 def _counts(db: sqlite3.Connection) -> dict[str, int]:
@@ -204,6 +262,8 @@ def migrate(path: Path, *, apply: bool = False, backup: Path | None = None) -> d
             for statement in DDL:
                 db.execute(statement)
             _additive_columns(db)
+            if not already:
+                _backfill_profile_connectivity(db)
             db.execute(
                 "CREATE INDEX IF NOT EXISTS ix_model_profiles_provider_id ON model_profiles(provider_id)"
             )
@@ -213,8 +273,13 @@ def migrate(path: Path, *, apply: bool = False, backup: Path | None = None) -> d
             db.execute(
                 "CREATE INDEX IF NOT EXISTS ix_model_call_metrics_created_at ON model_call_metrics(created_at)"
             )
+            for compat_id in COMPAT_MIGRATION_IDS:
+                db.execute(
+                    "INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES (?, datetime('now'))",
+                    (compat_id,),
+                )
             db.execute(
-                "INSERT INTO schema_versions(version, applied_at) VALUES (?, datetime('now'))",
+                "INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES (?, datetime('now'))",
                 (MIGRATION_ID,),
             )
             if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":

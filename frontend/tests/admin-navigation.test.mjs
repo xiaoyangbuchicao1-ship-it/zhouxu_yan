@@ -3,8 +3,8 @@ import test from "node:test";
 
 test("管理台导航只展示已经接通的页面", async () => {
   const { adminNavigation } = await import("../src/pages/admin/admin-navigation.ts");
-  assert.deepEqual(adminNavigation.map(item => item.label), ["总览", "人员", "能力与状态", "模型"]);
-  assert.deepEqual(adminNavigation.map(item => item.to), ["/admin/overview", "/admin/accounts", "/admin/operations", "/admin/models"]);
+  assert.deepEqual(adminNavigation.map(item => item.label), ["总览", "人员", "能力与状态", "模型", "审计日志"]);
+  assert.deepEqual(adminNavigation.map(item => item.to), ["/admin/overview", "/admin/accounts", "/admin/operations", "/admin/models", "/admin/audit"]);
   assert.equal(new Set(adminNavigation.map(item => item.to)).size, adminNavigation.length);
 });
 

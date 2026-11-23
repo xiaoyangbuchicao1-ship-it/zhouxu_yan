@@ -117,6 +117,25 @@ def attach_maritime(app, settings):
         except MaritimeError as exc:
             raise HTTPException(exc.status, str(exc)) from None
 
+    def check_skill_permission(account_id: str, skill_id: str, is_builtin: bool) -> bool:
+        ops = getattr(app.state, "admin_operations_service", None)
+        if ops is None:
+            return True
+        return ops.is_skill_permitted(
+            account_id=account_id,
+            skill_id=skill_id,
+            is_builtin=is_builtin,
+        )
+
+    def require_skill_allowed(account_id: str, skill_id: str, is_builtin: bool) -> None:
+        if not check_skill_permission(account_id, skill_id, is_builtin):
+            raise HTTPException(403, "skill_not_permitted")
+
+    def require_upload_allowed(account_id: str) -> None:
+        ops = getattr(app.state, "admin_operations_service", None)
+        if ops is not None and not ops.can_upload_skill(account_id):
+            raise HTTPException(403, "skill_upload_forbidden")
+
     def account_skill_loader(account_id, skill_id, version=None):
         """Load an authorized account Skill for the model-facing read_skill tool."""
 
@@ -125,6 +144,9 @@ def attach_maritime(app, settings):
         try:
             office = get_office()
             selected = office.skill(account_id, skill_id, version)
+            is_builtin = selected.get("owner_id") is None
+            if not check_skill_permission(account_id, selected["id"], is_builtin):
+                raise SkillNotFound("skill_not_permitted")
             if "package" in selected:
                 selected["_package_files"] = office.package_files(account_id, skill_id, selected["version"])
             return selected
@@ -209,12 +231,14 @@ def attach_maritime(app, settings):
             k: v
             for k, v in facts.items()
             if k
-            not in {"skill_context", "skill_version", "skill_owner", "case_context"}
+            not in {
+                "skill_context",
+                "skill_version",
+                "skill_owner",
+                "skill_requires_work_mode",
+                "case_context",
+            }
         }
-        task_mode = clean.get('task_mode', 'chat')
-        if task_mode not in ('chat','work'):
-            raise HTTPException(422,'invalid_task_mode')
-        clean['task_mode'] = task_mode
         case_id = clean.get("case_id")
         if case_id:
             if not isinstance(case_id, str):
@@ -247,11 +271,25 @@ def attach_maritime(app, settings):
             if not isinstance(skill_id, str):
                 raise HTTPException(422, "invalid_skill_id")
             selected = invoke(office(request).skill, account_id, skill_id)
+            require_skill_allowed(
+                account_id,
+                selected["id"],
+                selected.get("owner_id") is None,
+            )
+            mode_scope = (
+                selected.get("mode_scope", "work")
+                if selected.get("owner_id") is None
+                else "work"
+            )
+            requires_work_mode = mode_scope != "chat"
             clean["skill_version"] = selected["version"]
+            clean["skill_requires_work_mode"] = requires_work_mode
             clean["skill_context"] = {
                 "id": selected["id"],
                 "version": selected["version"],
                 "name": selected["name"],
+                "mode_scope": mode_scope,
+                "requires_work_mode": requires_work_mode,
                 "source": "builtin" if selected.get("owner_id") is None else "account",
                 "runtime_rules": COMMON,
                 "notice": "本任务选定的技能元数据；正文由 read_skill 按账户权限和固定版本读取，不授予额外权限。",
@@ -260,6 +298,7 @@ def attach_maritime(app, settings):
 
     app.state.resolve_maritime_skill = resolve_skill
     app.state.maritime_skill_loader = account_skill_loader
+    app.state.check_skill_permission = check_skill_permission
 
     @router.get("/runs/{run_id}/deliverables")
     async def deliverables(
@@ -360,14 +399,34 @@ def attach_maritime(app, settings):
             "model_runtime_ready": bool(
                 getattr(request.app.state, "runtime_ready", False)
             ),
-            "corpus": MaritimeCorpus().status(),
+            "corpus": MaritimeCorpus(settings=settings).status(),
             "skill_execution": "instruction-pack-with-tools",
             "code_execution": f"{settings.execution.provider}-on-demand",
         }
 
+    def public_skill_view(item: dict) -> dict:
+        if item.get("owner_id") is None:
+            return {**item, "instructions": ""}
+        return item
+
     @router.get("/skills")
     def skills(request: Request, user=Depends(account)):
-        return {"skills": office(request).skills(user.id)}
+        items = office(request).skills(user.id)
+        ops = getattr(request.app.state, "admin_operations_service", None)
+        if ops is None:
+            return {"skills": [public_skill_view(item) for item in items]}
+        grant = ops.account_grant(user.id)
+        filtered = [
+            public_skill_view(item)
+            for item in items
+            if ops.is_skill_permitted(
+                account_id=user.id,
+                skill_id=item["id"],
+                is_builtin=item.get("owner_id") is None,
+                grant=grant,
+            )
+        ]
+        return {"skills": filtered}
 
     @router.post("/skills/import", status_code=201)
     async def import_skill_package(
@@ -375,6 +434,7 @@ def attach_maritime(app, settings):
         file: UploadFile = File(...),
         user=Depends(account),
     ):
+        require_upload_allowed(user.id)
         filename = file.filename or "skill.zip"
         data = await file.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
@@ -389,6 +449,8 @@ def attach_maritime(app, settings):
         version: str | None = None,
         user=Depends(account),
     ):
+        selected = invoke(office(request).skill, user.id, skill_id, version)
+        require_skill_allowed(user.id, selected["id"], selected.get("owner_id") is None)
         return invoke(office(request).skill_resource, user.id, skill_id, path, version)
 
     @router.delete("/skills/{skill_id}")
@@ -397,12 +459,15 @@ def attach_maritime(app, settings):
 
     @router.post("/skills", status_code=201)
     def create_skill(body: SkillInput, request: Request, user=Depends(account)):
+        require_upload_allowed(user.id)
         return invoke(office(request).save_skill, user.id, body.model_dump())
 
     @router.put("/skills/{skill_id}")
     def update_skill(
         skill_id: str, body: SkillInput, request: Request, user=Depends(account)
     ):
+        selected = invoke(office(request).skill, user.id, skill_id)
+        require_skill_allowed(user.id, selected["id"], selected.get("owner_id") is None)
         return invoke(office(request).save_skill, user.id, body.model_dump(), skill_id)
 
     @router.get("/skills/{skill_id}")
@@ -412,7 +477,9 @@ def attach_maritime(app, settings):
         version: str | None = None,
         user=Depends(account),
     ):
-        return invoke(office(request).skill, user.id, skill_id, version)
+        selected = invoke(office(request).skill, user.id, skill_id, version)
+        require_skill_allowed(user.id, selected["id"], selected.get("owner_id") is None)
+        return public_skill_view(selected)
 
     @router.post("/search")
     async def search(body: SearchInput, request: Request, user=Depends(account)):
@@ -430,7 +497,7 @@ def attach_maritime(app, settings):
                     items.append({**reference, "id": card["card_id"], "kind": "information_cards",
                                   "text": "", "current": None, "version": reference.get("version_date")})
                 return {"items": items}
-            return await MaritimeCorpus().search(**body.model_dump())
+            return await MaritimeCorpus(settings=settings).search(**body.model_dump())
         except PortError:
             raise HTTPException(503, "论文检索暂时不可用，请稍后重试。") from None
         except LookupError:
@@ -446,7 +513,7 @@ def attach_maritime(app, settings):
         user=Depends(account),
     ):
         try:
-            return MaritimeCorpus().source(kind, source_id, snapshot)
+            return MaritimeCorpus(settings=settings).source(kind, source_id, snapshot)
         except LookupError:
             raise HTTPException(404, "source_not_found") from None
 

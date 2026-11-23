@@ -20,6 +20,24 @@ CORPORA = {
     "laws": ROOT / "opensearch/corpus/manifest/chunks.jsonl",
     "cases": ROOT / "data/cases/case_eb1be2c7fa1cd1fb/chunks.jsonl",
 }
+_OPENSEARCH_ALIASES = {
+    "laws": "maritime_law_chunks_read",
+    "cases": "maritime_cases_read",
+}
+
+
+def _opensearch_connection_params():
+    """Resolve OpenSearch endpoint, password, and TLS context from runtime config."""
+    values = dotenv_values(runtime_env_path(), interpolate=False)
+    password = values.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD")
+    if not password:
+        raise LookupError("search_credentials_unconfigured")
+    context = ssl.create_default_context()
+    context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
+    endpoint = os.environ.get(
+        "ZHOUXU_OPENSEARCH_URL", "https://127.0.0.1:19200"
+    ).rstrip("/")
+    return endpoint, password, context
 
 
 def runtime_env_path():
@@ -367,10 +385,84 @@ def build_index(path=DEFAULT_INDEX, corpora=None):
     return counts
 
 
+def ensure_local_index(path=DEFAULT_INDEX, corpora=None):
+    """Build local corpus SQLite index only when all checked-in JSONL sources exist."""
+    active_corpora = corpora or CORPORA
+    if not all(Path(source).is_file() for source in active_corpora.values()):
+        return None
+    return build_index(path=path, corpora=active_corpora)
+
+
 class MaritimeCorpus:
-    def __init__(self, path=DEFAULT_INDEX):
+    def __init__(self, path=DEFAULT_INDEX, *, settings=None):
         self.path = Path(path).resolve()
         self.citation_path = self.path.with_name(self.path.stem + "-citations.sqlite3")
+        if settings is None:
+            try:
+                from backend.config.settings import load_settings
+
+                settings = load_settings()
+            except Exception:
+                settings = None
+        self.settings = settings
+
+    def _aliases(self) -> dict[str, str]:
+        if self.settings is None:
+            return dict(_OPENSEARCH_ALIASES)
+        aliases = {
+            "laws": self.settings.rag.read_alias,
+            "cases": self.settings.cases.read_alias,
+        }
+        if self.settings.research_cards.enabled:
+            aliases["papers"] = self.settings.research_cards.information_alias
+        return aliases
+
+    def _active_corpora(self) -> dict[str, Path]:
+        corpora = dict(CORPORA)
+        if self.settings is not None:
+            from backend.config.settings import resolve_case_snapshot_dir
+
+            snapshot_chunks = resolve_case_snapshot_dir(self.settings) / "chunks.jsonl"
+            if snapshot_chunks.is_file():
+                corpora["cases"] = snapshot_chunks
+        return corpora
+
+    def opensearch_status(self, timeout: float = 2.0) -> dict:
+        """Probe online OpenSearch law/case/paper aliases without trusting request input."""
+        try:
+            endpoint, password, context = _opensearch_connection_params()
+        except (LookupError, OSError, ValueError) as exc:
+            return {"available": False, "counts": {}, "errors": {"cluster": type(exc).__name__}}
+
+        counts: dict[str, int] = {}
+        errors: dict[str, str] = {}
+        aliases = self._aliases()
+        try:
+            with httpx.Client(
+                auth=("admin", password),
+                verify=context,
+                timeout=timeout,
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
+                for kind, alias in aliases.items():
+                    try:
+                        response = client.get(f"{endpoint}/{alias}/_count")
+                        response.raise_for_status()
+                        data = response.json()
+                        if data.get("_shards", {}).get("failed", 0):
+                            errors[kind] = "shards_failed"
+                            continue
+                        count = int(data.get("count", 0))
+                        if count > 0:
+                            counts[kind] = count
+                        else:
+                            errors[kind] = "empty_index"
+                    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+                        errors[kind] = type(exc).__name__
+        except (httpx.HTTPError, OSError) as exc:
+            return {"available": False, "counts": {}, "errors": {"cluster": type(exc).__name__}}
+        return {"available": bool(counts), "counts": counts, "errors": errors}
 
     def remember_source(self, item):
         payload = json.dumps(item, ensure_ascii=False, sort_keys=True)
@@ -447,7 +539,12 @@ class MaritimeCorpus:
         if kind == "laws" and current_only:
             clauses.append("s.is_current=1")
         article_hints = _article_locator_hints(query) if kind == "laws" else []
-        document_hint = "海商法" if kind == "laws" and "海商法" in (query or "") else None
+        title_match = re.search(r"《([^》]{2,40})》", query or "") if kind == "laws" else None
+        document_hint = (
+            title_match.group(1)
+            if title_match
+            else ("海商法" if kind == "laws" and "海商法" in (query or "") else None)
+        )
         # Query grammar is built from plain terms, never passed through from a caller.
         terms = re.findall(r"[\w\u4e00-\u9fff]+", query, flags=re.UNICODE)[:12]
         tokens = [t[:40] for t in terms if len(t) >= 3]
@@ -526,22 +623,15 @@ class MaritimeCorpus:
             # The deployment injects the internal Compose address.  Keep the
             # loopback value only for a native local run; caller content never
             # chooses the host or index.
-            values = dotenv_values(runtime_env_path(), interpolate=False)
-            password = values.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD")
-            if not password:
-                raise LookupError("search_credentials_unconfigured")
-            context = ssl.create_default_context()
-            context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
-            endpoint = os.environ.get(
-                "ZHOUXU_OPENSEARCH_URL", "https://127.0.0.1:19200"
-            ).rstrip("/")
+            endpoint, password, context = _opensearch_connection_params()
             options = {"auth": ("admin", password), "verify": context}
+            aliases = self._aliases()
             if kind == "laws":
-                alias = "maritime_law_chunks_read"
+                alias = aliases["laws"]
                 fields = ["document_name^4", "chunk_text"]
                 filters = [{"term": {"is_current": True}}] if current_only else []
             else:
-                alias = "maritime_cases_read"
+                alias = aliases["cases"]
                 fields, filters = ["title^4", "text"], []
             async with httpx.AsyncClient(
                 timeout=4, trust_env=False, follow_redirects=False, **options

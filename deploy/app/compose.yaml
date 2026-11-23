@@ -55,7 +55,7 @@ services:
     volumes:
       - ${ZHOUXU_DATA_DIR:-../../data}:/app/data:ro
       - ${ZHOUXU_OPENSEARCH_DIR:-../../opensearch}:/app/opensearch:ro
-      - ${ZHOUXU_INFORMATION_CARDS_DIR:-../../../信息卡}:/app/runtime-resources/information_cards:ro
+      - ${ZHOUXU_INFORMATION_CARDS_DIR:-../../data/research/information_cards}:/app/runtime-resources/information_cards:ro
       # The init script and the existing index publisher both read this path.
       # Keep the one deployment env file as the only password source.
       - type: bind
@@ -85,6 +85,7 @@ services:
       ZHOUXU_OPENSEARCH_INSECURE: "1"
       ZHOUXU_RUNTIME_ENV_FILE: /app/runtime.env
       ZHOUXU_OPENSEARCH_CREDENTIAL_FILE: /app/runtime.env
+      ZHOUXU_INFORMATION_CARDS_DIR: /app/runtime-resources/information_cards
       ZHOUXU_CAPABILITY_CARDS_DIR: /app/runtime-resources/capability_cards
       ZHOUXU_CSL_PAPER_SKILL_DIR: /app/backend/skills/csl-law-paper-generator
       ZHOUXU_PAPER_ORIGINALS_DIR: /app/runtime-resources/papers
@@ -109,9 +110,10 @@ services:
       - runtime-state:/app/backend/.runtime
       - ${ZHOUXU_RUN_STATE_DIR:-../../data/runtime}:/app/legacy-runtime:ro
       - ${ZHOUXU_OPENSEARCH_DIR:-../../opensearch}:/app/opensearch:ro
-      - ${ZHOUXU_CAPABILITY_CARDS_DIR:-../../../能力卡}:/app/runtime-resources/capability_cards:ro
-      - ${ZHOUXU_PDF_DIR:-../../../PDF}:/app/runtime-resources/papers/PDF:ro
-      - ${ZHOUXU_MD_DIR:-../../../md}:/app/runtime-resources/papers/md:ro
+      - ${ZHOUXU_INFORMATION_CARDS_DIR:-../../data/research/information_cards}:/app/runtime-resources/information_cards:ro
+      - ${ZHOUXU_CAPABILITY_CARDS_DIR:-../../data/research/capability_cards}:/app/runtime-resources/capability_cards:ro
+      - ${ZHOUXU_PDF_DIR:-../../data/research/papers/PDF}:/app/runtime-resources/papers/PDF:ro
+      - ${ZHOUXU_MD_DIR:-../../data/research/papers/md}:/app/runtime-resources/papers/md:ro
       # BGE-M3 is pinned and loaded offline at runtime. Keep the model outside
       # the image so the same API image can run with a host-mounted model cache.
       - ${ZHOUXU_HF_CACHE_DIR:-../../models/huggingface}:/root/.cache/huggingface:ro

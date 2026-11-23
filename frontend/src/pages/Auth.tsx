@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, LoaderCircle, LogOut, Shield
 import AuthVaultBackground from "@/components/AuthVaultBackground";
 import { authenticate, AuthApiError, revokeSession, validateCredentials, verifySession, type AuthCredentials, type AuthMode } from "@/lib/auth";
 import { saveSession, useAuthSession } from "@/lib/auth-session";
+import { createAccountSettingsApi } from "@/lib/account-settings-api";
 import "./auth.css";
 
 export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "account" }) {
@@ -19,6 +20,8 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
   const [checking, setChecking] = useState(Boolean(session));
   const [verified, setVerified] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [accountName, setAccountName] = useState(session?.account.display_name || "");
+  const [accountSaved, setAccountSaved] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof AuthCredentials, string>>>({});
@@ -70,7 +73,33 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
     return () => controller.abort();
   }, [token, mode, navigate, retry]);
 
+  useEffect(() => {
+    if (session?.account.display_name) setAccountName(session.account.display_name);
+  }, [session?.account.display_name]);
+
   useEffect(() => { if (error) alertRef.current?.focus(); }, [error]);
+
+  async function saveAccountDisplayName(event: FormEvent) {
+    event.preventDefault();
+    if (!session || busy) return;
+    const trimmed = accountName.trim();
+    if (!trimmed) {
+      setError("请输入称呼。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setAccountSaved("");
+    try {
+      const updated = await createAccountSettingsApi(session.session.token).updateProfile(trimmed);
+      saveSession({ ...session, account: updated });
+      setAccountSaved("称呼已更新。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存未完成，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -159,11 +188,30 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
               <p className="auth-eyebrow">{location.state?.created ? "A NEW BEGINNING" : "GOOD TO SEE YOU"}</p>
               <h1 className="font-editorial">{location.state?.created ? "很高兴认识你。" : "欢迎回来。"}</h1>
               <p className="auth-intro">{location.state?.created ? "账户已创建，你已登录舟序。" : "你已登录舟序。"}</p>
-              <dl className="auth-account-details">
-                <div><dt>称呼</dt><dd>{session.account.display_name}</dd></div>
-                <div><dt>邮箱</dt><dd>{session.account.email}</dd></div>
-              </dl>
+              <form className="auth-account-edit" onSubmit={saveAccountDisplayName}>
+                <dl className="auth-account-details">
+                  <div>
+                    <dt>称呼</dt>
+                    <dd style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      <input
+                        aria-label="显示称呼"
+                        type="text"
+                        maxLength={80}
+                        value={accountName}
+                        onChange={(e) => { setAccountName(e.target.value); setAccountSaved(""); }}
+                        style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(137,170,204,0.22)", borderRadius: "6px", padding: "4px 8px", color: "inherit", font: "inherit", minWidth: 0, flex: 1 }}
+                      />
+                      <button type="submit" disabled={busy} className="auth-inline-save" style={{ background: "rgba(137,170,204,0.16)", border: "1px solid rgba(137,170,204,0.32)", borderRadius: "6px", padding: "4px 10px", color: "inherit", fontSize: "12px", cursor: "pointer" }}>
+                        保存
+                      </button>
+                    </dd>
+                  </div>
+                  <div><dt>邮箱</dt><dd>{session.account.email}</dd></div>
+                </dl>
+                {accountSaved && <p className="auth-notice" role="status">{accountSaved}</p>}
+              </form>
               <Link className="auth-submit" to="/workspace">进入工作台<ArrowRight size={17} aria-hidden="true" /></Link>
+              <Link className="auth-switch-copy" to="/workspace?settings=1" style={{ display: "inline-flex", justifyContent: "center", width: "100%", marginTop: "10px" }}>打开记忆、/ 指令与密码设置<ArrowRight size={12} aria-hidden="true" /></Link>
               <button className="auth-logout" disabled={busy} onClick={logout}>{busy ? <LoaderCircle className="auth-spinner" size={15} /> : <LogOut size={15} aria-hidden="true" />}{busy ? "正在退出…" : "退出登录"}</button>
             </div>
           ) : (

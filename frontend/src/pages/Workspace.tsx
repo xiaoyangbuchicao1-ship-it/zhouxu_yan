@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AnimatePresence,
   motion,
@@ -23,6 +24,8 @@ import { useAuthSession, saveSession, getSignedOutNotice } from "@/lib/auth-sess
 import { revokeSession, type AuthSession } from "@/lib/auth";
 import { useWorkspace } from "@/hooks/use-workspace";
 import type { Conversation as Chat, ConversationMode, Resource } from "@/lib/workbench-api";
+import { createAccountSettingsApi, defaultUserPreferences, type UserPreferences, type UserPromptCommand } from "@/lib/account-settings-api";
+import { maritimeApi, type MaritimeSkill } from "@/lib/maritime-api";
 import Sidebar, { type SidebarProps } from "@/components/workspace/Sidebar";
 import Conversation from "@/components/workspace/Conversation";
 import { ResearchPanel } from "@/components/workspace/ResearchPanel";
@@ -34,6 +37,8 @@ import {
 } from "@/components/workspace/Resources";
 import { Modal, IconButton } from "@/components/workspace/Primitives";
 import MaritimeDesk, { type OfficePage } from "@/components/workspace/MaritimeDesk";
+import { UserCenterDialog, type UserCenterTab } from "@/components/workspace/UserCenterDialog";
+import { CommandPalette } from "@/components/workspace/CommandPalette";
 import "./workspace.css";
 
 interface Confirmation {
@@ -46,18 +51,79 @@ interface Confirmation {
 function Desk({ session }: { session: AuthSession }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
   const library = location.pathname === "/workspace/library";
-  const officePage = location.pathname.match(/^\/workspace\/(skills|research|cases)\/?$/)?.[1] as OfficePage | undefined;
+  const legacyCases = /^\/workspace\/cases\/?$/.test(location.pathname);
+  const officePage = location.pathname.match(/^\/workspace\/(skills|research)\/?$/)?.[1] as OfficePage | undefined;
   const match = location.pathname.match(/^\/workspace\/chat\/([^/]+)\/?$/);
   const id = match?.[1];
   const params = new URLSearchParams(location.search);
-  const initialMode = params.get("mode") === "work" ? "work" : "chat";
+  const skillParam = params.get("skill") || undefined;
+  const modeParam = params.get("mode");
+  const initialMode: ConversationMode | undefined =
+    modeParam === "work" ? "work" : modeParam === "chat" ? "chat" : undefined;
+
+  const [userCenterOpen, setUserCenterOpen] = useState(() => params.get("settings") === "1");
+  const [userCenterTab, setUserCenterTab] = useState<UserCenterTab>("account");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  const settingsApi = useMemo(() => createAccountSettingsApi(session.session.token), [session.session.token]);
+  const skillsApi = useMemo(() => maritimeApi(session.session.token), [session.session.token]);
+
+  const preferencesQuery = useQuery({
+    queryKey: ["account", session.account.id, "preferences"],
+    queryFn: ({ signal }) => settingsApi.getPreferences(signal),
+  });
+  const commandsQuery = useQuery({
+    queryKey: ["account", session.account.id, "commands"],
+    queryFn: ({ signal }) => settingsApi.listCommands(signal),
+  });
+  const summaryQuery = useQuery({
+    queryKey: ["account", session.account.id, "summary"],
+    queryFn: ({ signal }) => settingsApi.summary(signal),
+    enabled: userCenterOpen,
+  });
+  const skillsQuery = useQuery({
+    queryKey: ["maritime", session.account.id, "skills"],
+    queryFn: () => skillsApi.skills(),
+  });
+
+  const prefs = preferencesQuery.data ?? defaultUserPreferences();
+  const commands = commandsQuery.data?.commands ?? [];
+  const activeSkill = useMemo<MaritimeSkill | null>(() => {
+    if (!skillParam) return null;
+    const found = skillsQuery.data?.skills.find((s) => s.id === skillParam);
+    if (found) return found;
+    return {
+      id: skillParam,
+      name: skillParam,
+      display_name: skillParam,
+      mode_scope: initialMode ?? "work",
+      summary: "",
+      instructions: "",
+      version: 1,
+      owner_id: null,
+      visibility: "builtin",
+      status: "ready",
+    };
+  }, [skillParam, initialMode, skillsQuery.data]);
+
   const ws = useWorkspace(session, id, {
-    skillId: params.get("skill") || undefined,
+    skillId: skillParam,
     caseId: params.get("case") || undefined,
     initialMode,
+    defaultMode: prefs.default_mode,
+    defaultThinkingMode: prefs.default_thinking_mode,
   });
-  const reduced = useReducedMotion();
+  const osReduced = useReducedMotion();
+  const reduced = Boolean(osReduced || prefs.reduced_motion);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("ws-reduced-motion", Boolean(prefs.reduced_motion));
+    return () => {
+      document.documentElement.classList.remove("ws-reduced-motion");
+    };
+  }, [prefs.reduced_motion]);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [materials, setMaterials] = useState(false);
@@ -144,6 +210,43 @@ function Desk({ session }: { session: AuthSession }) {
       run: () => ws.api.deleteResource(resource.id),
     });
   }
+  function openUserCenter(tab: UserCenterTab = "account") {
+    setUserCenterTab(tab);
+    setUserCenterOpen(true);
+    setMobileNav(false);
+  }
+
+  async function startInProject(projectId: string) {
+    setMobileNav(false);
+    ws.setProjectFilter(projectId);
+    await ws.act(async () => {
+      const targetMode = prefs.default_mode;
+      const created = await ws.api.create(
+        "",
+        targetMode === "chat" ? undefined : targetMode,
+        projectId,
+      );
+      navigate(`/workspace/chat/${created.id}`);
+    });
+  }
+
+  function clearMountedSkill() {
+    const next = new URLSearchParams(location.search);
+    next.delete("skill");
+    next.delete("mode");
+    const search = next.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : "" }, { replace: true });
+  }
+
+  function selectWelcomeSkill(skillId: string, prompt: string, targetMode: ConversationMode) {
+    ws.setDraft(prompt);
+    if (!id && ws.conversationMode !== targetMode) ws.setConversationMode(targetMode);
+    const next = new URLSearchParams(location.search);
+    next.set("skill", skillId);
+    next.set("mode", targetMode);
+    navigate({ pathname: location.pathname, search: `?${next.toString()}` }, { replace: true });
+  }
+
   const sidebarProps: SidebarProps = {
     ws,
     session,
@@ -162,6 +265,7 @@ function Desk({ session }: { session: AuthSession }) {
       setMoving(chat);
       setTargetProject(chat.project_id || "");
     },
+    onOpenUserCenter: openUserCenter,
     logout: () => {
       void ws.act(async () => {
         await revokeSession(session.session.token);
@@ -174,7 +278,7 @@ function Desk({ session }: { session: AuthSession }) {
     },
   };
   const title = officePage
-    ? ({ skills: "技能", research: "海事检索", cases: "案件协作" }[officePage])
+    ? ({ skills: "技能", research: "海事检索" }[officePage])
     : library
     ? "资料库"
     : ws.detail.data?.conversation.title || "新对话";
@@ -203,13 +307,16 @@ function Desk({ session }: { session: AuthSession }) {
     )}
     </>
   );
+  if (legacyCases) return <Navigate to="/workspace" replace />;
   const invalidPath =
     !library && !officePage && !id && !/^\/workspace\/?$/.test(location.pathname);
   if (invalidPath) return <Navigate to="/workspace" replace />;
 
   return (
-    <MotionConfig reducedMotion="user">
-      <div className={`workspace ${modeTransition ? "is-mode-transitioning" : ""}`}>
+    <MotionConfig reducedMotion={prefs.reduced_motion ? "always" : "user"}>
+      <div
+        className={`workspace ${modeTransition ? "is-mode-transitioning" : ""} ${prefs.compact_density ? "is-compact" : ""} ${prefs.reduced_motion ? "is-reduced-motion" : ""}`}
+      >
         <a className="ws-skip-link" href="#workspace-main">
           跳到主要内容
         </a>
@@ -328,6 +435,12 @@ function Desk({ session }: { session: AuthSession }) {
                   id={id}
                   openMaterials={() => { setPanelTab("materials"); setMaterials(true); }}
                   openSources={openSources}
+                  commands={commands}
+                  conciseProcess={prefs.concise_process}
+                  activeSkill={activeSkill}
+                  onClearSkill={clearMountedSkill}
+                  onSelectWelcomeSkill={selectWelcomeSkill}
+                  onClearProjectFilter={() => ws.setProjectFilter(null)}
                 />
               )}
             </main>
@@ -516,6 +629,86 @@ function Desk({ session }: { session: AuthSession }) {
           ws={ws}
           resource={preview}
           close={() => setPreview(null)}
+        />
+        <UserCenterDialog
+          open={userCenterOpen}
+          onOpenChange={setUserCenterOpen}
+          initialTab={userCenterTab}
+          account={session.account}
+          preferences={prefs}
+          commands={commands}
+          summary={summaryQuery.data}
+          summaryLoading={summaryQuery.isFetching}
+          onUpdateDisplayName={async (displayName) => {
+            const updated = await settingsApi.updateProfile(displayName);
+            saveSession({ ...session, account: updated });
+            await queryClient.invalidateQueries({ queryKey: ["account", session.account.id, "summary"] });
+            return updated;
+          }}
+          onChangePassword={async (cur, next) => {
+            await settingsApi.changePassword(cur, next);
+          }}
+          onSavePreferences={async (patch: Partial<UserPreferences>) => {
+            const saved = await settingsApi.updatePreferences(patch);
+            queryClient.setQueryData(["account", session.account.id, "preferences"], saved);
+            return saved;
+          }}
+          onCreateCommand={async (input) => {
+            const created = await settingsApi.createCommand(input);
+            queryClient.setQueryData<{ commands: UserPromptCommand[] }>(
+              ["account", session.account.id, "commands"],
+              (prev) => ({ commands: [...(prev?.commands ?? []), created] }),
+            );
+            return created;
+          }}
+          onUpdateCommand={async (commandId, patch) => {
+            const updated = await settingsApi.updateCommand(commandId, patch);
+            queryClient.setQueryData<{ commands: UserPromptCommand[] }>(
+              ["account", session.account.id, "commands"],
+              (prev) => ({
+                commands: (prev?.commands ?? []).map((c) => (c.id === commandId ? updated : c)),
+              }),
+            );
+            return updated;
+          }}
+          onDeleteCommand={async (commandId) => {
+            await settingsApi.deleteCommand(commandId);
+            queryClient.setQueryData<{ commands: UserPromptCommand[] }>(
+              ["account", session.account.id, "commands"],
+              (prev) => ({
+                commands: (prev?.commands ?? []).filter((c) => c.id !== commandId),
+              }),
+            );
+          }}
+          onOpenCommandPalette={() => setPaletteOpen(true)}
+          onSignOut={() => sidebarProps.logout()}
+        />
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          conversations={ws.history.data?.conversations ?? []}
+          projects={ws.projects.data?.projects ?? []}
+          commands={commands}
+          canPause={ws.turn?.status === "running"}
+          canContinue={Boolean(
+            ws.turn && (ws.turn.status === "paused" || (ws.turn.status === "failed" && ws.turn.recovery.can_continue)),
+          )}
+          onNewChat={() => {
+            navigate("/workspace");
+          }}
+          onSelectConversation={(conversationId) => navigate(`/workspace/chat/${conversationId}`)}
+          onStartInProject={(projectId) => { void startInProject(projectId); }}
+          onApplyCommand={(cmd) => {
+            ws.setDraft(cmd.content);
+            if (!id && cmd.mode_hint && ws.conversationMode !== cmd.mode_hint) {
+              ws.setConversationMode(cmd.mode_hint);
+            }
+            if (officePage || library) navigate("/workspace");
+          }}
+          onNavigateOffice={(path) => navigate(path)}
+          onOpenUserCenter={openUserCenter}
+          onPauseRun={() => void ws.pause()}
+          onContinueRun={() => void ws.continueRun()}
         />
         <AnimatePresence>
           {ws.notice && (

@@ -189,6 +189,47 @@ class AccountService:
         finally:
             session.close()
 
+    def update_display_name(self, *, account_id: str, display_name: str) -> AccountPrincipal:
+        normalized_name = display_name.strip()
+        if len(normalized_name) > 80:
+            raise AccountError("display_name_too_long")
+        session = self.database.session()
+        try:
+            account = session.get(AccountModel, account_id)
+            if account is None or account.status != "active":
+                raise AccountError("authentication_required")
+            account.display_name = normalized_name
+            account.updated_at = self._now()
+            session.commit()
+            return self._principal(account)
+        finally:
+            session.close()
+
+    def change_password(
+        self,
+        *,
+        account_id: str,
+        current_password: str,
+        new_password: str,
+    ) -> None:
+        self._validate_password(new_password)
+        session = self.database.session()
+        try:
+            account = session.get(AccountModel, account_id)
+            if account is None or account.status != "active":
+                raise AccountError("authentication_required")
+            try:
+                valid = self.passwords.verify(account.password_hash, current_password)
+            except (InvalidHashError, VerificationError, VerifyMismatchError):
+                valid = False
+            if not valid:
+                raise AccountError("authentication_failed")
+            account.password_hash = self.passwords.hash(new_password)
+            account.updated_at = self._now()
+            session.commit()
+        finally:
+            session.close()
+
     def logout(self, token: str) -> None:
         if not token:
             raise AccountError("authentication_required")

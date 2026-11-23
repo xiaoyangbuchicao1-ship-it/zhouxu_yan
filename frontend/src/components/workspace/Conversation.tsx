@@ -20,14 +20,20 @@ import {
   MoreHorizontal,
   ExternalLink,
   LoaderCircle,
+  Folder,
+  FolderPlus,
+  Sparkles,
+  Compass,
+  Search,
 } from "lucide-react";
 import type { PendingTurn, useWorkspace } from "@/hooks/use-workspace";
-import type { Message } from "@/lib/workbench-api";
+import type { Message, Project } from "@/lib/workbench-api";
 import { mergeRunMessages } from "@/lib/workbench-api";
 import { effectiveModelSwitches, modelLabel, modelSwitchText, type ModelSwitchEvent } from "@/lib/model-selection";
 import { visibleAnswerActions } from "@/lib/answer-actions";
-import { useAuthSession } from "@/lib/auth-session";
-import { maritimeApi, type MaritimeCase } from "@/lib/maritime-api";
+import type { MaritimeSkill } from "@/lib/maritime-api";
+import type { UserPromptCommand } from "@/lib/account-settings-api";
+import { matchPromptCommands, skillDisplayName } from "@/lib/workspace-commands";
 import { IconButton, Menu, MenuItem, Loading, LoadError, Modal } from "./Primitives";
 
 import { RunProgress } from "./RunProgress";
@@ -102,49 +108,6 @@ function ModeUpgradeChoice({ uploading, onAnswer }: {
   );
 }
 
-const tasks = [
-  {
-    label: "法律研究",
-    prompt:
-      "我想研究一个海事法律问题：\n\n请结合适用法、法律依据与适用条件展开，并说明仍需核实的信息。",
-  },
-  {
-    label: "类案检索",
-    prompt:
-      "我想检索与以下争议相关的案例：\n\n请区分已核实来源与待核实线索，并比较关键事实与裁判理由。",
-  },
-  {
-    label: "合同审阅",
-    prompt:
-      "请审阅我将提供的合同材料，关注权利义务、责任边界与争议解决条款。请区分原文约定、风险分析与修改建议。",
-  },
-  {
-    label: "风险研判",
-    prompt:
-      "请根据以下事实和材料分析争议风险：\n\n请说明判断依据、关键假设、相反观点与信息缺口。",
-  },
-  {
-    label: "证据梳理",
-    prompt:
-      "请梳理我将提供的材料，按时间线、待证事实与对应证据整理，并标出矛盾与缺口。",
-  },
-  {
-    label: "索赔测算",
-    prompt:
-      "请协助梳理以下索赔的计算依据与项目：\n\n请列出公式、已知条件与缺失数据，不要推定尚未提供的数值。",
-  },
-  {
-    label: "文书起草",
-    prompt:
-      "请协助起草一份海事争议相关文书：\n文书类型：\n用途与对象：\n事实与诉求：\n\n请将尚未确认的信息保留为待补充项。",
-  },
-  {
-    label: "案件管理",
-    prompt:
-      "请根据以下案件信息梳理事项：\n\n请整理事实脉络、程序进展与待处理问题，不把待确认的日期或安排当作既定事实。",
-  },
-];
-
 const INTERNAL_ARTIFACT_MARKDOWN = /!?(\[[^\]]*\])\((?:\/api)?\/workspace\/runs\/[^\s)]+\/artifacts\/[^\s)]+\)/gi;
 const INTERNAL_ARTIFACT_URL = /(?:\/api)?\/workspace\/runs\/[^\s<>]+\/artifacts\/[^\s<>]+/gi;
 const INTERNAL_ARTIFACT_PATH_LINE = /^\s*(?:[-*+]\s+)?(?:PDF|Word|DOCX|Excel|文件)?\s*[:：]\s*(?:papers|work)\/[^\s]+\.(?:pdf|docx|docm|xlsx|xlsm|pptx|pptm|csv|txt|md|json)\s*$/i;
@@ -179,48 +142,55 @@ function stripMaritimeSourceMarkup(content: string) {
     .replace(/\n{3,}/g, "\n\n");
 }
 
-function SaveAnswer({ message, onNotice }: { message: Message; onNotice: (text: string) => void }) {
-  const session = useAuthSession();
-  const location = useLocation();
+function MoveToProjectAction({
+  conversationId,
+  currentProjectId,
+  projects,
+  onAssign,
+  onCreateAndAssign,
+  onNotice,
+}: {
+  conversationId?: string;
+  currentProjectId?: string | null;
+  projects: Project[];
+  onAssign: (projectId: string | null) => Promise<void>;
+  onCreateAndAssign: (name: string) => Promise<void>;
+  onNotice: (text: string) => void;
+}) {
   const [open, setOpen] = useState(false);
-  const [cases, setCases] = useState<MaritimeCase[]>([]);
-  const [caseId, setCaseId] = useState("");
-  const [title, setTitle] = useState("海事研究草稿");
+  const [selectedId, setSelectedId] = useState(currentProjectId || "");
+  const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  async function show() {
-    if (!session) return;
-    setOpen(true);
-    setBusy(true);
+  if (!conversationId) return null;
+
+  function show() {
+    setSelectedId(currentProjectId || projects[0]?.id || "");
+    setNewName("");
     setError("");
-    try {
-      const value = await maritimeApi(session.session.token).cases();
-      setCases(value.cases);
-      const preferred = new URLSearchParams(location.search).get("case");
-      setCaseId(value.cases.find((item) => item.id === preferred)?.id || value.cases[0]?.id || "");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "案件未能载入");
-    } finally {
-      setBusy(false);
-    }
+    setOpen(true);
   }
 
-  async function save() {
-    if (!session || !caseId || !title.trim()) return;
+  async function submit() {
     setBusy(true);
     setError("");
     try {
-      await maritimeApi(session.session.token).saveEntry(caseId, {
-        kind: "document",
-        title: title.trim(),
-        content: stripMaritimeSourceMarkup(message.content),
-        status: "draft",
-      });
+      const trimmedNew = newName.trim();
+      if (trimmedNew) {
+        await onCreateAndAssign(trimmedNew);
+        onNotice(`已新建并归入项目「${trimmedNew}」。`);
+      } else if (selectedId) {
+        await onAssign(selectedId);
+        const name = projects.find((p) => p.id === selectedId)?.name;
+        onNotice(name ? `已归入项目「${name}」。` : "已归入所选项目。");
+      } else {
+        await onAssign(null);
+        onNotice("已取消项目归属。");
+      }
       setOpen(false);
-      onNotice("已保存为案件文书草稿，待专业复核。");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "保存未完成");
+      setError(e instanceof Error ? e.message : "归入项目未完成，请重试。");
     } finally {
       setBusy(false);
     }
@@ -228,34 +198,51 @@ function SaveAnswer({ message, onNotice }: { message: Message; onNotice: (text: 
 
   return (
     <>
-      <button className="ws-text-button" onClick={() => void show()}>
-        <FileText size={15} />
-        存入案件
+      <button type="button" className="ws-text-button" onClick={show}>
+        <FolderPlus size={15} />
+        归入项目
       </button>
       <Modal
         open={open}
         onOpenChange={(value) => { if (!busy) setOpen(value); }}
-        title="存入案件"
-        description="只保存为草稿，不自动确认专业复核或发送。"
+        title="归入项目"
+        description="将当前对话整理到对应的项目分组中。"
       >
         {error && <p role="alert" className="md-form-error">{error}</p>}
-        {busy ? <Loading label="处理中…" /> : !cases.length ? (
-          <p>请先在<Link to="/workspace/cases">案件协作</Link>建立案件，再保存这份草稿。</p>
-        ) : (
-          <form className="md-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+        <form className="md-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+          {projects.length > 0 && (
             <label>
-              目标案件
-              <select aria-label="目标案件" value={caseId} onChange={(event) => setCaseId(event.target.value)}>
-                {cases.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+              选择已有项目
+              <select
+                aria-label="选择项目"
+                value={selectedId}
+                onChange={(event) => setSelectedId(event.target.value)}
+                disabled={Boolean(newName.trim())}
+              >
+                <option value="">不归入任何项目</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
               </select>
             </label>
-            <label>
-              文书标题
-              <input required maxLength={160} value={title} onChange={(event) => setTitle(event.target.value)} />
-            </label>
-            <button className="ws-primary-button" disabled={busy || !caseId || !title.trim()}>保存草稿</button>
-          </form>
-        )}
+          )}
+          <label>
+            {projects.length > 0 ? "或新建项目分组" : "项目名称"}
+            <input
+              maxLength={80}
+              value={newName}
+              onChange={(event) => setNewName(event.target.value)}
+              placeholder="输入新项目名称（可选）"
+            />
+          </label>
+          <button
+            type="submit"
+            className="ws-primary-button"
+            disabled={busy || (!newName.trim() && !selectedId && !currentProjectId)}
+          >
+            {busy ? "保存中…" : "确认归入"}
+          </button>
+        </form>
       </Modal>
     </>
   );
@@ -270,6 +257,12 @@ function Answer({
   uploading = false,
   onRetry,
   onOpenSources,
+  conciseProcess = false,
+  conversationId,
+  currentProjectId,
+  projects = [],
+  onAssignProject,
+  onCreateAndAssignProject,
 }: {
   message: Message;
   card?: PendingTurn;
@@ -279,6 +272,12 @@ function Answer({
   uploading?: boolean;
   onRetry?: () => void;
   onOpenSources: (sourceId?: string) => void;
+  conciseProcess?: boolean;
+  conversationId?: string;
+  currentProjectId?: string | null;
+  projects?: Project[];
+  onAssignProject?: (projectId: string | null) => Promise<void>;
+  onCreateAndAssignProject?: (name: string) => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>();
@@ -313,6 +312,7 @@ function Answer({
         wallElapsedMs={message.wall_elapsed_ms}
         live={card?.state === "receiving"}
         observedAt={card?.observedAt}
+        concise={conciseProcess}
       />
       {message.status === "paused" && message.content && <span className="ws-incomplete-label">未完成 · 已保留正文</span>}
       <StreamingAnswer text={message.content} live={card?.state === "receiving"} onSource={onOpenSources} />
@@ -380,7 +380,16 @@ function Answer({
             {copied ? <Check size={15} /> : <Copy size={15} />}
             {copied ? "已复制" : "复制回答"}
           </button>
-          <SaveAnswer message={{ ...message, content: visibleContent }} onNotice={onNotice} />
+          {onAssignProject && onCreateAndAssignProject && (
+            <MoveToProjectAction
+              conversationId={conversationId}
+              currentProjectId={currentProjectId}
+              projects={projects}
+              onAssign={onAssignProject}
+              onCreateAndAssign={onCreateAndAssignProject}
+              onNotice={onNotice}
+            />
+          )}
         </div>}
       </div>}
     </article>
@@ -403,16 +412,67 @@ function cardMessage(card: PendingTurn, role: Message["role"], persisted?: Messa
   };
 }
 
+const WELCOME_SCENARIOS = [
+  {
+    key: "maritime-legal-research",
+    skillId: "maritime-legal-research",
+    title: "海事条文检索",
+    desc: "核对现行与历史海商法条及出处",
+    mode: "chat" as const,
+    icon: Scale,
+    prompt: "请检索并核对与以下海商法律问题相关的现行或历史条文、适用条件与规范出处：\n\n",
+  },
+  {
+    key: "maritime-case-research",
+    skillId: "maritime-case-research",
+    title: "海事案例检索",
+    desc: "检索相似海事判决与法院认定",
+    mode: "chat" as const,
+    icon: BookOpen,
+    prompt: "请检索与以下海事案情相近的参考判决并读取原文，区分当事人主张与法院认定：\n\n",
+  },
+  {
+    key: "maritime-paper-research",
+    skillId: "maritime-paper-research",
+    title: "海事论文检索",
+    desc: "检索已核验文献观点与期刊页码",
+    mode: "chat" as const,
+    icon: Search,
+    prompt: "请检索以下选题相关的已核验海事法学论文，提炼学者核心观点并列出规范出处：\n\n",
+  },
+  {
+    key: "csl-law-paper-generator",
+    skillId: "csl-law-paper-generator",
+    title: "海事论文写作",
+    desc: "检索依据撰稿并编出 PDF 与 Word",
+    mode: "work" as const,
+    icon: FileText,
+    prompt: "请围绕以下海事法学选题检索法规与文献依据，撰稿并编译生成 PDF 与 Word 文档：\n\n",
+  },
+];
+
 export default function Conversation({
   ws,
   id,
   openMaterials,
   openSources,
+  commands = [],
+  conciseProcess = false,
+  activeSkill = null,
+  onClearSkill,
+  onSelectWelcomeSkill,
+  onClearProjectFilter,
 }: {
   ws: Workspace;
   id?: string;
   openMaterials: () => void;
   openSources: (runId?: string, sourceId?: string) => void;
+  commands?: UserPromptCommand[];
+  conciseProcess?: boolean;
+  activeSkill?: MaritimeSkill | null;
+  onClearSkill?: () => void;
+  onSelectWelcomeSkill?: (skillId: string, prompt: string, mode: "chat" | "work") => void;
+  onClearProjectFilter?: () => void;
 }) {
   const reduced = useReducedMotion();
   const reader = useRef<HTMLDivElement>(null);
@@ -423,6 +483,8 @@ export default function Conversation({
   const [showLatest, setShowLatest] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const dragDepth = useRef(0);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissedDraft, setSlashDismissedDraft] = useState<string | null>(null);
   const detail = ws.detail.data;
   // One keyed list and one answer component for streaming and persisted messages.
   // Replacing the data source must never replace the reader's DOM nodes.
@@ -455,6 +517,37 @@ export default function Conversation({
   const materials = ws.draftMaterials;
   const uploads = ws.uploads.filter((u) => u.conversationId === id);
   const uploading = ws.uploadBusy;
+  const projectList = ws.projects.data?.projects || [];
+  const activeProjectId = detail?.conversation.project_id ?? (!id ? ws.projectFilter : null);
+  const activeProject = projectList.find((p) => p.id === activeProjectId) || null;
+  const slashMatches = receiving ? [] : matchPromptCommands(ws.draft, commands);
+  const showSlashMenu = slashMatches.length > 0 && slashDismissedDraft !== ws.draft;
+  const activeSlashIndex = slashMatches.length ? Math.min(slashIndex, slashMatches.length - 1) : 0;
+
+  function applySlashCommand(cmd: UserPromptCommand) {
+    ws.setDraft(cmd.content);
+    setSlashDismissedDraft(null);
+    if (!id && cmd.mode_hint && ws.conversationMode !== cmd.mode_hint) {
+      ws.setConversationMode(cmd.mode_hint);
+    }
+    requestAnimationFrame(() => input.current?.focus());
+  }
+
+  async function assignProject(projectId: string | null) {
+    if (!id) return;
+    await ws.act(async () => {
+      if (projectId) await ws.api.move(id, projectId);
+      else if (detail?.conversation.project_id) await ws.api.move(id, detail.conversation.project_id, true);
+    });
+  }
+
+  async function createAndAssignProject(name: string) {
+    if (!id) return;
+    await ws.act(async () => {
+      const created = await ws.api.createProject(name);
+      await ws.api.move(id, created.id);
+    });
+  }
   const scrollLatest = useCallback(
     (smooth = false) => {
       const el = reader.current;
@@ -502,10 +595,6 @@ export default function Conversation({
     if (content) observer.observe(content);
     return () => observer.disconnect();
   }, [empty, id, ws.detail.isPending, scrollLatest]);
-  const chooseTask = (index: number) => {
-    ws.setDraft(tasks[index].prompt);
-    requestAnimationFrame(() => input.current?.focus());
-  };
   if (id && ws.detail.isPending && !turn)
     return (
       <div className="ws-center-state">
@@ -592,8 +681,53 @@ export default function Conversation({
               exit={{ opacity: 0, filter: reduced ? "none" : "blur(3px)", transition: { duration: 0.12 } }}
               transition={{ duration: 0.28 }}
             >
-              <h1>{ws.conversationMode === "work" ? "今天要完成哪件工作？" : "今天，先理清哪件事？"}</h1>
-              <p>{ws.conversationMode === "work" ? <><span>描述要交付的结果，或添加</span><wbr /><span>合同、提单与往来材料。</span></> : <><span>描述问题，或添加</span><wbr /><span>合同、提单与往来材料。</span></>}</p>
+              <h1>
+                {activeProject && !id
+                  ? activeProject.name
+                  : ws.conversationMode === "work"
+                    ? "今天要完成哪件工作？"
+                    : "今天，先理清哪件事？"}
+              </h1>
+              <p>
+                {activeSkill
+                  ? `已挂载「${skillDisplayName(activeSkill)}」，直接输入问题即可在${(activeSkill.mode_scope || ws.conversationMode) === "work" ? "工作" : "聊天"}模式下运行。`
+                  : activeProject && !id
+                    ? "在这个项目中直接开始提问，或从左侧文件夹选择已有对话。"
+                    : ws.conversationMode === "work"
+                      ? <><span>描述要交付的结果，或添加</span><wbr /><span>合同、提单与往来材料。</span></>
+                      : <><span>描述问题，或添加</span><wbr /><span>合同、提单与往来材料。</span></>}
+              </p>
+              <div className="ws-welcome-cards" role="list" aria-label="常用海事任务模板">
+                {WELCOME_SCENARIOS.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      className="ws-welcome-card"
+                      onClick={() => {
+                        if (onSelectWelcomeSkill) {
+                          onSelectWelcomeSkill(item.skillId, item.prompt, item.mode);
+                        } else {
+                          ws.setDraft(item.prompt);
+                          if (!id && ws.conversationMode !== item.mode) {
+                            ws.setConversationMode(item.mode);
+                          }
+                        }
+                        requestAnimationFrame(() => input.current?.focus());
+                      }}
+                    >
+                      <span className="ws-welcome-card-icon" aria-hidden="true">
+                        <Icon size={16} />
+                      </span>
+                      <span className="ws-welcome-card-body">
+                        <strong>{item.title}</strong>
+                        <small>{item.desc}</small>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </motion.div>
           ) : (
             <motion.div key="thread" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .18 }}>
@@ -618,6 +752,12 @@ export default function Conversation({
                     uploading={uploading}
                     onRetry={() => void ws.retryTurn(message.run_id || undefined)}
                     onOpenSources={(sourceId) => openSources(message.run_id ?? undefined, sourceId)}
+                    conciseProcess={conciseProcess}
+                    conversationId={id}
+                    currentProjectId={activeProjectId}
+                    projects={projectList}
+                    onAssignProject={assignProject}
+                    onCreateAndAssignProject={createAndAssignProject}
                   />
                 )}
               </Fragment>)}
@@ -680,16 +820,27 @@ export default function Conversation({
               </motion.div>
             ))}
           </AnimatePresence>
-          {continuationMode && (
-            <div className="ws-mode-note ws-continuation-note" role="status">
-              <button
-                type="button"
-                className="ws-text-button"
-                style={{ marginLeft: "auto", fontSize: "12px" }}
-                onClick={ws.dismissContinuation}
-              >
-                新建提问
-              </button>
+          {showSlashMenu && (
+            <div className="ws-slash-menu" role="listbox" aria-label="快捷指令列表" data-testid="slash-command-menu">
+              {slashMatches.map((cmd, idx) => (
+                <button
+                  key={cmd.id}
+                  type="button"
+                  role="option"
+                  aria-selected={idx === activeSlashIndex}
+                  className={`ws-slash-item ${idx === activeSlashIndex ? "is-active" : ""}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => applySlashCommand(cmd)}
+                >
+                  <span className="ws-slash-trigger">/{cmd.trigger}</span>
+                  <span className="ws-slash-title">{cmd.title}</span>
+                  {cmd.mode_hint && (
+                    <span className="ws-slash-mode">
+                      {cmd.mode_hint === "work" ? "工作" : "聊天"}
+                    </span>
+                  )}
+                </button>
+              ))}
             </div>
           )}
           <form
@@ -700,6 +851,57 @@ export default function Conversation({
               void ws.send();
             }}
           >
+              {(activeSkill || (activeProject && !id)) && (
+                <div className="ws-composer-context-bar" data-testid="composer-context-bar">
+                  {activeSkill && (
+                    <div className="ws-context-pill is-skill" data-testid="mounted-skill-pill">
+                      <Sparkles size={13} className="ws-context-icon" aria-hidden="true" />
+                      <span className="ws-context-label">当前技能：{skillDisplayName(activeSkill)}</span>
+                      {activeSkill.starter_prompt && !ws.draft.trim() && (
+                        <>
+                          <span className="ws-context-divider" aria-hidden="true" />
+                          <button
+                            type="button"
+                            className="ws-context-fill"
+                            onClick={() => {
+                              ws.setDraft(activeSkill.starter_prompt || "");
+                              requestAnimationFrame(() => input.current?.focus());
+                            }}
+                          >
+                            插入示例提问
+                          </button>
+                        </>
+                      )}
+                      {onClearSkill && (
+                        <button
+                          type="button"
+                          className="ws-context-remove"
+                          aria-label="取消使用当前技能"
+                          onClick={onClearSkill}
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                {activeProject && !id && (
+                  <div className="ws-context-pill is-project" data-testid="mounted-project-pill">
+                    <Folder size={13} aria-hidden="true" />
+                    <span>归入项目：{activeProject.name}</span>
+                    {onClearProjectFilter && (
+                      <button
+                        type="button"
+                        className="ws-context-remove"
+                        aria-label="退出项目分组"
+                        onClick={onClearProjectFilter}
+                      >
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <AnimatePresence initial={false}>
               {(materials.length > 0 || uploads.length > 0) && (
                 <motion.div
@@ -777,12 +979,47 @@ export default function Conversation({
               id="workspace-question"
               ref={input}
               value={ws.draft}
-              onChange={(e) => ws.setDraft(e.target.value)}
-              placeholder={continuationMode ? "补充继续要求（将接着当前任务处理）" : ws.conversationMode === "work" ? "描述要完成的工作和希望得到的文件。" : "让事实有序，让判断有据。"}
+              onChange={(e) => {
+                setSlashIndex(0);
+                if (slashDismissedDraft !== null) setSlashDismissedDraft(null);
+                ws.setDraft(e.target.value);
+              }}
+              placeholder={
+                continuationMode
+                  ? "补充继续要求（将接着当前任务处理）"
+                  : activeSkill
+                    ? `结合「${skillDisplayName(activeSkill)}」描述问题或粘贴材料…`
+                    : ws.conversationMode === "work"
+                      ? "描述要完成的工作和希望得到的文件，输入 / 调用指令。"
+                      : "让事实有序，让判断有据。输入 / 可调用快捷指令。"
+              }
               rows={2}
               maxLength={50000}
               disabled={false}
               onKeyDown={(e) => {
+                if (showSlashMenu) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setSlashIndex((i) => (i + 1) % slashMatches.length);
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setSlashDismissedDraft(ws.draft);
+                    return;
+                  }
+                  if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    const picked = slashMatches[activeSlashIndex];
+                    if (picked) applySlashCommand(picked);
+                    return;
+                  }
+                }
                 if (
                   e.key === "Enter" &&
                   !e.shiftKey && !e.ctrlKey && !e.metaKey &&
@@ -876,40 +1113,9 @@ export default function Conversation({
               }}
             />
           </form>
-          {empty ? (
-            <div className="ws-suggestions">
-              <button onClick={() => chooseTask(4)}>
-                <ScanText size={16} />
-                梳理事实
-              </button>
-              <button onClick={() => chooseTask(2)}>
-                <Scale size={16} />
-                审阅合同
-              </button>
-              <button onClick={() => chooseTask(0)}>
-                <BookOpen size={16} />
-                研究法律问题
-              </button>
-              <Menu
-                trigger={
-                  <button>
-                    <MoreHorizontal size={16} />
-                    更多任务
-                  </button>
-                }
-              >
-                {tasks.map((task, i) => (
-                  <MenuItem key={task.label} onSelect={() => chooseTask(i)}>
-                    {task.label}
-                  </MenuItem>
-                ))}
-              </Menu>
-            </div>
-          ) : (
-            <p className="ws-disclaimer">
-              <span>Shift + Enter 换行</span>
-            </p>
-          )}
+          <p className="ws-disclaimer">
+            <span>输入 / 调用指令 · Ctrl/⌘+K 搜索会话 · Shift + Enter 换行</span>
+          </p>
         </motion.div>
       </div>
 

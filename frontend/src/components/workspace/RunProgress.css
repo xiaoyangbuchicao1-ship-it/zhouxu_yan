@@ -142,6 +142,117 @@
 .ws-progress-node-error { grid-column: 2 / -1; color: #d99898; font-size: 11px; }
 .ws-progress-note { margin: 7px 0 0; color: #8093a6; font-size: 11px; }
 
+.ws-pipeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 4px 0 0;
+  list-style: none;
+}
+
+.ws-pipeline-stage {
+  display: block;
+  position: relative;
+  padding: 0 0 13px 22px;
+}
+
+.ws-pipeline-stage:last-child {
+  padding-bottom: 2px;
+}
+
+.ws-pipeline-stage::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 14px;
+  bottom: 0;
+  width: 1px;
+  background: rgba(137, 170, 204, 0.22);
+}
+
+.ws-pipeline-stage:last-child::before {
+  display: none;
+}
+
+.ws-pipeline-marker {
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #7cc3a3;
+  box-shadow: 0 0 0 2px rgba(124, 195, 163, 0.16);
+}
+
+.ws-pipeline-stage[data-active="true"] .ws-pipeline-marker {
+  background: #9cc4ec;
+  box-shadow: 0 0 0 3px rgba(156, 196, 236, 0.24);
+}
+
+.ws-pipeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  line-height: 1.5;
+}
+
+.ws-pipeline-title {
+  color: #aebfcf;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ws-pipeline-stage[data-active="true"] .ws-pipeline-title {
+  color: #e6eff8;
+}
+
+.ws-pipeline-time {
+  color: #8296aa;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ws-pipeline-substeps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-pipeline-substep {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: #8598ab;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ws-pipeline-subdot {
+  flex: 0 0 auto;
+  width: 4px;
+  height: 4px;
+  margin-bottom: 1px;
+  border-radius: 50%;
+  background: rgba(137, 170, 204, 0.45);
+}
+
+.ws-pipeline-substep[data-running="true"] {
+  color: #d6e6f5;
+}
+
+.ws-pipeline-substep[data-running="true"] .ws-pipeline-subdot {
+  background: #9cc4ec;
+  box-shadow: 0 0 0 2px rgba(156, 196, 236, 0.22);
+}
+
 @keyframes ws-progress-in {
   from { opacity: 0; transform: translateY(-2px); }
   to { opacity: 1; transform: translateY(0); }

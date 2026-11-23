@@ -112,6 +112,7 @@ class ModelProviderModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
+    notes: Mapped[str] = mapped_column(String(240), default="")
     preset_type: Mapped[str] = mapped_column(String(32), default="custom")
     default_protocol: Mapped[str] = mapped_column(String(64))
     auth_style: Mapped[str] = mapped_column(String(32), default="bearer")
@@ -186,6 +187,7 @@ class ModelProfileModel(Base):
     checked_on: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     provider: Mapped[ModelProviderModel] = relationship(back_populates="profiles")
     revisions: Mapped[list["ModelProfileRevisionModel"]] = relationship(
@@ -373,6 +375,46 @@ class ConversationRunModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     conversation: Mapped[ConversationModel] = relationship(back_populates="runs")
+
+
+class UserPreferenceModel(Base):
+    """Per-account persistent workspace preferences and long-term user memory."""
+
+    __tablename__ = "user_preferences"
+
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    default_mode: Mapped[str] = mapped_column(String(16), default="chat")
+    default_thinking_mode: Mapped[str] = mapped_column(String(16), default="none")
+    concise_process: Mapped[bool] = mapped_column(Boolean, default=False)
+    compact_density: Mapped[bool] = mapped_column(Boolean, default=False)
+    reduced_motion: Mapped[bool] = mapped_column(Boolean, default=False)
+    memory_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    memory_text: Mapped[str] = mapped_column(Text, default="")
+    commands_seeded: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class UserPromptCommandModel(Base):
+    """Account-scoped '/' prompt templates shown in the workspace composer."""
+
+    __tablename__ = "user_prompt_commands"
+    __table_args__ = (
+        UniqueConstraint("account_id", "trigger", name="uq_user_prompt_command_trigger"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(48))
+    title: Mapped[str] = mapped_column(String(80))
+    content: Mapped[str] = mapped_column(Text)
+    mode_hint: Mapped[str | None] = mapped_column(String(16))
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 Index("ix_sessions_account_active", SessionModel.account_id, SessionModel.revoked_at)

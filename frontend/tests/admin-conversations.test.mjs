@@ -9,21 +9,38 @@ test("会话列表只请求当前账户，并把筛选条件放进网址", async
       conversations: [{
         id: "c1", account_id: "a/1", title: "海事法规研究", mode: "work",
         archived: false, run_count: 2, latest_status: "succeeded",
+        latest_run_at: "2026-11-22T08:45:00Z",
         created_at: "2026-11-22T08:00:00Z", updated_at: "2026-11-22T09:00:00Z",
       }],
+      status_counts: { all: 4, succeeded: 1, active: 1, failed: 1, no_runs: 1 },
       next_cursor: null,
     });
   };
   const { createAdminApi } = await import("../src/lib/admin-api.ts");
   const result = await createAdminApi("token").accountConversations("a/1", {
-    query: "海 商", mode: "work", archived: "active", limit: 20,
+    query: "海 商", mode: "work", status: "failed", archived: "active", limit: 20,
   });
   assert.equal(result.conversations.length, 1);
   assert.equal(result.conversations[0].title, "海事法规研究");
+  assert.equal(result.status_counts?.failed, 1);
   assert.match(calls[0].url, /\/admin\/accounts\/a%2F1\/conversations\?/);
   assert.match(calls[0].url, /query=%E6%B5%B7\+%E5%95%86/);
   assert.match(calls[0].url, /mode=work/);
+  assert.match(calls[0].url, /status=failed/);
   assert.equal(calls[0].options.cache, "no-store");
+});
+
+test("全局最近任务支持按状态筛选参数传给后端", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return Response.json({ tasks: [], next_cursor: null });
+  };
+  const { createAdminApi } = await import("../src/lib/admin-api.ts");
+  await createAdminApi("token").tasks(30, undefined, "failed");
+  assert.match(calls[0].url, /\/admin\/tasks\?/);
+  assert.match(calls[0].url, /limit=30/);
+  assert.match(calls[0].url, /status=failed/);
 });
 
 test("会话详情只接受公开正文和安全运行信息", async () => {

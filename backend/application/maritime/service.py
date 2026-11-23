@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from backend.application.maritime.catalog import builtin_skills, historical_builtin
+from backend.application.maritime.catalog import (
+    READY_BUILTIN_METADATA,
+    builtin_skills,
+    historical_builtin,
+)
 from backend.skills.packages import (
     PackageError,
     create_package_schema,
@@ -38,20 +42,34 @@ def registered_builtin_skills():
         if descriptor.skill_id in known:
             continue
         method = registry.method(descriptor.name)
+        ready_meta = READY_BUILTIN_METADATA.get(descriptor.skill_id)
         result.append(
             {
                 "id": descriptor.skill_id,
                 "name": descriptor.name,
-                "summary": descriptor.description,
+                "display_name": ready_meta["display_name"] if ready_meta else descriptor.name,
+                "starter_prompt": ready_meta["starter_prompt"] if ready_meta else "",
+                "status": "ready" if ready_meta else "coming_soon",
+                "mode_scope": ready_meta.get("mode_scope") if ready_meta else descriptor.mode_scope,
+                "deliverable_tag": (
+                    ready_meta.get("deliverable_tag")
+                    if ready_meta
+                    else ("只读检索" if descriptor.mode_scope == "chat" else "工作模式")
+                ),
+                "summary": (ready_meta.get("summary") if ready_meta else None) or descriptor.description,
                 "instructions": registry.read(descriptor.name),
                 "version": descriptor.version,
                 "owner_id": None,
                 "visibility": "builtin",
-                "provenance": "舟序声明式研究 Skill · 只读方法包",
+                "provenance": (
+                    "舟序海事研究方法 · 只读检索流程"
+                    if descriptor.mode_scope == "chat"
+                    else "舟序工作模式专业交付规范"
+                ),
                 **{
                     key: value
                     for key, value in method.items()
-                    if key not in {"id", "name", "summary", "version"}
+                    if key not in {"id", "name", "summary", "version", "display_name", "starter_prompt", "status", "mode_scope", "deliverable_tag"}
                 },
             }
         )

@@ -213,14 +213,21 @@ class WorkPackageTool:
         self.store = store or WorkPackageStore()
         self.corpus = corpus or MaritimeCorpus()
         self.failures = OrderedDict()
+        ready_packages = [
+            s
+            for s in builtin_skills()
+            if s.get("status") == "ready"
+            and s.get("mode_scope") == "work"
+            and s.get("deliverables")
+        ]
         contracts = [
             {"skill_id": s["id"], "sections": s["deliverables"]}
-            for s in builtin_skills()
+            for s in ready_packages
         ]
         self.spec = ToolSpec(
             name="prepare_maritime_work",
             read_only=False,
-            description="保存当前运行的私人海事工作包。用户需要完整表格/工作包时使用，简短问答不强制。只保存本次运行交付物，不改案件、不发送。sections是对象数组，每项{key,rows}，每行按规定列顺序填字符串数组；notes仅放最外层。连续3次校验失败将停止本次运行。结构/引用/金额校验不等于专业结论正确。各表的列顺序："
+            description="保存当前运行的私人海事工作包。用户需要完整表格/工作包时使用，简短问答不强制。只保存本次运行交付物，不改案件、不发送。sections是对象数组，每项{key,rows}，每行按规定列顺序填字符串数组；notes仅放最外层。连续3次校验失败将停止本次运行。结构/引用校验不等于专业结论正确。各表的列顺序："
             + json.dumps(contracts, ensure_ascii=False),
             parameters={
                 "type": "object",
@@ -239,7 +246,7 @@ class WorkPackageTool:
                                     "type": "string",
                                     "enum": [
                                         d["key"]
-                                        for s in builtin_skills()
+                                        for s in ready_packages
                                         for d in s["deliverables"]
                                     ],
                                 },

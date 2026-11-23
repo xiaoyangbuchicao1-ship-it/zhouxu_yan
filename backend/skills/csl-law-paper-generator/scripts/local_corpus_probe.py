@@ -18,20 +18,62 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 
 
+def _cards_file(root: Path) -> Path | None:
+    for rel in (
+        Path("information_cards") / "information_cards.jsonl",
+        Path("信息卡") / "information_cards.jsonl",
+        Path("information_cards.jsonl"),
+    ):
+        cand = root / rel
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _capability_file(root: Path) -> Path | None:
+    for rel in (
+        Path("capability_cards") / "capability_cards.jsonl",
+        Path("能力卡") / "capability_cards.jsonl",
+        Path("capability_cards.jsonl"),
+    ):
+        cand = root / rel
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _is_valid_corpus_root(resolved: Path) -> bool:
+    return (
+        _cards_file(resolved) is not None
+        or (resolved / "papers" / "md").is_dir()
+        or (resolved / "md").is_dir()
+    )
+
+
 def resolve_corpus_root(explicit: str | None = None) -> Path | None:
     if explicit:
         resolved = Path(explicit).resolve()
-        return resolved if ((resolved / "信息卡" / "information_cards.jsonl").is_file() or (resolved / "md").is_dir()) else None
+        return resolved if _is_valid_corpus_root(resolved) else None
     candidates = []
-    env_dir = os.environ.get("CSL_CORPUS_DIR", "").strip()
-    if env_dir:
-        candidates.append(Path(env_dir))
-    # 默认约定：<论文库>/技能候选/csl-law-paper-generator
-    candidates.append(SKILL_DIR.parent.parent)
-    candidates.append(Path.cwd())
+    for env_name in ("CSL_CORPUS_DIR", "ZHOUXU_PAPER_ORIGINALS_DIR", "ZHOUXU_INFORMATION_CARDS_DIR"):
+        env_dir = os.environ.get(env_name, "").strip()
+        if env_dir:
+            p = Path(env_dir)
+            candidates.extend([p, p.parent])
+    # 仓库内标准目录：<repo>/data/research；容器挂载目录：/app/runtime-resources
+    candidates.extend([
+        Path("/app/runtime-resources"),
+        Path("/app/data/research"),
+        SKILL_DIR.parents[2] / "data" / "research",
+        Path.cwd() / "data" / "research",
+        Path.cwd(),
+    ])
     for c in candidates:
-        resolved = c.resolve()
-        if (resolved / "信息卡" / "information_cards.jsonl").is_file() or (resolved / "md").is_dir():
+        try:
+            resolved = c.resolve()
+        except OSError:
+            continue
+        if _is_valid_corpus_root(resolved):
             return resolved
     return None
 
@@ -48,8 +90,8 @@ def _score_terms(text: str, terms: list[str]) -> int:
 
 
 def search_cards(corpus_root: Path, query: str, year: str | None, limit: int) -> list[dict]:
-    cards_path = corpus_root / "信息卡" / "information_cards.jsonl"
-    if not cards_path.is_file():
+    cards_path = _cards_file(corpus_root)
+    if cards_path is None:
         return []
     terms = [t.strip() for t in re.split(r"[\s,，;；]+", query) if len(t.strip()) >= 2]
     if not terms:
@@ -92,10 +134,25 @@ def search_cards(corpus_root: Path, query: str, year: str | None, limit: int) ->
 
 
 def read_article(corpus_root: Path, rel_path: str, start: int, chars: int) -> dict:
-    target = (corpus_root / rel_path).resolve()
-    if corpus_root != target and corpus_root not in target.parents:
-        raise ValueError("path_outside_corpus_root")
-    if not target.is_file():
+    clean = rel_path.lstrip("/\\")
+    candidates = [
+        (corpus_root / clean).resolve(),
+        (corpus_root / "papers" / clean).resolve(),
+    ]
+    orig_dir = os.environ.get("ZHOUXU_PAPER_ORIGINALS_DIR", "").strip()
+    if orig_dir:
+        candidates.append((Path(orig_dir) / clean).resolve())
+    allowed_roots = [corpus_root]
+    if orig_dir:
+        allowed_roots.append(Path(orig_dir).resolve())
+    target = None
+    for cand in candidates:
+        if any(root == cand or root in cand.parents for root in allowed_roots) and cand.is_file():
+            target = cand
+            break
+    if target is None:
+        if not any(root == candidates[0] or root in candidates[0].parents for root in allowed_roots):
+            raise ValueError("path_outside_corpus_root")
         raise FileNotFoundError(rel_path)
     text = target.read_text(encoding="utf-8", errors="replace")
     # 尝试从同级 .md 或自身提取文章编号以确认真实连续刊页起点
@@ -129,8 +186,8 @@ def read_article(corpus_root: Path, rel_path: str, start: int, chars: int) -> di
 
 
 def search_capabilities(corpus_root: Path, query: str, limit: int) -> list[dict]:
-    cap_path = corpus_root / "能力卡" / "capability_cards.jsonl"
-    if not cap_path.is_file():
+    cap_path = _capability_file(corpus_root)
+    if cap_path is None:
         return []
     terms = [t.strip() for t in re.split(r"[\s,，;；]+", query) if len(t.strip()) >= 2] or [query.strip()]
     scored = []
@@ -184,7 +241,7 @@ def main() -> int:
     args = parser.parse_args()
     root = resolve_corpus_root(args.corpus_root)
     if root is None:
-        print(json.dumps({"status": "unavailable", "message": "未探测到本地语料目录（信息卡/md）。请改用当前运行时检索工具或联网核验。"}, ensure_ascii=False))
+        print(json.dumps({"status": "unavailable", "message": "未探测到本地语料目录（data/research 或 /app/runtime-resources）。请改用当前运行时检索工具或联网核验。"}, ensure_ascii=False))
         return 1
 
     try:

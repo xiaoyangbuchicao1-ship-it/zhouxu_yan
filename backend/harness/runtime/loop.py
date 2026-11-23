@@ -19,6 +19,8 @@ from backend.contracts.modules.loop import (
     RunInput,
     RunResult,
     ToolSpec,
+    mode_tool_specs,
+    resolve_tool_spec_for_mode,
 )
 from backend.contracts.modules.memory import (
     MemoryInput,
@@ -118,6 +120,150 @@ def _step_title(name: str, arguments: dict) -> str:
     return f"{name}: {', '.join(summary_pairs)[:96]}" if summary_pairs else name
 
 
+def _short_topic(value: object, max_len: int = 22) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split()).strip("\"'“”")
+    if not text:
+        return ""
+    return text[:max_len] + ("…" if len(text) > max_len else "")
+
+
+def _safe_filename(path: object) -> str:
+    if not isinstance(path, str) or not path.strip():
+        return ""
+    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1][:48]
+
+
+def _skill_display_name(skill_id: object) -> str:
+    from backend.application.maritime.catalog import READY_BUILTIN_METADATA
+
+    if not isinstance(skill_id, str) or not skill_id.strip():
+        return "内置技能"
+    key = skill_id.strip()
+    meta = READY_BUILTIN_METADATA.get(key)
+    if meta and meta.get("display_name"):
+        return meta["display_name"]
+    return _short_topic(key, 24)
+
+
+def _action_progress_stage(name: str) -> str:
+    return {
+        "read_skill": "skill_reading",
+        "read_material": "material_reading",
+        "search_material": "material_searching",
+        "search_cases": "case_searching",
+        "read_case": "case_reading",
+        "search_laws": "law_searching",
+        "dynamic_rag_search": "law_searching",
+        "search": "law_searching",
+        "read_law": "source_reading",
+        "information_card_search": "paper_searching",
+        "information_card_read": "paper_reading",
+        "web_search": "web_searching",
+        "web_read": "source_reading",
+        "calculate_maritime_claim": "calculating",
+        "prepare_maritime_work": "work_package",
+        "write_file": "file_writing",
+        "write": "file_writing",
+        "edit": "file_writing",
+        "paper_compile": "file_compiling",
+        "bash": "execution",
+    }.get(name, "action")
+
+
+def _safe_bash_label(arguments: dict) -> str:
+    cmd = str(arguments.get("command") or "").lower()
+    if "word/document.xml" in cmd or ".docx" in cmd:
+        return "核验 Word 文档结构"
+    if "compile" in cmd or "typst" in cmd or ".pdf" in cmd:
+        return "检查文档编译与排版"
+    return "检查工作区交付产物"
+
+
+def _action_progress_label(name: str, arguments: dict) -> str:
+    args = arguments if isinstance(arguments, dict) else {}
+    if name == "read_skill":
+        return f"加载技能 · {_skill_display_name(args.get('skill_id') or args.get('name'))}"
+    if name in {"dynamic_rag_search", "search_laws", "search"}:
+        doc = _short_topic(args.get("document_name"), 14)
+        sub = _short_topic(args.get("location") or args.get("query"), 14)
+        topic = f"{doc} · {sub}" if doc and sub and sub not in doc else (doc or sub)
+        return f"检索法规 · {topic}" if topic else "检索海事法规"
+    if name == "information_card_search":
+        topic = _short_topic(args.get("query"))
+        return f"检索论文 · {topic}" if topic else "检索学术论文信息卡"
+    if name == "information_card_read":
+        return "精读论文信息卡正文"
+    if name == "search_cases":
+        topic = _short_topic(args.get("query"))
+        return f"检索案例 · {topic}" if topic else "检索海事裁判案例"
+    if name == "read_case":
+        return "核对案例裁判原文"
+    if name == "web_search":
+        topic = _short_topic(args.get("query"))
+        return f"联网检索 · {topic}" if topic else "联网搜索公开资料"
+    if name in {"web_read", "read_law"}:
+        return "读取来源正文内容"
+    if name == "read_material":
+        return "读取上传材料原文"
+    if name == "search_material":
+        topic = _short_topic(args.get("query"))
+        return f"检索上传材料 · {topic}" if topic else "检索上传材料"
+    if name == "calculate_maritime_claim":
+        return "测算海事索赔与限额"
+    if name == "prepare_maritime_work":
+        return "生成结构化工作包对照表"
+    if name in {"write", "write_file"}:
+        fname = _safe_filename(args.get("path"))
+        verb = "续写文稿" if args.get("append") else "撰写文稿"
+        return f"{verb} · {fname}" if fname else verb
+    if name == "edit":
+        fname = _safe_filename(args.get("path"))
+        return f"修改文稿 · {fname}" if fname else "修改文稿内容"
+    if name == "paper_compile":
+        return "编译生成 PDF 与 Word"
+    if name == "bash":
+        return _safe_bash_label(args)
+    return "执行工具步骤"
+
+
+def _action_progress_done_label(name: str, arguments: dict, result: ActionResult) -> str | None:
+    if result.outcome == "error":
+        return None
+    payload = result.result if isinstance(result.result, dict) else {}
+    base = _action_progress_label(name, arguments)
+    if name == "read_skill":
+        return f"已加载技能 · {_skill_display_name((arguments or {}).get('skill_id') or (arguments or {}).get('name'))}"
+    if name in {"dynamic_rag_search", "search_laws", "search", "information_card_search", "search_cases", "web_search", "search_material"}:
+        items = payload.get("items")
+        if isinstance(items, list):
+            return f"{base}（命中 {len(items)} 条）" if items else f"{base}（无直接命中）"
+        return f"{base}（已完成）"
+    if name == "information_card_read":
+        return "已读取论文信息卡正文"
+    if name == "read_case":
+        return "已核对案例裁判原文"
+    if name in {"web_read", "read_law"}:
+        return "已读取来源正文"
+    if name == "read_material":
+        return "已读取上传材料"
+    if name == "calculate_maritime_claim":
+        return "已完成索赔金额测算"
+    if name == "prepare_maritime_work":
+        return "已保存工作包对照表"
+    if name in {"write", "write_file", "edit"}:
+        fname = _safe_filename((arguments or {}).get("path"))
+        if name == "edit":
+            return f"已修改文稿 · {fname}" if fname else "已修改文稿"
+        return f"已保存文稿 · {fname}" if fname else "已保存文稿"
+    if name == "paper_compile":
+        return "已生成 PDF 与 Word 文档"
+    if name == "bash":
+        return "已完成产物结构校验"
+    return None
+
+
 class Harness:
     def __init__(
         self,
@@ -198,6 +344,7 @@ class Harness:
         context_compaction_count = saved.context_compaction_count
         tool_counts: dict[str, int] = dict(saved.tool_counts)
         last_progress_stage: str | None = None
+        last_progress_label: str | None = None
         completed_units = 0
         current_unit: str | None = None
         last_answer: str | None = None
@@ -233,9 +380,7 @@ class Harness:
             skill_id = skill_result.get("skill_id")
             version = skill_result.get("version")
             if isinstance(skill_id, str) and isinstance(version, str):
-                # Every Skill is a work-mode capability. Persisted method
-                # metadata cannot weaken this boundary.
-                requires_work = True
+                requires_work = bool(skill_result.get("requires_work_mode", True))
                 active_skills = [
                     item for item in active_skills if item.get("skill_id") != skill_id
                 ]
@@ -243,7 +388,7 @@ class Harness:
                     {
                         "skill_id": skill_id,
                         "version": version,
-                        **({"requires_work_mode": True} if requires_work else {}),
+                        "requires_work_mode": requires_work,
                     }
                 )
         continuation = self.model_context if isinstance(self.model_context, ModelContinuationPort) else None
@@ -333,22 +478,24 @@ class Harness:
             if perf_counter() >= deadline:
                 raise Halt("failed", self.settings.error("timeout"))
 
-        def progress(stage: str) -> None:
-            nonlocal last_progress_stage, current_unit
+        def progress(stage: str, label: str | None = None) -> None:
+            nonlocal last_progress_stage, last_progress_label, current_unit
+            text = label or self.settings.progress.labels.get(stage, stage)
             if (
                 self.streams is None
                 or not self.settings.progress.enabled
-                or stage == last_progress_stage
+                or (stage == last_progress_stage and text == last_progress_label)
             ):
                 return
             last_progress_stage = stage
+            last_progress_label = text
             current_unit = stage
             self.streams.emit_stream(
                 StreamEvent(
                     type="progress",
                     run_id=run_id,
                     stage=stage,
-                    label=self.settings.progress.labels.get(stage, stage),
+                    label=text,
                 )
             )
 
@@ -358,31 +505,22 @@ class Harness:
                 return "model_processing"
             if name != "action":
                 return name
-            tool_name = getattr(payload, "tool_name", "")
-            if tool_name in {"write", "edit"}:
-                return "file_writing"
-            if tool_name == "paper_compile":
-                return "file_compiling"
-            if tool_name == "bash":
-                return "execution"
-            if tool_name == "read_skill":
-                return "model_processing"
-            if (
-                "search" in tool_name
-                or "read" in tool_name
-                or tool_name in {"read_case", "dynamic_rag_search", "web_read"}
-            ):
-                return "researching"
-            return "model_processing"
+            return _action_progress_stage(getattr(payload, "tool_name", ""))
 
         async def invoke(
-            name, payload, *, context=None, durable=False, read_only=False
+            name,
+            payload,
+            *,
+            context=None,
+            durable=False,
+            read_only=False,
+            emit_progress=True,
         ):
             nonlocal retries
             while True:
                 if not durable:
                     guard()
-                if name != "memory" or payload.operation == "recall":
+                if emit_progress and name not in {"memory", "perception", "reflection"}:
                     progress(progress_stage_for_call(name, payload))
                 call_id = uuid4().hex
                 began = perf_counter()
@@ -693,25 +831,23 @@ class Harness:
             # tools and may additionally receive execution tools as they are
             # registered.  The allow-list is enforced again at dispatch so a
             # model cannot bypass the advertised schemas with a guessed name.
-            mode_allowed_names = {
-                tool.name
-                for tool in self.tools
-                if (
-                    (tool.kind == "skill_activation" and value.mode == "work")
-                    or (
-                        tool.kind != "skill_activation"
-                        and (value.mode is None or value.mode == "work" or tool.read_only)
-                    )
+            action_module = self.modules.get("action")
+            available_tools = mode_tool_specs(
+                self.tools, value.mode, action_module=action_module
+            )
+            mode_allowed_names = {tool.name for tool in available_tools}
+            registered_specs = {
+                tool.name: resolve_tool_spec_for_mode(
+                    tool, value.mode, action_module=action_module
                 )
+                for tool in self.tools
             }
-            registered_specs = {tool.name: tool for tool in self.tools}
             if self.material_tool:
                 registered_specs[self.material_tool.spec.name] = self.material_tool.spec
                 mode_allowed_names.add(self.material_tool.spec.name)
                 if self.material_search_tool:
                     registered_specs[self.material_search_tool.spec.name] = self.material_search_tool.spec
                     mode_allowed_names.add(self.material_search_tool.spec.name)
-            available_tools = [tool for tool in self.tools if tool.name in mode_allowed_names]
             for raw in retained_results:
                 if self.material_catalog:
                     self.material_catalog.bind_result(
@@ -771,13 +907,30 @@ class Harness:
             )
             if can_offer_mode_upgrade:
                 available_tools.append(_REQUEST_WORK_MODE)
-            if can_offer_mode_upgrade and (
-                (value.facts or {}).get("skill_id")
-                or any(
-                    item.get("skill_id")
-                    for item in active_skills
-                )
-            ):
+            facts_map = value.facts or {}
+            selected_skill_id = facts_map.get("skill_id")
+            explicit_requires_work = facts_map.get("skill_requires_work_mode")
+            if explicit_requires_work is not None:
+                facts_require_work = bool(explicit_requires_work)
+            elif isinstance(selected_skill_id, str) and selected_skill_id.strip():
+                from backend.skills.registry import SkillNotFound, default_skill_registry
+
+                try:
+                    descriptor = default_skill_registry().descriptor(selected_skill_id.strip())
+                    facts_require_work = (
+                        not descriptor.ready
+                        or descriptor.mode_scope != "chat"
+                        or bool(descriptor.metadata.get("requires_work_mode"))
+                    )
+                except SkillNotFound:
+                    facts_require_work = True
+            else:
+                facts_require_work = False
+            active_requires_work = any(
+                item.get("skill_id") and item.get("requires_work_mode", True)
+                for item in active_skills
+            )
+            if can_offer_mode_upgrade and (facts_require_work or active_requires_work):
                 await save_checkpoint()
                 return finish(
                     "waiting_user",
@@ -993,20 +1146,31 @@ class Harness:
                     self.material_catalog.record_selected(
                         perceived.items, run_id=run_id
                     )
+                is_final_round = finalizing or (
+                    round_index > 0
+                    and round_index == self.settings.runtime.max_rounds - 1
+                )
+                if round_index == 0 and not retained_results:
+                    progress("model_processing", "理解问题并规划步骤")
+                elif is_final_round:
+                    progress("synthesizing", "汇总全部依据并准备作答")
+                elif any(
+                    isinstance(r, dict)
+                    and r.get("tool_name") in {"write", "write_file", "edit", "paper_compile"}
+                    for r in retained_results
+                ):
+                    progress("synthesizing", f"核对文稿与推进交付（第 {round_index + 1} 轮）")
+                else:
+                    progress("synthesizing", f"分析已查依据并继续（第 {round_index + 1} 轮）")
                 proposal = await invoke(
                     "reasoning",
                     ReasoningInput(
                         perceived=perceived,
                         tools=available_tools,
                         delivered_prefix=delivered_prefix(),
-                        purpose="finalization"
-                        if finalizing
-                        or (
-                            round_index > 0
-                            and round_index == self.settings.runtime.max_rounds - 1
-                        )
-                        else "main",
+                        purpose="finalization" if is_final_round else "main",
                     ),
+                    emit_progress=False,
                 )
                 if (
                     finalizing
@@ -1124,21 +1288,8 @@ class Harness:
                             )
                             >= self.settings.context_policy.repeated_tool_limit
                         )
-                        progress(
-                            {
-                                "read_material": "material_reading",
-                                "search_material": "material_searching",
-                                "search_cases": "case_searching",
-                                "read_case": "case_reading",
-                                "search_laws": "law_searching",
-                                "dynamic_rag_search": "law_searching",
-                                "search": "law_searching",
-                                "read_law": "source_reading",
-                                "write_file": "file_writing",
-                                "write": "file_writing",
-                                "paper_compile": "file_compiling",
-                            }.get(name, "action")
-                        )
+                        action_stage = _action_progress_stage(name)
+                        progress(action_stage, _action_progress_label(name, action_request.arguments))
                         allocation = self.model_context.allocate_tool_context(
                             perceived.assembly.used_tokens,
                             len(proposal.action_requests),
@@ -1212,8 +1363,10 @@ class Harness:
                                 "action",
                                 action_request,
                                 read_only=bool(spec and spec.read_only),
+                                emit_progress=False,
                                 context={
                                     "tool_call_index": tool_counts[name],
+                                    "mode": value.mode,
                                     "user_request": value.text,
                                     "user_facts": value.facts,
                                     "user_constraints": value.constraints,
@@ -1230,6 +1383,11 @@ class Harness:
                                     ),
                                 },
                             )
+                            done_label = _action_progress_done_label(
+                                name, action_request.arguments, result
+                            )
+                            if done_label:
+                                progress(action_stage, done_label)
                         actions.append(result)
                         if self.material_catalog:
                             if result.outcome != "error":
@@ -1239,7 +1397,7 @@ class Harness:
                             skill_id = payload.get("skill_id")
                             version = payload.get("version")
                             if isinstance(skill_id, str) and isinstance(version, str):
-                                requires_work = True
+                                requires_work = bool(payload.get("requires_work_mode", True))
                                 active_skills = [
                                     item
                                     for item in active_skills
@@ -1249,11 +1407,7 @@ class Harness:
                                     {
                                         "skill_id": skill_id,
                                         "version": version,
-                                        **(
-                                            {"requires_work_mode": True}
-                                            if requires_work
-                                            else {}
-                                        ),
+                                        "requires_work_mode": requires_work,
                                     }
                                 )
                         retained_results.append(result.model_dump(mode="json"))
@@ -1349,7 +1503,7 @@ class Harness:
                     work.revision += 1
                     await save_checkpoint()
                     if can_offer_mode_upgrade and any(
-                        item.get("skill_id")
+                        item.get("skill_id") and item.get("requires_work_mode", True)
                         for item in active_skills
                     ):
                         return finish(

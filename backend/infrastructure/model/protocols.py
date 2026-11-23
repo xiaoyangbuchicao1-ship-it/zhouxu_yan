@@ -14,6 +14,7 @@ from backend.contracts.modules.loop import DecisionProposal
 from backend.contracts.schemas.core import ModuleRequest, PortError
 from backend.infrastructure.model.decision import DeliveryText
 from backend.infrastructure.model.deepseek import DeepSeekModel
+from backend.infrastructure.model.endpoint_policy import EndpointPolicyError
 from backend.infrastructure.model.public_text import PublicText
 
 
@@ -176,6 +177,9 @@ class NativeProtocolModel(DeepSeekModel):
             decision, tokens = self._decode_native(request, response.json())
             status = "incomplete" if decision.incomplete else "ok"
             return decision
+        except EndpointPolicyError:
+            error_code = "invalid_endpoint"
+            raise PortError(self.settings.error(error_code)) from None
         except PortError as exc:
             error_code = exc.error.code
             raise
@@ -241,6 +245,9 @@ class NativeProtocolModel(DeepSeekModel):
                 await on_delta(tail)
             status = "incomplete" if decision.incomplete else "ok"
             return decision
+        except EndpointPolicyError:
+            error_code = "invalid_endpoint"
+            raise PortError(self.settings.error(error_code)) from None
         except PortError as exc:
             error_code = exc.error.code
             raise

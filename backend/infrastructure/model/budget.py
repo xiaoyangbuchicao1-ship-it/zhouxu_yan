@@ -7,6 +7,7 @@ import httpx
 
 from backend.contracts.model_context import RequestBudget, RequestEstimate
 from backend.contracts.schemas.core import PortError
+from backend.infrastructure.model.endpoint_policy import pinned_async_transport
 
 
 class ModelBudget:
@@ -156,7 +157,7 @@ class BudgetTransport(httpx.AsyncBaseTransport):
 
     def __init__(self, budget, inner=None):
         self.budget = budget
-        self.inner = inner or httpx.AsyncHTTPTransport(trust_env=False)
+        self.inner = inner or pinned_async_transport()
 
     async def handle_async_request(self, request):
         configured = httpx.URL(self.budget.settings.model.endpoint)
@@ -180,7 +181,7 @@ class BudgetTransport(httpx.AsyncBaseTransport):
             packet.setdefault("generationConfig", {})["maxOutputTokens"] = plan.output_reserved
         else:
             packet["max_tokens"] = plan.output_reserved
-        if self.budget.settings.model.provider == "deepseek":
+        if protocol == "deepseek_chat_completions":
             packet["thinking"] = {
                 "type": "enabled"
                 if self.budget.settings.model.thinking_enabled

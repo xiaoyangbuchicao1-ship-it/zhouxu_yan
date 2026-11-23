@@ -25,6 +25,7 @@ from backend.infrastructure.database.models import (
     ModelProviderModel,
     ProviderRevisionModel,
 )
+from backend.infrastructure.model.credentials import decrypt_api_key
 from backend.infrastructure.model.directory import RuntimeModelRevision
 from backend.infrastructure.model.relay_config import (
     load_relay_config,
@@ -150,6 +151,15 @@ class SqliteModelDirectory:
                     "source": item.source,
                     "checked_on": item.checked_on,
                 }
+                verification = {
+                    "connectivity": {
+                        "status": "verified",
+                        "checked_at": item.checked_on,
+                        "provider_revision_id": f"{provider_id}:r1",
+                        "profile_revision": 1,
+                        "note": "verified baseline catalog",
+                    }
+                }
                 profile = ModelProfileModel(
                     profile_id=item.profile_id,
                     provider_id=provider_id,
@@ -166,7 +176,7 @@ class SqliteModelDirectory:
                     access_scope="all",
                     is_default=item.profile_id == "deepseek-flash",
                     sort_order=100,
-                    verification_json=None,
+                    verification_json=json.dumps(verification, ensure_ascii=False, separators=(",", ":")),
                     current_revision=1,
                     source=item.source,
                     checked_on=item.checked_on,
@@ -191,15 +201,25 @@ class SqliteModelDirectory:
         self.ensure_seed()
         with self.database.session() as session:
             rows = session.scalars(
-                select(ModelProfileModel).order_by(ModelProfileModel.sort_order, ModelProfileModel.profile_id)
+                select(ModelProfileModel)
+                .join(ModelProviderModel, ModelProfileModel.provider_id == ModelProviderModel.id)
+                .where(
+                    ModelProfileModel.enabled.is_(True),
+                    ModelProfileModel.archived_at.is_(None),
+                    ModelProviderModel.enabled.is_(True),
+                    ModelProviderModel.archived_at.is_(None),
+                )
+                .order_by(ModelProfileModel.sort_order, ModelProfileModel.profile_id)
             ).all()
-            return [self._revision_from_row(session, row, historical=False) for row in rows if row.enabled]
+            return [self._revision_from_row(session, row, historical=False) for row in rows]
 
     def resolve(self, profile_id: str, *, profile_revision_id: str | None = None) -> RuntimeModelRevision:
         self.ensure_seed()
         with self.database.session() as session:
             row = session.get(ModelProfileModel, profile_id)
             if row is None:
+                raise KeyError(profile_id)
+            if profile_revision_id is None and row.archived_at is not None:
                 raise KeyError(profile_id)
             revision = None
             if profile_revision_id:
@@ -217,6 +237,8 @@ class SqliteModelDirectory:
             if not value:
                 raise ValueError("credential_missing")
             return SecretStr(value)
+        if revision.credential_mode == "encrypted_db":
+            return decrypt_api_key(revision.encrypted_key or "")
         if revision.profile.provider == "deepseek":
             return load_key(self.settings)
         path = revision.credential_file or os.environ.get("ZHOUXU_RELAY_CREDENTIAL_FILE")
@@ -225,12 +247,23 @@ class SqliteModelDirectory:
     def default_profile_id(self) -> str:
         self.ensure_seed()
         with self.database.session() as session:
-            value = session.scalar(
+            base = (
                 select(ModelProfileModel.profile_id)
-                .where(ModelProfileModel.enabled.is_(True), ModelProfileModel.is_default.is_(True))
-                .limit(1)
+                .join(ModelProviderModel, ModelProfileModel.provider_id == ModelProviderModel.id)
+                .where(
+                    ModelProfileModel.enabled.is_(True),
+                    ModelProfileModel.archived_at.is_(None),
+                    ModelProviderModel.enabled.is_(True),
+                    ModelProviderModel.archived_at.is_(None),
+                )
             )
-            return value or "deepseek-flash"
+            value = session.scalar(base.where(ModelProfileModel.is_default.is_(True)).limit(1))
+            if value:
+                return value
+            fallback = session.scalar(
+                base.order_by(ModelProfileModel.sort_order, ModelProfileModel.profile_id).limit(1)
+            )
+            return fallback or self.settings.model.name
 
     # -- conversion ------------------------------------------------------
     def _revision_from_row(self, session, row: ModelProfileModel, *, historical: bool, revision=None) -> RuntimeModelRevision:
@@ -248,6 +281,8 @@ class SqliteModelDirectory:
         provider_revision = session.get(ProviderRevisionModel, revision.provider_revision_id)
         if provider is None or provider_revision is None:
             raise RuntimeError("model_provider_revision_missing")
+        if not historical and (row.archived_at is not None or provider.archived_at is not None):
+            raise KeyError(row.profile_id)
         facts = _json(revision.facts_json, {})
         protocol = facts.get("protocol_override") or provider_revision.default_protocol
         capabilities = facts["capabilities"]
@@ -255,10 +290,16 @@ class SqliteModelDirectory:
         if not isinstance(modes, list) or not modes:
             raise RuntimeError("model_profile_revision_invalid")
         configured = self._configured(provider, provider_revision, historical=historical)
-        current = not historical and row.enabled and provider.enabled
+        current = (
+            not historical
+            and row.enabled
+            and provider.enabled
+            and row.archived_at is None
+            and provider.archived_at is None
+        )
         profile = ModelProfile(
             profile_id=row.profile_id,
-            provider="deepseek" if provider.preset_type == "deepseek" else provider.id,
+            provider=provider.id,
             provider_revision_id=provider_revision.id,
             profile_revision_id=revision.id,
             revision=revision.revision,
@@ -280,6 +321,9 @@ class SqliteModelDirectory:
             checked_on=facts["checked_on"],
         )
         provider_config = _json(provider_revision.config_json, {})
+        encrypted_key = provider_config.get("api_key_encrypted") or (
+            None if historical else provider.api_key_encrypted
+        )
         return RuntimeModelRevision(
             profile=profile,
             provider_revision_id=provider_revision.id,
@@ -290,21 +334,35 @@ class SqliteModelDirectory:
             credential_ref=provider_revision.credential_ref,
             credential_file=(
                 self.settings.model.credential_file
-                if provider.preset_type == "deepseek"
+                if provider.id == "deepseek" and provider_revision.credential_mode == "file_ref"
                 else provider_revision.credential_ref if provider_revision.credential_mode == "file_ref" else None
             ),
             extra_headers=provider_config.get("extra_headers", {}),
+            access_scope=row.access_scope if not historical else facts.get("access_scope", row.access_scope or "all"),
+            encrypted_key=encrypted_key,
         )
 
     def _configured(self, provider: ModelProviderModel, revision: ProviderRevisionModel, *, historical: bool) -> bool:
         if revision.auth_style == "none":
             return True
-        if not provider.enabled and not historical:
+        if not historical and (not provider.enabled or provider.archived_at is not None):
             return False
         if revision.credential_mode == "env_ref":
             return bool(os.environ.get(revision.credential_ref or "", "").strip())
+        if revision.credential_mode == "encrypted_db":
+            provider_config = _json(revision.config_json, {})
+            ciphertext = provider_config.get("api_key_encrypted") or (
+                None if historical else provider.api_key_encrypted
+            )
+            if not ciphertext:
+                return False
+            try:
+                decrypt_api_key(ciphertext)
+                return True
+            except ValueError:
+                return False
         try:
-            if provider.preset_type == "deepseek":
+            if provider.id == "deepseek":
                 load_key(self.settings)
             else:
                 load_relay_config(

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from backend.infrastructure.database.connection import Database
 from backend.infrastructure.database.models import (
@@ -179,11 +180,155 @@ class AdminService:
             session.commit()
             return self._account_view(target)
 
+    AUDIT_CATEGORY_RESOURCES: dict[str, tuple[str, ...]] = {
+        "account": ("account",),
+        "capability": ("account_capability",),
+        "model": ("model_provider", "model_profile"),
+        "conversation": ("conversation",),
+    }
+    _RESOURCE_TO_CATEGORY: dict[str, str] = {
+        resource: cat
+        for cat, resources in AUDIT_CATEGORY_RESOURCES.items()
+        for resource in resources
+    }
+
     def list_audit(self, *, limit: int = 50) -> list[dict]:
         if limit < 1 or limit > 200:
             raise AdminServiceError("invalid_audit_limit")
         with self.database.session() as session:
             return self._list_audit_with_aliases(session, limit)
+
+    def query_audit(
+        self,
+        *,
+        category: str | None = None,
+        outcome: str | None = None,
+        query: str = "",
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        if limit < 1 or limit > 200:
+            raise AdminServiceError("invalid_audit_limit")
+        normalized_cat = category.strip().lower() if category else None
+        if normalized_cat == "all":
+            normalized_cat = None
+        if normalized_cat is not None and normalized_cat not in self.AUDIT_CATEGORY_RESOURCES:
+            raise AdminServiceError("invalid_audit_category")
+        normalized_out = outcome.strip().lower() if outcome else None
+        if normalized_out == "all":
+            normalized_out = None
+        if normalized_out is not None and normalized_out not in {"succeeded", "failed"}:
+            raise AdminServiceError("invalid_audit_outcome")
+        cursor_time, cursor_id = self._decode_audit_cursor(cursor)
+        term = query.strip()[:200]
+
+        from sqlalchemy.orm import aliased
+
+        actor = aliased(AccountModel)
+        target = aliased(AccountModel)
+        with self.database.session() as session:
+            base_filters = []
+            if normalized_out is not None:
+                base_filters.append(BusinessAuditModel.outcome == normalized_out)
+            if term:
+                pattern = f"%{term}%"
+                base_filters.append(
+                    or_(
+                        actor.email.ilike(pattern),
+                        target.email.ilike(pattern),
+                        BusinessAuditModel.action.ilike(pattern),
+                        BusinessAuditModel.resource_id.ilike(pattern),
+                    )
+                )
+
+            counts = {"all": 0, "account": 0, "capability": 0, "model": 0, "conversation": 0}
+            count_stmt = (
+                select(BusinessAuditModel.resource_type)
+                .join(actor, actor.id == BusinessAuditModel.actor_id)
+                .outerjoin(target, target.id == BusinessAuditModel.target_account_id)
+            )
+            if base_filters:
+                count_stmt = count_stmt.where(*base_filters)
+            for resource_type in session.scalars(count_stmt):
+                counts["all"] += 1
+                cat = self._RESOURCE_TO_CATEGORY.get(resource_type or "account")
+                if cat is not None:
+                    counts[cat] += 1
+
+            statement = (
+                select(BusinessAuditModel, actor, target)
+                .join(actor, actor.id == BusinessAuditModel.actor_id)
+                .outerjoin(target, target.id == BusinessAuditModel.target_account_id)
+                .order_by(BusinessAuditModel.created_at.desc(), BusinessAuditModel.id.desc())
+                .limit(limit + 1)
+            )
+            if base_filters:
+                statement = statement.where(*base_filters)
+            if normalized_cat is not None:
+                statement = statement.where(
+                    BusinessAuditModel.resource_type.in_(
+                        self.AUDIT_CATEGORY_RESOURCES[normalized_cat]
+                    )
+                )
+            if cursor_time is not None:
+                statement = statement.where(
+                    or_(
+                        BusinessAuditModel.created_at < cursor_time,
+                        and_(
+                            BusinessAuditModel.created_at == cursor_time,
+                            BusinessAuditModel.id < cursor_id,
+                        ),
+                    )
+                )
+            rows = session.execute(statement).all()
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            events = [self._audit_view(event, actor_acc, target_acc) for event, actor_acc, target_acc in rows]
+            next_cursor = None
+            if has_more and rows:
+                next_cursor = self._encode_audit_cursor(rows[-1][0].created_at, rows[-1][0].id)
+            return {
+                "events": events,
+                "category_counts": counts,
+                "next_cursor": next_cursor,
+            }
+
+    @staticmethod
+    def _encode_audit_cursor(value: datetime, row_id: str) -> str:
+        utc_dt = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        payload = json.dumps({"time": utc_dt.isoformat(), "id": row_id}, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_audit_cursor(value: str | None) -> tuple[datetime | None, str | None]:
+        if value is None:
+            return None, None
+        try:
+            padded = value + "=" * (-len(value) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+            timestamp = datetime.fromisoformat(payload["time"])
+            row_id = payload["id"]
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            raise AdminServiceError("invalid_audit_cursor") from None
+        if not isinstance(row_id, str) or not row_id:
+            raise AdminServiceError("invalid_audit_cursor")
+        return timestamp, row_id
+
+    @staticmethod
+    def _audit_view(event: BusinessAuditModel, actor_account: AccountModel, target_account: AccountModel | None) -> dict:
+        return {
+            "id": event.id,
+            "action": event.action,
+            "actor_id": event.actor_id,
+            "actor_email": actor_account.email,
+            "target_account_id": event.target_account_id,
+            "target_email": target_account.email if target_account else None,
+            "resource_type": getattr(event, "resource_type", "account") or "account",
+            "resource_id": getattr(event, "resource_id", None),
+            "outcome": getattr(event, "outcome", "succeeded") or "succeeded",
+            "details": json.loads(event.details_json) if event.details_json else {},
+            "created_at": event.created_at,
+        }
 
     @staticmethod
     def _account_view(account: AccountModel) -> dict:
@@ -209,24 +354,10 @@ class AdminService:
             .order_by(BusinessAuditModel.created_at.desc(), BusinessAuditModel.id.desc())
             .limit(limit)
         ).all()
-        result = []
-        for event, actor_account, target_account in rows:
-            result.append(
-                {
-                    "id": event.id,
-                    "action": event.action,
-                    "actor_id": event.actor_id,
-                    "actor_email": actor_account.email,
-                    "target_account_id": event.target_account_id,
-                    "target_email": target_account.email if target_account else None,
-                    "resource_type": getattr(event, "resource_type", "account") or "account",
-                    "resource_id": getattr(event, "resource_id", None),
-                    "outcome": getattr(event, "outcome", "succeeded") or "succeeded",
-                    "details": json.loads(event.details_json) if event.details_json else {},
-                    "created_at": event.created_at,
-                }
-            )
-        return result
+        return [
+            self._audit_view(event, actor_account, target_account)
+            for event, actor_account, target_account in rows
+        ]
 
     @staticmethod
     def _add_audit(

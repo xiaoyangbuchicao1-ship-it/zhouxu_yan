@@ -5,6 +5,11 @@ const REQUEST_TIMEOUT_MS = 600_000;
 export interface MaritimeSkill {
   id: string;
   name: string;
+  display_name?: string;
+  starter_prompt?: string;
+  status?: "ready" | "coming_soon";
+  mode_scope?: "chat" | "work";
+  deliverable_tag?: string;
   summary: string;
   instructions: string;
   category?: string;

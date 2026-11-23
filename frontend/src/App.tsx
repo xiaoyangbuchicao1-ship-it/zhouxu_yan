@@ -14,6 +14,7 @@ import AdminAccountConversationsPage from "./pages/admin/AdminAccountConversatio
 import AdminConversationDetailPage from "./pages/admin/AdminConversationDetailPage";
 import AdminOperationsPage from "./pages/admin/AdminOperationsPage";
 import AdminModelsPage from "./pages/admin/AdminModelsPage";
+import AdminAuditPage from "./pages/admin/AdminAuditPage";
 import { lazy, Suspense } from "react";
 
 const Workspace = lazy(() => import("./pages/Workspace"));
@@ -40,6 +41,7 @@ const App = () => (
             <Route path="accounts/:accountId/conversations/:conversationId" element={<AdminConversationDetailPage />} />
             <Route path="operations" element={<AdminOperationsPage />} />
             <Route path="models" element={<AdminModelsPage />} />
+            <Route path="audit" element={<AdminAuditPage />} />
           </Route>
           <Route path="/workspace/*" element={<Suspense fallback={<div role="status" style={{ minHeight: "100dvh", display: "grid", placeItems: "center", background: "#080c10", fontSize: 16 }}>正在打开工作台…</div>}><Workspace /></Suspense>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

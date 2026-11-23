@@ -41,6 +41,7 @@ def build_harness(
     research_card_tools: dict[str, tuple[ToolSpec, ToolExecutor | ContextualToolExecutor]]
     | None = None,
     account_skill_loader: Callable[[str, str, int | None], dict[str, Any]] | None = None,
+    skill_permission_checker: Callable[[str, str, bool], bool] | None = None,
     web_client=None,
 ) -> Harness:
     context_model = model_context or model
@@ -126,6 +127,7 @@ def build_harness(
         settings,
         account_skill_loader=account_skill_loader,
         package_installer=execution_tools.install_skill_package if execution_tools is not None else None,
+        skill_permission_checker=skill_permission_checker,
     )
     if skill_tool.spec.name in registered:
         raise ValueError("duplicate_tool_registration")
@@ -212,6 +214,7 @@ async def open_harnesses(
     events: EventSink,
     modes: tuple[str, ...],
     account_skill_loader: Callable[[str, str, int | None], dict[str, Any]] | None = None,
+    skill_permission_checker: Callable[[str, str, bool], bool] | None = None,
     model_directory=None,
 ):
     """Application lifetime: warm the encoder once, then serve multiple runs.
@@ -326,6 +329,7 @@ async def open_harnesses(
                 execution_tools=execution_tools,
                 research_card_tools=research_card_tools,
                 account_skill_loader=account_skill_loader,
+                skill_permission_checker=skill_permission_checker,
                 web_client=web_client,
             )
         yield harnesses

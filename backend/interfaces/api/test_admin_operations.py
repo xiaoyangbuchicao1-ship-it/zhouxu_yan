@@ -142,6 +142,79 @@ class AdminOperationsHttpContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(forbidden.status_code, 403)
 
+    async def test_resource_health_prefers_live_opensearch_and_does_not_fake_unavailable(self):
+        from unittest.mock import patch
+
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        with (
+            patch(
+                "backend.infrastructure.search.maritime_corpus.MaritimeCorpus.status",
+                return_value={"indexed": False, "counts": {}},
+            ),
+            patch(
+                "backend.infrastructure.search.maritime_corpus.MaritimeCorpus.opensearch_status",
+                return_value={"available": True, "counts": {"laws": 93858, "cases": 3156}, "errors": {}},
+            ),
+        ):
+            res = await self.client.get("/admin/resources/health", headers=headers)
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["status"], "ready")
+        self.assertEqual(body["sources"]["laws"]["status"], "ready")
+        self.assertEqual(body["sources"]["laws"]["count"], 93858)
+        self.assertEqual(body["sources"]["cases"]["status"], "ready")
+        self.assertEqual(body["sources"]["cases"]["count"], 3156)
+
+        with (
+            patch(
+                "backend.infrastructure.search.maritime_corpus.MaritimeCorpus.status",
+                return_value={"indexed": False, "counts": {}},
+            ),
+            patch(
+                "backend.infrastructure.search.maritime_corpus.MaritimeCorpus.opensearch_status",
+                return_value={"available": False, "counts": {}, "errors": {"cluster": "ConnectError"}},
+            ),
+        ):
+            down = await self.client.get("/admin/resources/health", headers=headers)
+        self.assertEqual(down.status_code, 200)
+        down_body = down.json()
+        self.assertEqual(down_body["sources"]["laws"]["status"], "unavailable")
+        self.assertEqual(down_body["sources"]["cases"]["status"], "unavailable")
+
+    async def test_admin_tasks_support_status_filter_and_reject_invalid_status(self):
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        conv = self.workspace.create(
+            account_id=self.user.account.id, title="失败任务排查", mode="work"
+        )
+        self.workspace.record_run(
+            account_id=self.user.account.id,
+            conversation_id=conv.id,
+            run_id="operations-run-failed",
+            question="触发失败测试",
+            status="failed",
+        )
+        self.workspace.record_run(
+            account_id=self.user.account.id,
+            conversation_id=conv.id,
+            run_id="operations-run-paused",
+            question="暂停任务测试",
+            status="paused",
+        )
+
+        failed_res = await self.client.get("/admin/tasks?status=failed", headers=headers)
+        self.assertEqual(failed_res.status_code, 200, failed_res.text)
+        failed_ids = {item["run_id"] for item in failed_res.json()["tasks"]}
+        self.assertEqual(failed_ids, {"operations-run-failed"})
+
+        active_res = await self.client.get("/admin/tasks?status=active", headers=headers)
+        self.assertEqual(active_res.status_code, 200, active_res.text)
+        active_ids = {item["run_id"] for item in active_res.json()["tasks"]}
+        self.assertEqual(active_ids, {"operations-run-paused"})
+
+        invalid_res = await self.client.get("/admin/tasks?status=bogus", headers=headers)
+        self.assertEqual(invalid_res.status_code, 422)
+        self.assertEqual(invalid_res.json()["detail"], "invalid_task_status")
+
 
 if __name__ == "__main__":
     unittest.main()

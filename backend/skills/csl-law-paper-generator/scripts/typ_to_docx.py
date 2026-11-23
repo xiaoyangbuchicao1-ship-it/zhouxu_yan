@@ -157,6 +157,182 @@ def _extract_typst_field(arg_block: str, key: str) -> str:
     return val.strip()
 
 
+def _match_balanced_parens(text: str, open_idx: int) -> int:
+    """给定 `(` 的索引，返回匹配的 `)` 之后索引；未闭合则返回 -1。"""
+    n = len(text)
+    if open_idx < 0 or open_idx >= n or text[open_idx] != "(":
+        return -1
+    depth = 1
+    in_str = False
+    i = open_idx + 1
+    while i < n and depth > 0:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == '"':
+            in_str = not in_str
+        elif not in_str:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+        i += 1
+    return -1
+
+
+def _split_top_level_args(text: str) -> list[str]:
+    """按顶层逗号拆分 Typst 调用参数，保留引号、方括号与圆括号内部结构。"""
+    parts: list[str] = []
+    buf: list[str] = []
+    paren_d = 0
+    brack_d = 0
+    in_str = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            buf.append(text[i : i + 2])
+            i += 2
+            continue
+        if not in_str and ch == "/" and i + 1 < n and text[i + 1] == "/":
+            nl = text.find("\n", i)
+            if nl == -1:
+                break
+            i = nl + 1
+            buf.append("\n")
+            continue
+        if ch == '"':
+            in_str = not in_str
+            buf.append(ch)
+            i += 1
+            continue
+        if not in_str:
+            if ch == "(":
+                paren_d += 1
+            elif ch == ")":
+                paren_d = max(0, paren_d - 1)
+            elif ch == "[":
+                brack_d += 1
+            elif ch == "]":
+                brack_d = max(0, brack_d - 1)
+            elif ch == "," and paren_d == 0 and brack_d == 0:
+                item = "".join(buf).strip()
+                if item:
+                    parts.append(item)
+                buf.clear()
+                i += 1
+                continue
+        buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _unwrap_typst_cell(expr: str) -> list[str]:
+    """将 Typst 表格参数（普通单元格 / table.header / table.cell）展平为文本单元格列表。"""
+    s = expr.strip()
+    if not s:
+        return []
+    if s.startswith("table.hline(") or s.startswith("table.vline("):
+        return []
+    if s.startswith("table.header(") or s.startswith("table.footer("):
+        open_i = s.find("(")
+        end_i = _match_balanced_parens(s, open_i)
+        inner = s[open_i + 1 : end_i - 1] if end_i != -1 else s[open_i + 1 :]
+        cells: list[str] = []
+        for sub in _split_top_level_args(inner):
+            if re.match(r"^[A-Za-z_][\w-]*\s*:", sub):
+                continue
+            cells.extend(_unwrap_typst_cell(sub))
+        return cells
+    if s.startswith("table.cell("):
+        open_i = s.find("(")
+        end_i = _match_balanced_parens(s, open_i)
+        if end_i != -1:
+            rest = s[end_i:].strip()
+            if rest.startswith("[") and rest.endswith("]"):
+                return [_clean_typst_cell_text(rest[1:-1])]
+            return _unwrap_typst_cell(s[open_i + 1 : end_i - 1])
+    if s.startswith("[") and s.endswith("]"):
+        return [_clean_typst_cell_text(s[1:-1])]
+    if s.startswith('"') and s.endswith('"') and len(s) >= 2:
+        return [_clean_typst_cell_text(s[1:-1])]
+    if re.match(r"^[A-Za-z_][\w-]*\s*:", s):
+        return []
+    return [_clean_typst_cell_text(s)]
+
+
+def _clean_typst_cell_text(text: str) -> str:
+    s = re.sub(r"#linebreak\(\)", "\n", text)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _parse_typst_table(inner: str) -> dict | None:
+    cols = 0
+    cells: list[str] = []
+    for arg in _split_top_level_args(inner):
+        m_cols = re.match(r"^columns\s*:\s*(.+)$", arg, re.S)
+        if m_cols:
+            val = m_cols.group(1).strip()
+            if val.isdigit():
+                cols = max(1, int(val))
+            elif val.startswith("(") and val.endswith(")"):
+                cols = max(1, len(_split_top_level_args(val[1:-1])))
+            continue
+        if re.match(r"^[A-Za-z_][\w-]*\s*:", arg):
+            continue
+        cells.extend(_unwrap_typst_cell(arg))
+    if not cells:
+        return None
+    if cols <= 0:
+        cols = min(3, len(cells)) or 1
+    rows = [cells[k : k + cols] for k in range(0, len(cells), cols)]
+    for r in rows:
+        while len(r) < cols:
+            r.append("")
+    return {"cols": cols, "rows": rows}
+
+
+def _append_text_blocks(chunk: str, blocks: list) -> None:
+    lines = chunk.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line or line.startswith("//"):
+            continue
+        if re.fullmatch(r"#(?:pagebreak|v|h)\([^)]*\)", line):
+            continue
+
+        if line.startswith("=== "):
+            blocks.append(("h3", line[4:].strip()))
+        elif line.startswith("== "):
+            blocks.append(("h2", line[3:].strip()))
+        elif line.startswith("= "):
+            blocks.append(("h1", line[2:].strip()))
+        else:
+            para_lines = [line]
+            while i < len(lines):
+                next_line = lines[i].strip()
+                if (
+                    not next_line
+                    or next_line.startswith("=")
+                    or next_line.startswith("//")
+                    or re.fullmatch(r"#(?:pagebreak|v|h)\([^)]*\)", next_line)
+                ):
+                    break
+                para_lines.append(next_line)
+                i += 1
+            blocks.append(("p", " ".join(para_lines)))
+
+
 def parse_typ_paper(typ_content: str):
     """从 .typ 源码中精准解析元数据和结构化正文块"""
     meta = {
@@ -218,32 +394,24 @@ def parse_typ_paper(typ_content: str):
     else:
         body_text = typ_content
 
-    # 解析正文行和结构
+    # 解析正文行、标题与 `#table(...)` 结构
     blocks = []
-    lines = body_text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        i += 1
-        if not line or line.startswith("//"):
-            continue
-
-        if line.startswith("=== "):
-            blocks.append(("h3", line[4:].strip()))
-        elif line.startswith("== "):
-            blocks.append(("h2", line[3:].strip()))
-        elif line.startswith("= "):
-            blocks.append(("h1", line[2:].strip()))
-        else:
-            # 普通段落，合并连续行
-            para_lines = [line]
-            while i < len(lines):
-                next_line = lines[i].strip()
-                if not next_line or next_line.startswith("=") or next_line.startswith("//"):
-                    break
-                para_lines.append(next_line)
-                i += 1
-            blocks.append(("p", " ".join(para_lines)))
+    pos = 0
+    n = len(body_text)
+    while pos < n:
+        idx = body_text.find("#table(", pos)
+        if idx == -1:
+            _append_text_blocks(body_text[pos:], blocks)
+            break
+        end_i = _match_balanced_parens(body_text, idx + len("#table(") - 1)
+        if end_i == -1:
+            _append_text_blocks(body_text[pos:], blocks)
+            break
+        _append_text_blocks(body_text[pos:idx], blocks)
+        parsed_tbl = _parse_typst_table(body_text[idx + len("#table(") : end_i - 1])
+        if parsed_tbl:
+            blocks.append(("table", parsed_tbl))
+        pos = end_i
 
     return meta, blocks
 
@@ -391,25 +559,64 @@ def build_docx_from_typ(input_typ_path: str, output_docx_path: str):
         ref.set(qn("w:id"), str(fid))
         run._r.append(ref)
 
-    def _append_inline_runs(paragraph, raw_segment: str, *, east=FONT_SERIF, ascii_=FONT_TNR, size=10.5):
+    def _append_inline_runs(
+        paragraph,
+        raw_segment: str,
+        *,
+        east=FONT_SERIF,
+        ascii_=FONT_TNR,
+        size=10.5,
+        force_bold=False,
+    ):
         for seg_text, is_bold, is_italic in parse_inline_segments(raw_segment):
             r = paragraph.add_run(seg_text)
-            set_run_font(r, east=east, ascii_=ascii_, size=size, bold=is_bold, italic=is_italic)
+            set_run_font(r, east=east, ascii_=ascii_, size=size, bold=bool(is_bold or force_bold), italic=is_italic)
 
-    def render_body_text_with_footnotes(paragraph, raw_text):
+    def render_body_text_with_footnotes(paragraph, raw_text, *, font_size=10.5, force_bold=False):
         pos = 0
         for start, end, fn_inner in iter_balanced_calls(raw_text, "#footnote["):
             before = raw_text[pos:start]
             if before:
-                _append_inline_runs(paragraph, before, east=FONT_SERIF, ascii_=FONT_TNR, size=10.5)
+                _append_inline_runs(paragraph, before, east=FONT_SERIF, ascii_=FONT_TNR, size=font_size, force_bold=force_bold)
             add_footnote_reference(paragraph, fn_inner.strip())
             pos = end
         tail = raw_text[pos:]
         if tail:
-            _append_inline_runs(paragraph, tail, east=FONT_SERIF, ascii_=FONT_TNR, size=10.5)
+            _append_inline_runs(paragraph, tail, east=FONT_SERIF, ascii_=FONT_TNR, size=font_size, force_bold=force_bold)
 
     for kind, text in blocks:
-        if kind == "h1":
+        if kind == "table":
+            rows_data = text["rows"]
+            cols_count = text["cols"]
+            if rows_data and cols_count > 0:
+                tbl = doc.add_table(rows=len(rows_data), cols=cols_count)
+                try:
+                    tbl.style = "Table Grid"
+                except KeyError:
+                    pass
+                tblPr = tbl._tbl.tblPr
+                borders = OxmlElement("w:tblBorders")
+                for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+                    edge_el = OxmlElement(f"w:{edge}")
+                    edge_el.set(qn("w:val"), "single")
+                    edge_el.set(qn("w:sz"), "4")
+                    edge_el.set(qn("w:space"), "0")
+                    edge_el.set(qn("w:color"), "BFBFBF")
+                    borders.append(edge_el)
+                tblPr.append(borders)
+                for r_idx, row_cells in enumerate(rows_data):
+                    for c_idx, cell_val in enumerate(row_cells):
+                        cell_p = tbl.cell(r_idx, c_idx).paragraphs[0]
+                        cell_p.paragraph_format.space_before = Pt(2)
+                        cell_p.paragraph_format.space_after = Pt(2)
+                        cell_p.paragraph_format.line_spacing = 1.15
+                        render_body_text_with_footnotes(
+                            cell_p,
+                            cell_val,
+                            font_size=9.5,
+                            force_bold=(r_idx == 0),
+                        )
+        elif kind == "h1":
             p = doc.add_paragraph()
             pf = p.paragraph_format
             pf.alignment = WD_ALIGN_PARAGRAPH.CENTER

@@ -37,6 +37,17 @@ export interface AdminAccountPage {
   total_pages: number;
 }
 
+export type AdminAuditCategory = "all" | "account" | "capability" | "model" | "conversation";
+export type AdminAuditOutcome = "all" | "succeeded" | "failed";
+
+export interface AdminAuditFilters {
+  category?: AdminAuditCategory;
+  outcome?: AdminAuditOutcome;
+  query?: string;
+  cursor?: string | null;
+  limit?: number;
+}
+
 export interface AdminAuditEvent {
   id: string;
   action: string;
@@ -44,11 +55,31 @@ export interface AdminAuditEvent {
   actor_email: string;
   target_account_id: string | null;
   target_email: string | null;
+  resource_type?: string;
+  resource_id?: string | null;
+  outcome?: "succeeded" | "failed";
   details: Record<string, unknown>;
   created_at: string;
 }
 
+export interface AdminAuditPage {
+  events: AdminAuditEvent[];
+  category_counts?: Record<string, number> | null;
+  next_cursor?: string | null;
+}
+
 export type ConversationMode = "chat" | "work";
+
+export type ConversationStatusFilter = "all" | "succeeded" | "active" | "failed" | "no_runs";
+export type TaskStatusFilter = "all" | "succeeded" | "active" | "failed";
+
+export interface AdminConversationStatusCounts {
+  all: number;
+  succeeded: number;
+  active: number;
+  failed: number;
+  no_runs: number;
+}
 
 export interface AdminConversationSummary {
   id: string;
@@ -58,6 +89,7 @@ export interface AdminConversationSummary {
   archived: boolean;
   run_count: number;
   latest_status: string | null;
+  latest_run_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -92,6 +124,37 @@ export interface AdminConversationArtifact {
   preview_artifact_id?: string | null;
 }
 
+export interface AdminRunMaterial {
+  material_id: string;
+  filename: string;
+  media_type: string;
+  size_bytes: number;
+  status: string;
+}
+
+export interface AdminRunToolTrace {
+  tool_name: string;
+  tool_label: string;
+  query?: string | null;
+  result_count?: number | null;
+  status: "succeeded" | "failed";
+  summary?: string | null;
+}
+
+export interface AdminSourceDocument {
+  source_id: string;
+  kind?: "law" | "case" | "paper" | null;
+  title: string;
+  locator?: string | null;
+  section?: string | null;
+  version_date?: string | null;
+  version_label?: string | null;
+  authors?: string | null;
+  collection?: string | null;
+  text: string;
+  source_url?: string | null;
+}
+
 export interface AdminConversationRun {
   run_id: string;
   user_question: string;
@@ -102,24 +165,41 @@ export interface AdminConversationRun {
   protocol: string | null;
   thinking_mode: string | null;
   error_code: string | null;
+  error_message?: string | null;
   created_at: string;
   first_event_at?: string | null;
   first_delta_at?: string | null;
   completed_at?: string | null;
+  first_delta_ms?: number | null;
   elapsed_ms: number | null;
+  current_unit?: string | null;
+  context_compaction_count?: number;
+  continuation_guidance?: string[];
+  source_summary?: Record<string, number>;
   nodes: AdminConversationNode[];
+  materials?: AdminRunMaterial[];
+  tool_traces?: AdminRunToolTrace[];
   sources: AdminConversationSource[];
   artifacts: AdminConversationArtifact[];
 }
 
 export interface AdminConversationDetail {
+  account?: AdminConversationAccount | null;
   conversation: Omit<AdminConversationSummary, "run_count" | "last_status">;
   runs: AdminConversationRun[];
   next_cursor: string | null;
 }
 
+export interface AdminConversationAccount {
+  id: string;
+  email: string;
+  display_name: string;
+}
+
 export interface AdminConversationList {
+  account?: AdminConversationAccount | null;
   conversations: AdminConversationSummary[];
+  status_counts?: AdminConversationStatusCounts;
   next_cursor: string | null;
 }
 
@@ -140,7 +220,8 @@ export interface AdminSkillStatus {
   summary: string;
   version: string;
   visibility: string;
-  status: "ready" | "unavailable" | "not_configured";
+  mode_scope?: "chat" | "work" | null;
+  status: "ready" | "coming_soon" | "unavailable" | "not_configured";
   owner_email: string | null;
   updated_at: string | null;
 }
@@ -167,18 +248,22 @@ export interface AdminHealthItem {
 }
 
 export type ModelProtocol = "deepseek_chat_completions" | "openai_chat_completions" | "openai_responses" | "anthropic_messages" | "google_generative_language";
-export type ModelFamily = "deepseek" | "gpt" | "claude" | "gemini" | "glm" | "other";
+export type ModelFamily = "deepseek" | "gpt" | "claude" | "gemini" | "glm" | "qwen" | "kimi" | "other";
 export type ThinkingMode = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ConnectivityStatus = "unverified" | "verified" | "failed";
 
 export interface AdminModelProvider {
   id: string;
   name: string;
+  notes?: string;
   preset_type: string;
   default_protocol: ModelProtocol;
   auth_style: "bearer" | "x-api-key" | "x-goog-api-key" | "none";
   base_url: string;
-  credential_mode: "env_ref" | "file_ref";
+  extra_headers?: Record<string, string>;
+  credential_mode: "env_ref" | "encrypted_db" | "file_ref";
   credential_ref: string | null;
+  api_key_hint?: string | null;
   credential_configured: boolean;
   enabled: boolean;
   revision: number;
@@ -192,6 +277,7 @@ export interface AdminModelProfile {
   label: string;
   family: ModelFamily;
   protocol_override: ModelProtocol | null;
+  protocol: ModelProtocol;
   context_tokens: number;
   max_output_tokens: number;
   thinking_modes: ThinkingMode[];
@@ -203,24 +289,83 @@ export interface AdminModelProfile {
   sort_order: number;
   source: string;
   checked_on: string | null;
+  connectivity_status: ConnectivityStatus;
+  connectivity_checked_at: string | null;
+  connectivity_latency_ms: number | null;
+  connectivity_error: string | null;
   revision: number;
   updated_at: string;
 }
 
 export interface AdminModelDirectory {
+  credential_encryption_ready?: boolean;
+  local_hosts_allowed?: boolean;
   providers: AdminModelProvider[];
   models: AdminModelProfile[];
 }
 
-export type AdminProviderCreate = Omit<AdminModelProvider, "credential_configured" | "revision" | "updated_at"> & { extra_headers?: Record<string, string> };
+export interface AdminDiscoveredModel {
+  id: string;
+  family: ModelFamily;
+  label: string;
+  already_added: boolean;
+}
+
+export interface AdminProviderDiscoverResult {
+  supported: boolean;
+  models: AdminDiscoveredModel[];
+  notice: string | null;
+}
+
+export interface AdminConnectivityTestResult {
+  ok: boolean;
+  connectivity_status: "verified" | "failed";
+  latency_ms: number | null;
+  http_status?: number | null;
+  error_code: string | null;
+}
+
+export type AdminProviderCreate = {
+  id?: string;
+  name: string;
+  notes?: string;
+  preset_type?: string;
+  default_protocol: ModelProtocol;
+  auth_style?: "bearer" | "x-api-key" | "x-goog-api-key" | "none";
+  base_url: string;
+  extra_headers?: Record<string, string>;
+  credential_mode?: "env_ref" | "encrypted_db";
+  credential_ref?: string | null;
+  api_key?: string;
+  enabled?: boolean;
+};
 export type AdminProviderUpdate = Partial<Omit<AdminProviderCreate, "id" | "preset_type">>;
-export type AdminModelCreate = Omit<AdminModelProfile, "revision" | "updated_at" | "capabilities" | "source" | "checked_on"> & { capabilities?: Record<string, string>; source?: string; checked_on?: string };
-export type AdminModelUpdate = Partial<Pick<AdminModelProfile, "upstream_model_id" | "label" | "family" | "protocol_override" | "context_tokens" | "max_output_tokens" | "thinking_modes" | "default_thinking" | "enabled" | "access_scope" | "sort_order" | "capabilities">>;
+export type AdminModelCreate = {
+  profile_id?: string;
+  provider_id: string;
+  upstream_model_id: string;
+  label: string;
+  family?: ModelFamily;
+  protocol_override?: ModelProtocol | null;
+  context_tokens: number;
+  max_output_tokens: number;
+  thinking_modes: ThinkingMode[];
+  default_thinking: ThinkingMode;
+  enabled?: boolean;
+  access_scope?: string;
+  is_default?: boolean;
+  sort_order?: number;
+  capabilities?: Record<string, string>;
+  source?: string;
+  checked_on?: string;
+};
+export type AdminModelUpdate = Partial<Pick<AdminModelProfile, "upstream_model_id" | "label" | "family" | "protocol_override" | "context_tokens" | "max_output_tokens" | "thinking_modes" | "default_thinking" | "enabled" | "access_scope" | "is_default" | "sort_order" | "capabilities">>;
 
 export interface AdminConversationFilters {
   query?: string;
   mode?: ConversationMode | "all";
   archived?: "active" | "archived" | "all";
+  status?: ConversationStatusFilter;
   cursor?: string | null;
   limit?: number;
 }
@@ -247,6 +392,28 @@ export function adminErrorMessage(code: string): string {
     account_not_found: "这个账户已不存在，请刷新列表。",
     unavailable: "管理员服务暂时不可用，请稍后重试。",
     timeout: "连接超时，请重试。",
+    model_connectivity_unverified: "请先测试模型连通性，通过后再启用或设为默认。",
+    model_must_be_enabled_for_default: "需要先启用模型，才能设为默认。",
+    credential_encryption_unconfigured: "部署环境尚未设置 ZHOUXU_ADMIN_CREDENTIAL_KEY，暂不能在网页加密保存密钥，请改用环境变量方式。",
+    credential_master_key_invalid: "主密钥配置无效，请检查 ZHOUXU_ADMIN_CREDENTIAL_KEY。",
+    credential_ref_forbidden: "该环境变量名属于系统内部配置，不能作为模型密钥引用。",
+    credential_ref_required: "请填写密钥环境变量名。",
+    credential_ref_invalid: "环境变量名只能包含字母、数字、点、冒号或下划线。",
+    credential_missing: "未在部署环境中找到对应的模型密钥。",
+    api_key_required: "请填写 API Key。",
+    api_key_not_allowed_for_env_ref: "使用环境变量模式时不能提交明文密钥。",
+    endpoint_https_required: "接口地址必须使用 https://（如需连本机模型，请先在服务端开启允许本机配置）。",
+    endpoint_private_address_blocked: "接口地址指向内网或受保护网段，已被安全策略拦截。",
+    endpoint_localhost_blocked: "当前未开启本机模型地址支持，暂不允许连接 localhost / 127.0.0.1。",
+    endpoint_invalid: "接口地址格式不正确，请包含完整域名。",
+    endpoint_required: "请填写接口地址。",
+    provider_exists: "服务商编号已存在，请换一个编号。",
+    profile_exists: "模型编号已存在，请换一个编号。",
+    provider_id_invalid: "服务商编号格式不正确（仅限字母、数字及 . _ : -）。",
+    profile_id_invalid: "模型编号格式不正确（仅限字母、数字及 . _ : -）。",
+    capability_model_list_required: "选择“指定模型”时，至少要勾选 1 个模型。",
+    model_extra_header_forbidden: "自定义请求头不能覆盖 Authorization / Host 等受保护字段。",
+    extra_headers_invalid: "自定义请求头格式有误，请按“Header-Name: Value”逐行填写。",
   };
   return messages[code] ?? "这次操作未能完成，请稍后重试。";
 }
@@ -343,6 +510,9 @@ function conversationQuery(filters: AdminConversationFilters | AdminConversation
   if ("archived" in filters && filters.archived && filters.archived !== "all") {
     query.set("archived", filters.archived === "archived" ? "true" : "false");
   }
+  if ("status" in filters && filters.status && filters.status !== "all") {
+    query.set("status", filters.status);
+  }
   if (filters.cursor) query.set("cursor", filters.cursor);
   if (filters.limit) query.set("limit", String(filters.limit));
   const value = query.toString();
@@ -395,8 +565,18 @@ export function createAdminApi(token: string) {
       const suffix = query.toString() ? `?${query.toString()}` : "";
       return request<AdminAccountPage>(`/admin/accounts${suffix}`, token, {}, signal);
     },
-    audit: async (signal?: AbortSignal) => {
-      const result = await request<{ events: AdminAuditEvent[] }>("/admin/audit?limit=80", token, {}, signal);
+    audit: async (filtersOrSignal?: AdminAuditFilters | AbortSignal, signalArg?: AbortSignal): Promise<AdminAuditPage> => {
+      const isSignal = (v: unknown): v is AbortSignal =>
+        Boolean(v && typeof AbortSignal !== "undefined" && v instanceof AbortSignal);
+      const filters: AdminAuditFilters = isSignal(filtersOrSignal) ? {} : (filtersOrSignal ?? {});
+      const signal = isSignal(filtersOrSignal) ? filtersOrSignal : signalArg;
+      const query = new URLSearchParams();
+      if (filters.category && filters.category !== "all") query.set("category", filters.category);
+      if (filters.outcome && filters.outcome !== "all") query.set("outcome", filters.outcome);
+      if (filters.query?.trim()) query.set("q", filters.query.trim());
+      if (filters.cursor) query.set("cursor", filters.cursor);
+      query.set("limit", String(filters.limit ?? 80));
+      const result = await request<AdminAuditPage>(`/admin/audit?${query.toString()}`, token, {}, signal);
       for (const event of result.events) {
         const values = event.action === "account.status_changed" ? ["active", "disabled"]
           : event.action === "account.role_changed" ? ["user", "admin"] : null;
@@ -415,10 +595,20 @@ export function createAdminApi(token: string) {
       request<AdminModelProvider>("/admin/model-providers", token, { method: "POST", body: JSON.stringify(value) }),
     updateProvider: (id: string, value: AdminProviderUpdate) =>
       request<AdminModelProvider>(`/admin/model-providers/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(value) }),
+    deleteProvider: (id: string) =>
+      request<{ archived: boolean; provider_id: string }>(`/admin/model-providers/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
+    discoverProviderModels: (id: string) =>
+      request<AdminProviderDiscoverResult>(`/admin/model-providers/${encodeURIComponent(id)}/discover`, token, { method: "POST" }),
+    testProvider: (id: string, modelId?: string) =>
+      request<AdminConnectivityTestResult>(`/admin/model-providers/${encodeURIComponent(id)}/test`, token, { method: "POST", body: JSON.stringify(modelId ? { model_id: modelId } : {}) }),
     createModel: (value: AdminModelCreate) =>
       request<AdminModelProfile>("/admin/models", token, { method: "POST", body: JSON.stringify(value) }),
     updateModel: (id: string, value: AdminModelUpdate) =>
       request<AdminModelProfile>(`/admin/models/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(value) }),
+    deleteModel: (id: string) =>
+      request<{ archived: boolean; profile_id: string }>(`/admin/models/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
+    testModel: (id: string) =>
+      request<AdminConnectivityTestResult>(`/admin/models/${encodeURIComponent(id)}/test`, token, { method: "POST" }),
     accountConversations: async (accountId: string, filters: AdminConversationFilters = {}) =>
       conversationList(await request<unknown>(
         `/admin/accounts/${encodeURIComponent(accountId)}/conversations${conversationQuery(filters)}`,
@@ -432,12 +622,21 @@ export function createAdminApi(token: string) {
       `/admin/accounts/${encodeURIComponent(accountId)}/conversations/${encodeURIComponent(conversationId)}${conversationQuery(filters)}`,
       token,
     )),
+    sourceDocument: async (sourceId: string, signal?: AbortSignal) => {
+      const value = await request<AdminSourceDocument>(`/admin/sources/${encodeURIComponent(sourceId)}`, token, {}, signal);
+      rejectPrivateFields(value);
+      return value;
+    },
     capabilities: (signal?: AbortSignal) => request<{ accounts: AdminCapability[] }>("/admin/capabilities", token, {}, signal),
     updateCapability: (accountId: string, update: Partial<Pick<AdminCapability, "model_policy" | "allowed_models" | "skill_policy" | "can_upload_skill">>) =>
       request<AdminCapability>(`/admin/capabilities/${encodeURIComponent(accountId)}`, token, { method: "PATCH", body: JSON.stringify(update) }),
     skills: (signal?: AbortSignal) => request<{ status: "ready" | "degraded" | "unavailable"; total: number; skills: AdminSkillStatus[] }>("/admin/skills", token, {}, signal),
     resourcesHealth: (signal?: AbortSignal) => request<{ status: "ready" | "degraded" | "unavailable"; sources: Record<string, AdminHealthItem> }>("/admin/resources/health", token, {}, signal),
-    tasks: (limit = 50, signal?: AbortSignal) => request<{ tasks: AdminTask[]; next_cursor: string | null }>(`/admin/tasks?limit=${limit}`, token, {}, signal),
+    tasks: (limit = 50, signal?: AbortSignal, status?: TaskStatusFilter) => {
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (status && status !== "all") query.set("status", status);
+      return request<{ tasks: AdminTask[]; next_cursor: string | null }>(`/admin/tasks?${query.toString()}`, token, {}, signal);
+    },
     runtimeHealth: (signal?: AbortSignal) => request<{ status: "ready" | "degraded" | "unavailable"; components: Record<string, AdminHealthItem> }>("/admin/runtime/health", token, {}, signal),
   };
 }

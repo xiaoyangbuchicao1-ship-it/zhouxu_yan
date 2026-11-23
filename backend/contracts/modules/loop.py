@@ -183,6 +183,44 @@ class ToolSpec(Contract):
     reuse_identical_results: bool = False
 
 
+def resolve_tool_spec_for_mode(
+    spec: ToolSpec,
+    mode: ConversationMode | None,
+    *,
+    action_module: Any = None,
+) -> ToolSpec:
+    """Resolve mode-scoped tool spec when an executor exposes ``spec_for_mode``."""
+
+    tools_map = getattr(action_module, "tools", None)
+    executor = tools_map.get(spec.name) if isinstance(tools_map, dict) else None
+    spec_for_mode = getattr(executor, "spec_for_mode", None)
+    if callable(spec_for_mode):
+        return spec_for_mode(mode)
+    return spec
+
+
+def tool_allowed_in_mode(spec: ToolSpec, mode: ConversationMode | None) -> bool:
+    """Return whether ``spec`` may be advertised and called under ``mode``."""
+
+    return mode is None or mode == "work" or spec.read_only
+
+
+def mode_tool_specs(
+    specs: list[ToolSpec] | tuple[ToolSpec, ...],
+    mode: ConversationMode | None,
+    *,
+    action_module: Any = None,
+) -> list[ToolSpec]:
+    """Filter and adapt tool specs once for both graph handlers and main loop."""
+
+    allowed: list[ToolSpec] = []
+    for raw in specs:
+        spec = resolve_tool_spec_for_mode(raw, mode, action_module=action_module)
+        if tool_allowed_in_mode(spec, mode):
+            allowed.append(spec)
+    return allowed
+
+
 class ReasoningInput(Contract):
     perceived: PerceivedContext
     tools: list[ToolSpec] = Field(default_factory=list)

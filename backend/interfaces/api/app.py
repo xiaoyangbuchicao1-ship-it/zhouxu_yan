@@ -15,6 +15,10 @@ from typing import AsyncIterator
 from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from backend.application.accounts.preferences import (
+    AccountPreferenceError,
+    AccountPreferenceService,
+)
 from backend.application.accounts.service import (
     AccountError,
     AccountPrincipal,
@@ -32,6 +36,17 @@ from backend.application.workspace.materials import (
 from backend.application.workspace.run_projection import RunProjection
 from backend.bootstrap import open_harnesses
 from backend.config.settings import load_settings
+from backend.contracts.account_settings import (
+    AccountSummaryResponse,
+    ChangePasswordRequest,
+    ProfileUpdateRequest,
+    UserPreferencesUpdateRequest,
+    UserPreferencesView,
+    UserPromptCommandCreateRequest,
+    UserPromptCommandsResponse,
+    UserPromptCommandUpdateRequest,
+    UserPromptCommandView,
+)
 from backend.contracts.admin import (
     AdminAccountsResponse,
     AdminAccountUpdateRequest,
@@ -40,11 +55,14 @@ from backend.contracts.admin import (
     AdminAuditView,
     AdminConversationDetailResponse,
     AdminConversationListResponse,
+    AdminConnectivityTestResponse,
     AdminModelCreateRequest,
     AdminModelDirectoryResponse,
     AdminModelUpdateRequest,
     AdminModelView,
     AdminProviderCreateRequest,
+    AdminProviderDiscoverResponse,
+    AdminProviderTestRequest,
     AdminProviderUpdateRequest,
     AdminProviderView,
     AdminOverviewResponse,
@@ -245,6 +263,11 @@ def create_app(
             if active_account_service is not None
             else None
         )
+        app.state.account_preference_service = (
+            AccountPreferenceService(active_account_service.database)
+            if active_account_service is not None
+            else None
+        )
         app.state.model_directory = None
         app.state.model_directory_admin_service = None
         if active_account_service is not None:
@@ -289,6 +312,9 @@ def create_app(
                         model_directory=app.state.model_directory,
                         account_skill_loader=getattr(
                             app.state, "maritime_skill_loader", None
+                        ),
+                        skill_permission_checker=getattr(
+                            app.state, "check_skill_permission", None
                         ),
                     )
                 )
@@ -360,6 +386,11 @@ def create_app(
         if account_service is not None
         else None
     )
+    app.state.account_preference_service = (
+        AccountPreferenceService(account_service.database)
+        if account_service is not None
+        else None
+    )
     app.state.model_directory = None
     app.state.model_directory_admin_service = None
     if account_service is not None:
@@ -371,7 +402,9 @@ def create_app(
             account_service.database
         )
     app.state.material_service = material_service
-    app.state.workspace_service = workspace_service
+    app.state.workspace_service = workspace_service or (
+        WorkspaceService(account_service.database) if account_service is not None else None
+    )
     app.state.source_repository = CorpusSourceRepository(settings)
     if supplied_service is not None:
         app.state.control_service = supplied_service
@@ -415,6 +448,7 @@ def create_app(
         """
 
         values = dict(facts or {})
+        values.pop("user_memory", None)
         requested_mode = values.get("task_mode")
         if requested_mode is not None:
             if not isinstance(requested_mode, str) or requested_mode not in {
@@ -427,6 +461,11 @@ def create_app(
                     status_code=409, detail="conversation_mode_locked"
                 )
         values.setdefault("task_mode", conversation_mode)
+        pref_service = getattr(request.app.state, "account_preference_service", None)
+        if pref_service is not None:
+            memory = pref_service.active_memory(principal.id)
+            if memory:
+                values["user_memory"] = memory
         resolver = getattr(request.app.state, "resolve_maritime_skill", None)
         if resolver is None:
             return values
@@ -568,9 +607,19 @@ def create_app(
         return service_instance
 
     def admin_error(exc: AdminServiceError) -> HTTPException:
-        if exc.code in {"admin_required"}:
+        if exc.code in {
+            "admin_required",
+            "model_not_permitted",
+            "skill_not_permitted",
+            "skill_upload_forbidden",
+        }:
             return HTTPException(status_code=403, detail=exc.code)
-        if exc.code in {"account_not_found"}:
+        if exc.code in {
+            "account_not_found",
+            "conversation_not_found",
+            "provider_not_found",
+            "profile_not_found",
+        }:
             return HTTPException(status_code=404, detail=exc.code)
         if exc.code in {
             "invalid_account_status",
@@ -578,9 +627,18 @@ def create_app(
             "invalid_account_pagination",
             "account_change_required",
             "invalid_audit_limit",
+            "invalid_audit_category",
+            "invalid_audit_outcome",
+            "invalid_audit_cursor",
             "invalid_conversation_mode",
+            "invalid_conversation_status",
             "invalid_conversation_limit",
             "invalid_conversation_cursor",
+            "invalid_task_status",
+            "provider_id_invalid",
+            "provider_name_required",
+            "preset_type_invalid",
+            "profile_id_invalid",
             "model_protocol_invalid",
             "model_auth_style_invalid",
             "credential_mode_invalid",
@@ -588,6 +646,10 @@ def create_app(
             "thinking_mode_invalid",
             "thinking_modes_invalid",
             "endpoint_required",
+            "endpoint_https_required",
+            "endpoint_invalid",
+            "endpoint_localhost_blocked",
+            "endpoint_private_address_blocked",
             "model_update_field_invalid",
             "context_tokens_invalid",
             "max_output_tokens_invalid",
@@ -603,12 +665,21 @@ def create_app(
             "invalid_task_cursor",
             "credential_ref_required",
             "credential_ref_invalid",
+            "credential_ref_forbidden",
+            "credential_encryption_unconfigured",
+            "credential_master_key_invalid",
+            "credential_missing",
+            "credential_decrypt_failed",
+            "api_key_required",
+            "api_key_not_allowed_for_env_ref",
+            "extra_headers_invalid",
+            "model_extra_header_forbidden",
+            "access_scope_invalid",
+            "model_must_be_enabled_for_default",
             "provider_update_field_invalid",
         }:
             return HTTPException(status_code=422, detail=exc.code)
-        if exc.code in {"conversation_not_found", "provider_not_found", "profile_not_found"}:
-            return HTTPException(status_code=404, detail=exc.code)
-        if exc.code in {"provider_exists", "profile_exists"}:
+        if exc.code in {"provider_exists", "profile_exists", "model_connectivity_unverified"}:
             return HTTPException(status_code=409, detail=exc.code)
         return HTTPException(status_code=409, detail=exc.code)
 
@@ -666,11 +737,12 @@ def create_app(
         authorization: str | None = Header(default=None),
         limit: int = Query(default=50, ge=1, le=100),
         cursor: str | None = Query(default=None),
+        status: str | None = Query(default=None),
     ):
         require_admin(request, authorization)
         try:
             result = admin_operations_service(request).list_tasks(
-                limit=limit, cursor=cursor
+                limit=limit, cursor=cursor, status=status
             )
         except AdminServiceError as exc:
             raise admin_error(exc) from None
@@ -742,15 +814,27 @@ def create_app(
     async def admin_audit(
         request: Request,
         authorization: str | None = Header(default=None),
+        category: str | None = Query(default=None),
+        outcome: str | None = Query(default=None),
+        q: str = Query(default="", max_length=200),
+        cursor: str | None = Query(default=None),
         limit: int = Query(default=50, ge=1, le=200),
     ):
         require_admin(request, authorization)
         try:
-            events = admin_service(request).list_audit(limit=limit)
+            page = admin_service(request).query_audit(
+                category=category,
+                outcome=outcome,
+                query=q,
+                cursor=cursor,
+                limit=limit,
+            )
         except AdminServiceError as exc:
             raise admin_error(exc) from None
         return AdminAuditResponse(
-            events=[AdminAuditView(**item) for item in events]
+            events=[AdminAuditView(**item) for item in page["events"]],
+            category_counts=page["category_counts"],
+            next_cursor=page["next_cursor"],
         )
 
     @app.post(
@@ -848,6 +932,91 @@ def create_app(
             raise admin_error(exc) from None
         return AdminModelView(**result)
 
+    @app.delete("/admin/model-providers/{provider_id}")
+    async def admin_archive_model_provider(
+        provider_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            return model_directory_admin(request).archive_provider(
+                actor_id=principal.id, provider_id=provider_id
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+
+    @app.delete("/admin/models/{profile_id}")
+    async def admin_archive_model(
+        profile_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            return model_directory_admin(request).archive_profile(
+                actor_id=principal.id, profile_id=profile_id
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+
+    @app.post(
+        "/admin/model-providers/{provider_id}/discover",
+        response_model=AdminProviderDiscoverResponse,
+    )
+    async def admin_discover_provider_models(
+        provider_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = await model_directory_admin(request).discover_models(
+                actor_id=principal.id, provider_id=provider_id
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminProviderDiscoverResponse(**result)
+
+    @app.post(
+        "/admin/model-providers/{provider_id}/test",
+        response_model=AdminConnectivityTestResponse,
+    )
+    async def admin_test_model_provider(
+        provider_id: str,
+        request: Request,
+        body: AdminProviderTestRequest | None = None,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = await model_directory_admin(request).test_provider(
+                actor_id=principal.id,
+                provider_id=provider_id,
+                model_id=body.model_id if body is not None else None,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminConnectivityTestResponse(**result)
+
+    @app.post(
+        "/admin/models/{profile_id}/test",
+        response_model=AdminConnectivityTestResponse,
+    )
+    async def admin_test_model(
+        profile_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = await model_directory_admin(request).test_profile(
+                actor_id=principal.id, profile_id=profile_id
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminConnectivityTestResponse(**result)
+
     @app.get(
         "/admin/accounts/{account_id}/conversations",
         response_model=AdminConversationListResponse,
@@ -859,6 +1028,7 @@ def create_app(
         query: str = Query(default="", max_length=200),
         mode: str | None = Query(default=None),
         archived: bool | None = Query(default=None),
+        status: str | None = Query(default=None),
         cursor: str | None = Query(default=None),
         limit: int = Query(default=20, ge=1, le=100),
     ):
@@ -869,6 +1039,7 @@ def create_app(
                 query=query,
                 mode=mode,
                 archived=archived,
+                status=status,
                 cursor=cursor,
                 limit=limit,
             )
@@ -903,6 +1074,26 @@ def create_app(
             raise admin_error(exc) from None
         return AdminConversationDetailResponse(**result)
 
+    @app.get(
+        "/admin/sources/{source_id}",
+        response_model=WorkspaceSourceResponse,
+    )
+    async def admin_source_document(
+        source_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        require_admin(request, authorization)
+        try:
+            document = await asyncio.to_thread(source_repository(request).get, source_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except OSError:
+            raise HTTPException(status_code=503, detail="paper_original_unavailable") from None
+        if document is None:
+            raise HTTPException(status_code=404, detail="source_not_found")
+        return WorkspaceSourceResponse.model_validate(document.model_dump(mode="json"))
+
     @app.get(settings.application["health_path"])
     async def health(request: Request):
         store = getattr(request.app.state, "run_store", None)
@@ -917,11 +1108,22 @@ def create_app(
     async def model_catalog(
         request: Request, authorization: str | None = Header(default=None)
     ):
-        """Return grouped, secret-free profiles for the model selector."""
-        require_account(request, authorization)
+        """Return grouped, secret-free profiles permitted to the authenticated account."""
+        principal = require_account(request, authorization)
         from backend.infrastructure.model.registry import ModelRegistry
 
-        return ModelRegistry(settings, directory=model_directory(request)).catalog_view()
+        directory = model_directory(request)
+        revisions = directory.list_current()
+        ops = getattr(request.app.state, "admin_operations_service", None)
+        if ops is not None:
+            revisions = ops.filter_model_revisions(
+                account_id=principal.id,
+                account_role=principal.role,
+                revisions=revisions,
+            )
+        return ModelRegistry(settings, directory=directory).catalog_view(
+            profiles=[rev.profile for rev in revisions]
+        )
 
     def auth_view(result) -> AuthSessionView:
         return AuthSessionView(
@@ -998,6 +1200,164 @@ def create_app(
             raise HTTPException(status_code=401, detail=exc.code) from None
         return None
 
+    def preference_service(request: Request) -> AccountPreferenceService:
+        service_instance = getattr(request.app.state, "account_preference_service", None)
+        if service_instance is None:
+            raise HTTPException(status_code=503, detail="unavailable")
+        return service_instance
+
+    def pref_error(exc: AccountPreferenceError) -> HTTPException:
+        if exc.code == "command_trigger_exists":
+            return HTTPException(status_code=409, detail=exc.code)
+        if exc.code in {"command_not_found", "account_not_found"}:
+            return HTTPException(status_code=404, detail=exc.code)
+        return HTTPException(status_code=422, detail=exc.code)
+
+    @app.patch("/account/profile", response_model=AccountView)
+    async def update_account_profile(
+        body: ProfileUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_account(request, authorization)
+        auth = accounts(request)
+        if auth is None:
+            raise HTTPException(status_code=503, detail="unavailable")
+        try:
+            updated = auth.update_display_name(
+                account_id=principal.id, display_name=body.display_name
+            )
+        except AccountError as exc:
+            status = 401 if exc.code == "authentication_required" else 422
+            raise HTTPException(status_code=status, detail=exc.code) from None
+        return AccountView(
+            id=updated.id,
+            email=updated.email,
+            display_name=updated.display_name,
+            role=updated.role,
+        )
+
+    @app.post("/account/change-password")
+    async def change_account_password(
+        body: ChangePasswordRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_account(request, authorization)
+        auth = accounts(request)
+        if auth is None:
+            raise HTTPException(status_code=503, detail="unavailable")
+        try:
+            auth.change_password(
+                account_id=principal.id,
+                current_password=body.current_password,
+                new_password=body.new_password,
+            )
+        except AccountError as exc:
+            status = 401 if exc.code in {"authentication_failed", "authentication_required"} else 422
+            raise HTTPException(status_code=status, detail=exc.code) from None
+        return {"status": "updated"}
+
+    @app.get("/account/preferences", response_model=UserPreferencesView)
+    async def get_account_preferences(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        principal = require_account(request, authorization)
+        return UserPreferencesView(**preference_service(request).get_preferences(principal.id))
+
+    @app.patch("/account/preferences", response_model=UserPreferencesView)
+    async def update_account_preferences(
+        body: UserPreferencesUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_account(request, authorization)
+        try:
+            updated = preference_service(request).update_preferences(
+                principal.id, body.model_dump(exclude_unset=True)
+            )
+        except AccountPreferenceError as exc:
+            raise pref_error(exc) from None
+        return UserPreferencesView(**updated)
+
+    @app.get("/account/commands", response_model=UserPromptCommandsResponse)
+    async def list_account_commands(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        principal = require_account(request, authorization)
+        items = preference_service(request).list_commands(principal.id)
+        return UserPromptCommandsResponse(
+            commands=[UserPromptCommandView(**item) for item in items]
+        )
+
+    @app.post("/account/commands", response_model=UserPromptCommandView, status_code=201)
+    async def create_account_command(
+        body: UserPromptCommandCreateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_account(request, authorization)
+        try:
+            created = preference_service(request).create_command(
+                account_id=principal.id,
+                trigger=body.trigger,
+                title=body.title,
+                content=body.content,
+                mode_hint=body.mode_hint,
+            )
+        except AccountPreferenceError as exc:
+            raise pref_error(exc) from None
+        return UserPromptCommandView(**created)
+
+    @app.patch("/account/commands/{command_id}", response_model=UserPromptCommandView)
+    async def update_account_command(
+        command_id: str,
+        body: UserPromptCommandUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_account(request, authorization)
+        try:
+            updated = preference_service(request).update_command(
+                account_id=principal.id,
+                command_id=command_id,
+                updates=body.model_dump(exclude_unset=True),
+            )
+        except AccountPreferenceError as exc:
+            raise pref_error(exc) from None
+        return UserPromptCommandView(**updated)
+
+    @app.delete("/account/commands/{command_id}", status_code=204)
+    async def delete_account_command(
+        command_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_account(request, authorization)
+        try:
+            preference_service(request).delete_command(
+                account_id=principal.id, command_id=command_id
+            )
+        except AccountPreferenceError as exc:
+            raise pref_error(exc) from None
+        return None
+
+    @app.get("/account/summary", response_model=AccountSummaryResponse)
+    async def get_account_summary(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        principal = require_account(request, authorization)
+        try:
+            summary = preference_service(request).account_summary(
+                account_id=principal.id,
+                admin_ops=getattr(request.app.state, "admin_operations_service", None),
+                model_directory=getattr(request.app.state, "model_directory", None),
+                maritime_office=getattr(request.app.state, "maritime_office", None),
+            )
+        except AccountPreferenceError as exc:
+            raise pref_error(exc) from None
+        return AccountSummaryResponse(**summary)
+
     def conversation_view(
         conversation, run_count: int = 0
     ) -> WorkspaceConversationView:
@@ -1014,10 +1374,15 @@ def create_app(
         )
 
     def project_view(project) -> WorkspaceProjectView:
+        active_conversations = [
+            item
+            for item in (getattr(project, "conversations", []) or [])
+            if getattr(item, "archived_at", None) is None
+        ]
         return WorkspaceProjectView(
             project_id=project.id,
             name=project.name,
-            conversation_count=len(getattr(project, "conversations", []) or []),
+            conversation_count=len(active_conversations),
             created_at=project.created_at,
             updated_at=project.updated_at,
         )
@@ -1519,13 +1884,50 @@ def create_app(
         from backend.infrastructure.model.registry import ModelRegistry
 
         model_registry = ModelRegistry(settings, directory=model_directory(request))
-        selected_profile_id = body.model_profile_id or model_registry.catalog_view().default_profile_id
-        try:
-            profile = model_registry.get(selected_profile_id)
-        except PortError:
-            raise HTTPException(status_code=422, detail="model_profile_invalid") from None
-        if body.model_profile_id and not profile.available:
-            raise HTTPException(status_code=409, detail="model_profile_unavailable")
+        ops = getattr(request.app.state, "admin_operations_service", None)
+        dir_instance = model_directory(request)
+        if body.model_profile_id:
+            try:
+                revision = model_registry.resolve(body.model_profile_id)
+            except PortError:
+                raise HTTPException(status_code=422, detail="model_profile_invalid") from None
+            profile = revision.profile
+            if ops is not None and not ops.is_model_permitted(
+                account_id=principal.id,
+                account_role=principal.role,
+                profile_id=profile.profile_id,
+                access_scope=revision.access_scope,
+            ):
+                raise HTTPException(status_code=403, detail="model_not_permitted")
+            if not profile.available:
+                raise HTTPException(status_code=409, detail="model_profile_unavailable")
+            selected_profile_id = profile.profile_id
+        else:
+            all_revisions = dir_instance.list_current()
+            permitted_revisions = (
+                ops.filter_model_revisions(
+                    account_id=principal.id,
+                    account_role=principal.role,
+                    revisions=all_revisions,
+                )
+                if ops is not None
+                else list(all_revisions)
+            )
+            if not permitted_revisions:
+                if ops is not None and (
+                    ops.account_grant(principal.id)["model_policy"] != "default"
+                    or bool(all_revisions)
+                ):
+                    raise HTTPException(status_code=403, detail="model_not_permitted")
+                raise HTTPException(status_code=409, detail="model_profile_unavailable")
+            catalog = model_registry.catalog_view(
+                profiles=[rev.profile for rev in permitted_revisions]
+            )
+            selected_profile_id = catalog.default_profile_id
+            try:
+                profile = model_registry.get(selected_profile_id)
+            except PortError:
+                raise HTTPException(status_code=422, detail="model_profile_invalid") from None
         selected_thinking = body.thinking_mode or profile.default_thinking_mode
         if selected_thinking not in profile.thinking_modes:
             raise HTTPException(status_code=422, detail="thinking_mode_unsupported")
@@ -2524,6 +2926,17 @@ def create_app(
                     # Legacy control-plane callers may use account_id as their
                     # scheduler key without a persisted Conversation.
                     material_ids = []
+            if principal is not None:
+                ops = getattr(request.app.state, "admin_operations_service", None)
+                dir_opt = getattr(request.app.state, "model_directory", None)
+                if ops is not None and dir_opt is not None:
+                    permitted = ops.filter_model_revisions(
+                        account_id=principal.id,
+                        account_role=principal.role,
+                        revisions=dir_opt.list_current(),
+                    )
+                    if not permitted and ops.account_grant(principal.id)["model_policy"] != "default":
+                        raise HTTPException(status_code=403, detail="model_not_permitted")
             dispatch, run = await service(request).submit(
                 session_id=session_id,
                 account_id=account_scope(principal, session_id),

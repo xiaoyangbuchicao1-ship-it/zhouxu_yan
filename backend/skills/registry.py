@@ -11,7 +11,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from backend.config.settings import BACKEND_ROOT
 
@@ -27,6 +27,9 @@ class SkillDescriptor:
     method_path: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     compatible_versions: tuple[str, ...] = ()
+    mode_scope: Literal["chat", "work"] = "work"
+    ready: bool = True
+    runtime_instructions: str = ""
 
     @property
     def skill_id(self) -> str:
@@ -62,6 +65,9 @@ def _descriptor(
     version: str = "1",
     metadata: dict[str, Any] | None = None,
     compatible_versions: tuple[str, ...] = (),
+    mode_scope: Literal["chat", "work"] = "work",
+    ready: bool = True,
+    runtime_instructions: str = "",
 ) -> SkillDescriptor:
     loaded = _load_method(method_path) if method_path else {}
     if metadata:
@@ -74,6 +80,9 @@ def _descriptor(
         method_path=method_path,
         metadata=loaded,
         compatible_versions=compatible_versions,
+        mode_scope=mode_scope,
+        ready=ready,
+        runtime_instructions=runtime_instructions,
     )
 
 
@@ -82,11 +91,22 @@ _CATALOG: dict[str, SkillDescriptor] = {
         "maritime-case-research",
         "海事案例候选检索、原文读取、主张与法院认定分离，并在需要时核对现行法规。",
         _SKILL_ROOT / "maritime-case-research" / "SKILL.md",
+        mode_scope="chat",
+        ready=True,
     ),
     "maritime-legal-research": _descriptor(
         "maritime-legal-research",
         "通用海事法律问答的法规/案例来源选择、版本处理、证据边界和用户可读引用。",
         _SKILL_ROOT / "maritime-legal-research" / "SKILL.md",
+        mode_scope="chat",
+        ready=True,
+    ),
+    "maritime-paper-research": _descriptor(
+        "maritime-paper-research",
+        "海事法学术论文信息卡检索与原文核验流程，梳理学者观点、发表线索与期刊页码来源。",
+        _SKILL_ROOT / "maritime-paper-research" / "SKILL.md",
+        mode_scope="chat",
+        ready=True,
     ),
 }
 
@@ -94,6 +114,7 @@ _CATALOG: dict[str, SkillDescriptor] = {
 # The handoff package contributes method packages, but the current project
 # remains the owner of registration. An explicit list prevents an arbitrary
 # copied file from becoming model-visible.
+_READY_MARITIME_WORK_SKILLS = frozenset({"law-research", "case-research"})
 _MARITIME_SKILLS: tuple[tuple[str, str], ...] = (
     ("case-assessment", "案件初步研判"),
     ("case-management", "案件管理与协同"),
@@ -119,6 +140,8 @@ for _name, _fallback_description in _MARITIME_SKILLS:
         # Keep the version at the registry boundary even when a method.json
         # from the handoff snapshot has no explicit version field.
         version="2",
+        mode_scope="work",
+        ready=_name in _READY_MARITIME_WORK_SKILLS,
     )
 
 _CSL_SKILL_PATH = (
@@ -137,6 +160,19 @@ if _CSL_SKILL_PATH.is_file():
             "required_tools": ["write", "paper_compile"],
         },
         compatible_versions=("3.5",),
+        mode_scope="work",
+        ready=True,
+        runtime_instructions=(
+            "舟序运行适配：先按选题调用 capability_card_select，匹配时用 capability_card_read "
+            "读取方法；用 information_card_search/read 获取论文观点，法规与案例分别用现有工具核对。"
+            "没有匹配方法时继续研究，不套用无关能力卡。包内引注指南可通过 read_skill 的 resource 参数读取。"
+            "长篇 .typ 源稿请先用 write 创建头部与前半章，再用 write(..., append=true) 分 2~3 次按章节稳步追加，"
+            "避免单次生成超过输出长度上限；源稿写完后调用 paper_compile(source_path=相对路径)。"
+            "paper_compile 执行本 Skill 原始固定脚本并提供模板；不要用 bash 猜测宿主路径或自行重写编译器。"
+            "只有双端编译成功才能交付 PDF 和 Word；错误信息可用于局部 edit 修正源稿后重新编译。"
+            "引注中的作者、出版信息、案号和具体页码必须有真实来源；卡片没有页码时不能据此编造印刷页码。"
+            "能力卡、信息卡、工具名和检索状态只供内部组织工作，不写进论文正文。"
+        ),
     )
 
 
@@ -154,8 +190,18 @@ class SkillRegistry:
     def _allowed_roots() -> tuple[Path, ...]:
         return (_SKILL_ROOT.resolve(), _EXTERNAL_CSL_ROOT.resolve())
 
-    def descriptors(self) -> tuple[SkillDescriptor, ...]:
-        return tuple(self._catalog.values())
+    def descriptors(
+        self,
+        *,
+        ready_only: bool = False,
+        mode: str | None = None,
+    ) -> tuple[SkillDescriptor, ...]:
+        items = tuple(self._catalog.values())
+        if ready_only:
+            items = tuple(item for item in items if item.ready)
+        if mode == "chat":
+            items = tuple(item for item in items if item.mode_scope == "chat")
+        return items
 
     def contains(self, name: str) -> bool:
         """Return whether ``name`` belongs to the built-in catalog."""

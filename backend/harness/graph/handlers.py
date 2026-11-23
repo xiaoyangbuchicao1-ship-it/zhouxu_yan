@@ -20,6 +20,9 @@ from backend.contracts.modules.loop import (
     PerceptionInput,
     ReasoningInput,
     RunInput,
+    mode_tool_specs,
+    resolve_tool_spec_for_mode,
+    tool_allowed_in_mode,
 )
 from backend.contracts.modules.memory import MemoryRecall
 from backend.contracts.modules.perception import ContextItem, ContextLink
@@ -120,17 +123,8 @@ class HarnessGraphHandlers:
             if tool is not None and tool.spec.name not in known:
                 specs.append(tool.spec)
                 known.add(tool.spec.name)
-        return [
-            spec
-            for spec in specs
-            if (
-                (spec.kind == "skill_activation" and mode == "work")
-                or (
-                    spec.kind != "skill_activation"
-                    and (mode is None or mode == "work" or spec.read_only)
-                )
-            )
-        ]
+        action_module = harness.modules.get("action") if isinstance(getattr(harness, "modules", None), dict) else None
+        return mode_tool_specs(specs, mode, action_module=action_module)
 
     async def prepare(self, run, state, control):
         harness = self._harness(run)
@@ -206,7 +200,8 @@ class HarnessGraphHandlers:
             raise _error("unknown_tool", f"任务工具未注册：{name}")
         spec = specs[name]
         value = RunInput.model_validate(run.payload)
-        if value.mode != "work" and not spec.read_only:
+        spec = resolve_tool_spec_for_mode(spec, value.mode, action_module=action)
+        if not tool_allowed_in_mode(spec, value.mode):
             raise _error("work_mode_required", "请在工作模式运行需要写入文件或执行操作的节点")
         counts = state.setdefault("graph_tool_counts", {})
         counts[name] = counts.get(name, 0) + 1
@@ -220,6 +215,7 @@ class HarnessGraphHandlers:
             context={
                 "account_id": run.account_id,
                 "conversation_id": run.conversation_id or run.session_id,
+                "mode": value.mode,
                 "user_request": value.text,
                 "user_facts": value.facts,
                 "user_constraints": value.constraints,

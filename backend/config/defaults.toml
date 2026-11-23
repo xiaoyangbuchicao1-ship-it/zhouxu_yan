@@ -78,27 +78,34 @@ inventory_max_operations = 6
 [progress]
 enabled = true
 [progress.labels]
-model_processing = "模型处理中"
+model_processing = "理解问题并规划步骤"
+synthesizing = "综合依据与编排"
+skill_reading = "加载专业技能"
 researching = "查找资料"
-execution = "执行任务"
+execution = "执行校验"
 law_searching = "检索法规"
+paper_searching = "检索论文"
+paper_reading = "精读论文"
+web_searching = "联网检索"
+calculating = "海事测算"
+work_package = "生成对照表"
 source_reading = "读取原文"
-file_writing = "保存正文"
-file_compiling = "生成交付文件"
-case_searching = "正在检索案例"
-case_reading = "正在核对案例原文"
+file_writing = "撰写文稿"
+file_compiling = "编译交付文档"
+case_searching = "检索案例"
+case_reading = "核对案例原文"
 stage_delivered = "阶段成果已保存，正在继续"
 memory = "模型处理中"
 perception = "模型处理中"
 reasoning = "模型处理中"
-action = "正在调用工具"
+action = "执行工具步骤"
 reflection = "模型处理中"
 finalizing = "整理结果"
 waiting_user = "等待你的补充"
 material_parsing = "正在解析材料"
 material_reading = "正在读取材料"
 material_searching = "正在查找材料"
-context_compaction = "模型处理中"
+context_compaction = "整理上下文继续处理"
 
 [materials]
 # Material parsing is bounded by configuration; parsers never silently read an
@@ -222,10 +229,12 @@ information_alias = "maritime_information_cards_read"
 information_index = "maritime_information_cards_v4"
 information_max_results = 6
 information_result_budget_chars = 12000
-# Native runs resolve these paths from the project parent. Docker Compose
-# overrides them with read-only mounted paths through environment variables.
-capability_dir = "../能力卡"
+# Native runs resolve these paths from the repository data directory.
+# Docker Compose mounts read-only volumes at runtime via environment variables.
+information_cards_dir = "data/research/information_cards"
+capability_dir = "data/research/capability_cards"
 capability_file = "capability_cards.jsonl"
+originals_root = "data/research/papers"
 skill_dir = "backend/skills/csl-law-paper-generator"
 search_description = """
 以 BM25 与 BGE-M3 双路召回并融合排序，检索已通过来源校验的论文信息卡。信息卡记录论文中的事实、观点、方法或规范线索，属于学术材料候选，不等于现行法律。需要法律结论时仍须调用法规工具；需要案件事实时仍须调用案例工具。查询应简短明确，回查来源标题、路径、定位和时间语境；若 method=bm25 且 status=partial，须如实说明语义检索不可用。

@@ -64,6 +64,8 @@ class AdminOverviewResponse(Contract):
 
 class AdminAuditResponse(Contract):
     events: list[AdminAuditView]
+    category_counts: dict[str, int] | None = None
+    next_cursor: str | None = None
 
 
 class AdminConversationSummaryView(Contract):
@@ -74,12 +76,29 @@ class AdminConversationSummaryView(Contract):
     archived: bool
     run_count: int = Field(ge=0)
     latest_status: str | None = None
+    latest_run_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
 
+class AdminConversationAccountView(Contract):
+    id: str
+    email: str
+    display_name: str = ""
+
+
+class AdminConversationStatusCounts(Contract):
+    all: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    active: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    no_runs: int = Field(ge=0)
+
+
 class AdminConversationListResponse(Contract):
+    account: AdminConversationAccountView | None = None
     conversations: list[AdminConversationSummaryView]
+    status_counts: AdminConversationStatusCounts | None = None
     next_cursor: str | None = None
 
 
@@ -117,6 +136,23 @@ class AdminRunArtifactView(Contract):
     preview_artifact_id: str | None = None
 
 
+class AdminRunMaterialView(Contract):
+    material_id: str
+    filename: str
+    media_type: str
+    size_bytes: int = Field(ge=0)
+    status: str
+
+
+class AdminRunToolTraceView(Contract):
+    tool_name: str
+    tool_label: str
+    query: str | None = None
+    result_count: int | None = Field(default=None, ge=0)
+    status: Literal["succeeded", "failed"] = "succeeded"
+    summary: str | None = None
+
+
 class AdminRunLogView(Contract):
     run_id: str
     user_question: str
@@ -130,14 +166,23 @@ class AdminRunLogView(Contract):
     first_event_at: datetime | None = None
     first_delta_at: datetime | None = None
     completed_at: datetime | None = None
+    first_delta_ms: int | None = Field(default=None, ge=0)
     elapsed_ms: int | None = Field(default=None, ge=0)
     error_code: str | None = None
+    error_message: str | None = None
+    current_unit: str | None = None
+    context_compaction_count: int = Field(default=0, ge=0)
+    continuation_guidance: list[str] = Field(default_factory=list)
+    source_summary: dict[str, int] = Field(default_factory=dict)
     nodes: list[AdminRunNodeView] = Field(default_factory=list)
+    materials: list[AdminRunMaterialView] = Field(default_factory=list)
+    tool_traces: list[AdminRunToolTraceView] = Field(default_factory=list)
     sources: list[AdminRunSourceView] = Field(default_factory=list)
     artifacts: list[AdminRunArtifactView] = Field(default_factory=list)
 
 
 class AdminConversationDetailResponse(Contract):
+    account: AdminConversationAccountView | None = None
     conversation: AdminConversationSummaryView
     runs: list[AdminRunLogView]
     next_cursor: str | None = None
@@ -145,27 +190,32 @@ class AdminConversationDetailResponse(Contract):
 
 class AdminProviderCreateRequest(Contract):
     model_config = ConfigDict(extra="forbid")
-    id: str = Field(min_length=1, max_length=64)
+    id: str | None = Field(default=None, min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=120)
+    notes: str = Field(default="", max_length=240)
     preset_type: str = Field(default="custom", max_length=32)
     default_protocol: str
-    auth_style: str = "bearer"
+    auth_style: str | None = None
     base_url: str = Field(min_length=1)
     extra_headers: dict[str, str] = Field(default_factory=dict)
-    credential_mode: Literal["env_ref", "encrypted_db", "file_ref"] = "env_ref"
+    credential_mode: Literal["env_ref", "encrypted_db"] | None = None
     credential_ref: str | None = None
+    api_key: str | None = Field(default=None, repr=False)
     enabled: bool = True
 
 
 class AdminProviderView(Contract):
     id: str
     name: str
+    notes: str = ""
     preset_type: str
     default_protocol: str
     auth_style: str
     base_url: str
+    extra_headers: dict[str, str] = Field(default_factory=dict)
     credential_mode: str
     credential_ref: str | None = None
+    api_key_hint: str | None = None
     enabled: bool
     credential_configured: bool = False
     revision: int = 1
@@ -175,30 +225,32 @@ class AdminProviderView(Contract):
 class AdminProviderUpdateRequest(Contract):
     model_config = ConfigDict(extra="forbid")
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    notes: str | None = Field(default=None, max_length=240)
     default_protocol: str | None = None
     auth_style: str | None = None
     base_url: str | None = None
     extra_headers: dict[str, str] | None = None
-    credential_mode: Literal["env_ref", "encrypted_db", "file_ref"] | None = None
+    credential_mode: Literal["env_ref", "encrypted_db"] | None = None
     credential_ref: str | None = None
+    api_key: str | None = Field(default=None, repr=False)
     enabled: bool | None = None
 
 
 class AdminModelCreateRequest(Contract):
     model_config = ConfigDict(extra="forbid")
-    profile_id: str = Field(min_length=1, max_length=160)
+    profile_id: str | None = Field(default=None, min_length=1, max_length=160)
     provider_id: str = Field(min_length=1, max_length=64)
     upstream_model_id: str = Field(min_length=1, max_length=200)
     label: str = Field(min_length=1, max_length=160)
-    family: Literal["deepseek", "gpt", "claude", "gemini", "glm", "other"]
+    family: Literal["deepseek", "gpt", "claude", "gemini", "glm", "qwen", "kimi", "other"] | None = None
     protocol_override: str | None = None
     context_tokens: int = Field(gt=0)
     max_output_tokens: int = Field(gt=0)
     thinking_modes: list[Literal["none", "low", "medium", "high", "xhigh", "max"]] = Field(default_factory=lambda: ["none"])
     default_thinking: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
     capabilities: dict[str, str] = Field(default_factory=dict)
-    enabled: bool = True
-    access_scope: str = "all"
+    enabled: bool = False
+    access_scope: Literal["all", "admin_only", "allowlist"] = "all"
     is_default: bool = False
     sort_order: int = 100
     source: str = "admin"
@@ -209,7 +261,7 @@ class AdminModelUpdateRequest(Contract):
     model_config = ConfigDict(extra="forbid")
     upstream_model_id: str | None = Field(default=None, min_length=1, max_length=200)
     label: str | None = Field(default=None, min_length=1, max_length=160)
-    family: Literal["deepseek", "gpt", "claude", "gemini", "glm", "other"] | None = None
+    family: Literal["deepseek", "gpt", "claude", "gemini", "glm", "qwen", "kimi", "other"] | None = None
     protocol_override: str | None = None
     context_tokens: int | None = Field(default=None, gt=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
@@ -217,11 +269,14 @@ class AdminModelUpdateRequest(Contract):
     default_thinking: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
     capabilities: dict[str, str] | None = None
     enabled: bool | None = None
-    access_scope: str | None = None
+    access_scope: Literal["all", "admin_only", "allowlist"] | None = None
+    is_default: bool | None = None
     sort_order: int | None = None
 
 
 class AdminModelDirectoryResponse(Contract):
+    credential_encryption_ready: bool = False
+    local_hosts_allowed: bool = False
     providers: list[AdminProviderView]
     models: list["AdminModelView"]
 
@@ -233,6 +288,7 @@ class AdminModelView(Contract):
     label: str
     family: str
     protocol_override: str | None = None
+    protocol: str
     context_tokens: int
     max_output_tokens: int
     thinking_modes: list[str]
@@ -244,8 +300,38 @@ class AdminModelView(Contract):
     sort_order: int = 100
     source: str = "admin"
     checked_on: str | None = None
+    connectivity_status: Literal["unverified", "verified", "failed"] = "unverified"
+    connectivity_checked_at: datetime | None = None
+    connectivity_latency_ms: int | None = None
+    connectivity_error: str | None = None
     revision: int
     updated_at: datetime
+
+
+class AdminProviderTestRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str | None = Field(default=None, max_length=200)
+
+
+class AdminDiscoveredModelView(Contract):
+    id: str
+    family: str
+    label: str
+    already_added: bool = False
+
+
+class AdminProviderDiscoverResponse(Contract):
+    supported: bool
+    models: list[AdminDiscoveredModelView] = Field(default_factory=list)
+    notice: str | None = None
+
+
+class AdminConnectivityTestResponse(Contract):
+    ok: bool
+    connectivity_status: Literal["verified", "failed"]
+    latency_ms: int | None = None
+    http_status: int | None = None
+    error_code: str | None = None
 
 
 class AdminCapabilityView(Contract):
@@ -276,7 +362,8 @@ class AdminSkillView(Contract):
     summary: str
     version: str
     visibility: str
-    status: Literal["ready", "unavailable", "not_configured"]
+    status: Literal["ready", "coming_soon", "unavailable", "not_configured"]
+    mode_scope: Literal["chat", "work"] | None = None
     owner_email: str | None = None
     updated_at: datetime | None = None
 

@@ -103,6 +103,66 @@ class AdminHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed.status_code, 200)
         self.assertEqual(refreshed.json()['accounts'][0]['role'], 'admin')
 
+    async def test_admin_audit_supports_category_outcome_query_and_cursor_pagination(self):
+        from backend.application.admin import AdminService
+
+        self.accounts.ensure_admin(email='second-admin@example.com', password='a-long-admin-password')
+        with self.database.session() as session:
+            AdminService._add_audit(
+                session,
+                actor_id=self.admin.id,
+                target_account_id=self.user.account.id,
+                action='account.capability_changed',
+                resource_type='account_capability',
+                resource_id=self.user.account.id,
+                outcome='succeeded',
+                details={'before': {'model_policy': 'default'}, 'after': {'model_policy': 'allowlist'}},
+            )
+            AdminService._add_audit(
+                session,
+                actor_id=self.admin.id,
+                target_account_id=None,
+                action='model.provider_tested',
+                resource_type='model_provider',
+                resource_id='relay-1',
+                outcome='failed',
+                details={'reason': 'timeout'},
+            )
+            AdminService._add_audit(
+                session,
+                actor_id=self.admin.id,
+                target_account_id=self.user.account.id,
+                action='conversation.log_viewed',
+                resource_type='conversation',
+                resource_id='conv-9',
+                outcome='succeeded',
+                details={'run_count': 2},
+            )
+            session.commit()
+
+        login = await self.client.post('/auth/admin-login', json={'email': 'admin@example.com', 'password': 'a-long-admin-password'})
+        headers = {'Authorization': f"Bearer {login.json()['session']['token']}"}
+
+        overview = await self.client.get('/admin/audit?limit=2', headers=headers)
+        self.assertEqual(overview.status_code, 200, overview.text)
+        body = overview.json()
+        self.assertEqual(len(body['events']), 2)
+        self.assertTrue(body['next_cursor'])
+        self.assertEqual(body['category_counts']['all'], 3)
+        self.assertEqual(body['category_counts']['model'], 1)
+        self.assertEqual(body['category_counts']['capability'], 1)
+
+        page2 = await self.client.get(f"/admin/audit?limit=2&cursor={body['next_cursor']}", headers=headers)
+        self.assertEqual(page2.status_code, 200)
+        self.assertEqual(len(page2.json()['events']), 1)
+
+        failed = await self.client.get('/admin/audit?category=model&outcome=failed&q=relay-1', headers=headers)
+        self.assertEqual(failed.status_code, 200)
+        self.assertEqual([row['action'] for row in failed.json()['events']], ['model.provider_tested'])
+
+        bad = await self.client.get('/admin/audit?category=unknown', headers=headers)
+        self.assertEqual(bad.status_code, 422)
+
 
 if __name__ == "__main__":
     unittest.main()

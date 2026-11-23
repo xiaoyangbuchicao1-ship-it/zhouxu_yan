@@ -31,6 +31,8 @@ class RuntimeModelRevision:
     credential_ref: str | None = None
     credential_file: str | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
+    access_scope: str = "all"
+    encrypted_key: str | None = None
 
     @property
     def cache_key(self) -> tuple[str, str]:

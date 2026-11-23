@@ -12,6 +12,7 @@ export const adminNavigation: AdminNavigationItem[] = [
   { label: "人员", to: "/admin/accounts" },
   { label: "能力与状态", to: "/admin/operations" },
   { label: "模型", to: "/admin/models" },
+  { label: "审计日志", to: "/admin/audit" },
 ];
 
 export function accountConversationPath(accountId: string): string {

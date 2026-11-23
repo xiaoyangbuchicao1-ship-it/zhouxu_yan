@@ -6,21 +6,17 @@ import math
 import re
 from collections import defaultdict
 
-from backend.config.settings import BACKEND_ROOT, Settings
+from backend.config.settings import Settings, resolve_case_snapshot_dir
 from backend.infrastructure.corpus.cases import CaseSnapshot, CaseSourceError, text_hash
 
 
 class CaseRetriever:
     def __init__(self, settings: Settings, encoder, client):
-        from pathlib import Path
-
         self.cfg = settings.cases
         self.law_alias = settings.rag.read_alias
         self.encoder = encoder
         self.client = client
-        path = Path(self.cfg.snapshot_dir)
-        if not path.is_absolute():
-            path = BACKEND_ROOT / path
+        path = resolve_case_snapshot_dir(settings)
         self.source = CaseSnapshot(
             path,
             {
