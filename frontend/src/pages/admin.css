@@ -1,20 +1,20 @@
 :where(.admin-login-page, .admin-page, .admin-dialog, .admin-select-menu, .admin-mobile-sheet) {
-  --admin-bg: #070b10;
-  --admin-panel: #0f1620;
+  --admin-bg: var(--zx-bg);
+  --admin-panel: var(--zx-surface);
   --admin-panel-soft: #151f2d;
   --admin-panel-card: #0c121b;
-  --admin-line: #233042;
-  --admin-line-soft: #1a2433;
-  --admin-text: #ecf2f8;
-  --admin-muted: #8ea0b5;
-  --admin-accent: #7cb7ff;
-  --admin-accent-soft: #7cb7ff1a;
-  --admin-ok: #5dd39e;
-  --admin-ok-soft: #133126;
-  --admin-warn: #f5b963;
-  --admin-warn-soft: #2e2415;
-  --admin-danger: #f28b92;
-  --admin-danger-soft: #351a20;
+  --admin-line: var(--zx-line);
+  --admin-line-soft: var(--zx-line-soft);
+  --admin-text: var(--zx-text);
+  --admin-muted: var(--zx-muted);
+  --admin-accent: var(--zx-accent);
+  --admin-accent-soft: var(--zx-accent-soft);
+  --admin-ok: var(--zx-ok);
+  --admin-ok-soft: var(--zx-ok-soft);
+  --admin-warn: var(--zx-warn);
+  --admin-warn-soft: var(--zx-warn-soft);
+  --admin-danger: var(--zx-danger);
+  --admin-danger-soft: var(--zx-danger-soft);
   font-family: var(--font-body);
   color-scheme: dark;
 }
@@ -208,7 +208,7 @@
 .admin-rail-nav { display: grid; gap: 5px; }
 .admin-rail-nav a,.admin-mobile-nav a { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 0 12px; border-radius: 9px; color: var(--admin-muted); font-size: 13px; text-decoration: none; transition: color 150ms ease, background 150ms ease; }
 .admin-rail-nav a:hover,.admin-rail-nav a.is-active,.admin-mobile-nav a:hover,.admin-mobile-nav a.is-active { color: var(--admin-text); background: #ffffff09; }
-.admin-rail-nav a.is-active { color: #dcebff; background: linear-gradient(90deg, #7cb7ff22, #7cb7ff0a); box-shadow: inset 2px 0 0 var(--admin-accent); }
+.admin-rail-nav a.is-active { color: #dcebff; background: linear-gradient(90deg, #89aacc22, #89aacc0a); box-shadow: inset 2px 0 0 var(--admin-accent); }
 .admin-rail-return { display: flex; align-items: center; gap: 8px; min-height: 44px; margin-top: auto; padding: 0 12px; border-top: 1px solid var(--admin-line-soft); color: var(--admin-muted); font-size: 12px; text-decoration: none; }
 .admin-rail-return:hover { color: var(--admin-text); }
 .admin-shell-main { display: flex; min-width: 0; flex: 1; flex-direction: column; background: radial-gradient(circle at 88% -8%, #16243866, transparent 42%), var(--admin-bg); }
@@ -734,4 +734,54 @@
   .admin-cc-card { padding: 16px 14px; }
   .admin-cc-grid-2,.admin-cc-eco-grid { grid-template-columns: 1fr; }
   .admin-source-card { flex-direction: column; align-items: flex-start; }
+}
+
+/* 统一原生下拉与复选框的外观（行为不变） */
+:is(.admin-page, .admin-dialog) select {
+  appearance: none;
+  padding-right: 30px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239da9b8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+}
+:is(.admin-page, .admin-dialog) select:focus-visible {
+  outline: none;
+  border-color: var(--admin-accent);
+  box-shadow: 0 0 0 2px var(--admin-accent-soft);
+}
+:is(.admin-page, .admin-dialog) input[type="checkbox"] {
+  appearance: none;
+  display: inline-grid;
+  flex: none;
+  place-content: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--admin-line);
+  border-radius: 5px;
+  background: var(--admin-panel-card);
+  cursor: pointer;
+  transition: background-color var(--zx-fast) var(--zx-ease), border-color var(--zx-fast) var(--zx-ease);
+}
+:is(.admin-page, .admin-dialog) input[type="checkbox"]::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border-left: 2px solid #0a1018;
+  border-bottom: 2px solid #0a1018;
+  transform: rotate(-45deg) scale(0);
+  transition: transform var(--zx-fast) var(--zx-ease);
+}
+:is(.admin-page, .admin-dialog) input[type="checkbox"]:checked {
+  border-color: var(--admin-accent);
+  background: var(--admin-accent);
+}
+:is(.admin-page, .admin-dialog) input[type="checkbox"]:checked::after {
+  transform: rotate(-45deg) scale(1);
+}
+:is(.admin-page, .admin-dialog) input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--admin-accent);
+  outline-offset: 2px;
 }

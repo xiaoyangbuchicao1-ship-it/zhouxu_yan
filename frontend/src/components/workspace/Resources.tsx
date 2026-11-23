@@ -126,7 +126,7 @@ export function LibraryPage({
   }
   return (
     <div className="ws-library-page">
-      <header className="ws-library-intro">
+      <header className="md-heading">
         <div>
           <h1>资料库</h1>
           <p>把常用依据留在手边。需要时，再选入对话。</p>

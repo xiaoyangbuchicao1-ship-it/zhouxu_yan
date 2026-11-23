@@ -954,30 +954,3 @@
     font-size: 11px;
   }
 }
-
-/* Ready vs Coming Soon Built-in Skill Sections */
-.md-skill-coming-list {
-  opacity: 0.72;
-}
-.md-skill-coming {
-  border-color: rgba(137, 170, 204, 0.12);
-  background: rgba(12, 18, 26, 0.55);
-}
-.md-skill-content-static {
-  cursor: default;
-}
-.md-skill-content-static:hover {
-  background: transparent;
-}
-.md-skill-soon-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(137, 170, 204, 0.22);
-  background: rgba(137, 170, 204, 0.08);
-  color: #8ea4bc;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.4;
-}

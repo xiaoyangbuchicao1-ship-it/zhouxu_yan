@@ -225,14 +225,14 @@ export default function AdminOperationsPage() {
         />
       </section>
       <section className="admin-ops-section" aria-labelledby="admin-ops-skills">
-        <SectionTitle icon={<Wrench size={16} />} id="admin-ops-skills" title="Skill" />
+        <SectionTitle icon={<Wrench size={16} />} id="admin-ops-skills" title="技能" />
         <div className="admin-ops-summary">
           <StatePill state={skills.data?.status ?? "unavailable"} />
-          <span>{skills.data?.total ?? "—"} 个已注册 Skill</span>
+          <span>{skills.data ? `${skills.data.skills.filter(skill => skill.status !== "coming_soon").length} 个已开放，${skills.data.skills.filter(skill => skill.status === "coming_soon").length} 个未开放` : "—"}</span>
         </div>
         {skills.data?.skills.length ? (
           <div className="admin-ops-list">
-            {skills.data.skills.map(skill => (
+            {skills.data.skills.filter(skill => skill.status !== "coming_soon").map(skill => (
               <div className="admin-ops-row" key={skill.id}>
                 <div>
                   <strong>
@@ -377,8 +377,8 @@ function CapabilityTable({
           <tr>
             <th>账户</th>
             <th>模型授权</th>
-            <th>Skill 授权</th>
-            <th>上传 Skill</th>
+            <th>技能授权</th>
+            <th>上传技能</th>
           </tr>
         </thead>
         <tbody>
@@ -432,7 +432,7 @@ function CapabilityTable({
               </td>
               <td>
                 <input
-                  aria-label={`${item.email} 上传 Skill`}
+                  aria-label={`${item.email} 上传技能`}
                   type="checkbox"
                   checked={item.can_upload_skill}
                   disabled={updating}

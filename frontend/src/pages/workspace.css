@@ -1,13 +1,13 @@
 :where(.workspace, .ws-dialog, .ws-menu) {
-  --ws-bg: #080c10;
-  --ws-side: #0d1117;
-  --ws-surface: #121820;
-  --ws-raised: #1b232d;
-  --ws-text: #e6e9ee;
-  --ws-muted: #9da9b8;
-  --ws-accent: #89aacc;
-  --ws-line: #232c37;
-  --ws-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --ws-bg: var(--zx-bg);
+  --ws-side: var(--zx-side);
+  --ws-surface: var(--zx-surface);
+  --ws-raised: var(--zx-raised);
+  --ws-text: var(--zx-text);
+  --ws-muted: var(--zx-muted);
+  --ws-accent: var(--zx-accent);
+  --ws-line: var(--zx-line);
+  --ws-ease: var(--zx-ease);
   font-family: var(--font-body);
   font-size: 14px;
   font-synthesis: none;
@@ -1965,28 +1965,11 @@
   color: #111c28;
 }
 .ws-library-page {
-  max-width: 1160px;
+  width: min(1160px, 100%);
   margin: 0 auto;
-  padding: 40px 60px;
+  padding: 42px 48px 70px;
   height: 100%;
   overflow-y: auto;
-}
-.ws-library-intro {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 44px;
-}
-.ws-library-intro h1 {
-  font-size: 24px;
-  font-weight: 500;
-}
-.ws-library-intro p {
-  font-size: 16px;
-  color: var(--ws-muted);
-  margin-top: 10px;
-  line-height: 1.8;
 }
 .ws-primary-button,
 .ws-secondary-button,
@@ -2013,6 +1996,11 @@
 .ws-danger-button {
   background: #6a3430;
   color: #fff1ed;
+}
+.ws-button-compact {
+  min-height: 34px;
+  padding: 6px 14px;
+  font-size: 13px;
 }
 .ws-text-button {
   display: inline-flex;
@@ -2522,10 +2510,7 @@
     padding-right: 28px;
   }
   .ws-library-page {
-    padding: 32px;
-  }
-  .ws-library-intro {
-    align-items: flex-start;
+    padding: 30px;
   }
 }
 @media (max-width: 760px) {
@@ -2560,7 +2545,7 @@
     min-height: 30px;
     padding: 0 7px;
   }
-  .ws-mode-option span {
+  .ws-mode-option:not(.is-selected) > span:not(.ws-mode-option-active) {
     display: none;
   }
   .ws-mode-transition {
@@ -2569,9 +2554,6 @@
   .ws-mode-refresh-card {
     width: min(340px, calc(100vw - 32px));
     padding: 18px 18px 15px;
-  }
-  .ws-mode-switch.is-locked .ws-mode-locked span {
-    display: none;
   }
   .ws-materials-trigger > span:not(.ws-count) {
     display: none;
@@ -2661,12 +2643,7 @@
     width: auto;
   }
   .ws-library-page {
-    padding: 24px 20px;
-  }
-  .ws-library-intro {
-    flex-direction: column;
-    gap: 20px;
-    margin-bottom: 24px;
+    padding: 22px 20px 45px;
   }
   .ws-library-toolbar {
     gap: 16px;
@@ -2969,6 +2946,7 @@
 }
 .ws-welcome-card {
   display: flex;
+  text-align: left;
   align-items: flex-start;
   gap: 12px;
   width: 100%;

@@ -1,0 +1,40 @@
+/*
+ * 舟序统一设计令牌：工作台与管理后台的颜色、动效只在这里定义。
+ * 首页（index.css）使用独立的灰阶体系，属于冻结区，不映射到这里。
+ * 弹窗和菜单渲染在 Portal 中，令牌放在 :root 才能被它们继承。
+ */
+:root {
+  --zx-bg: #080c10;
+  --zx-side: #0d1117;
+  --zx-surface: #121820;
+  --zx-raised: #1b232d;
+  --zx-line: #232c37;
+  --zx-line-soft: #1a2230;
+
+  --zx-text: #e6e9ee;
+  --zx-muted: #9da9b8;
+
+  --zx-accent: #89aacc;
+  --zx-accent-soft: rgba(137, 170, 204, 0.14);
+  --zx-accent-line: rgba(137, 170, 204, 0.34);
+
+  --zx-ok: #5dd39e;
+  --zx-ok-soft: #133126;
+  --zx-warn: #f5b963;
+  --zx-warn-soft: #2e2415;
+  --zx-danger: #f28b92;
+  --zx-danger-soft: #351a20;
+
+  --zx-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --zx-fast: 140ms;
+  --zx-base: 220ms;
+  --zx-slow: 360ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --zx-fast: 0.01ms;
+    --zx-base: 0.01ms;
+    --zx-slow: 0.01ms;
+  }
+}

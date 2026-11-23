@@ -43,13 +43,11 @@ function SkillCard({
   onOpen,
   onUse,
   canInspect = false,
-  comingSoon = false,
 }: {
   skill: MaritimeSkill;
   onOpen?: () => void;
   onUse?: () => void;
   canInspect?: boolean;
-  comingSoon?: boolean;
 }) {
   const files = skill.package?.files.length ?? 0;
   const title = skillDisplayName(skill);
@@ -64,41 +62,32 @@ function SkillCard({
         <span className="md-row">
           <strong>{title}</strong>
           {skill.package && <span className="md-tag">ZIP · {files} 个文件</span>}
-          {!comingSoon && !skill.package && tagText && <span className="md-tag">{tagText}</span>}
-          {comingSoon && <span className="md-skill-soon-badge">持续推进中</span>}
+          {!skill.package && tagText && <span className="md-tag">{tagText}</span>}
         </span>
         <span className="md-skill-summary">{skill.summary}</span>
       </span>
-      {!comingSoon && <ChevronRight className="md-skill-chevron" size={17} aria-hidden="true" />}
+      <ChevronRight className="md-skill-chevron" size={17} aria-hidden="true" />
     </>
   );
 
   return (
-    <article className={`md-skill md-skill-package ${comingSoon ? "md-skill-coming" : ""}`}>
-      {comingSoon ? (
-        <div className="md-skill-content md-skill-content-static" aria-disabled="true">
-          {body}
-        </div>
-      ) : (
-        <button type="button" className="md-skill-content" onClick={canInspect && onOpen ? onOpen : onUse}>
-          {body}
-        </button>
-      )}
-      {!comingSoon && (
-        <div className="md-skill-actions">
-          {onUse && (
-            <button type="button" className="ws-text-button" onClick={onUse}>
-              {modeScope === "chat" ? "在聊天模式使用" : "在工作模式使用"}
-              <ArrowUpRight size={15} />
-            </button>
-          )}
-          {canInspect && onOpen && (
-            <button type="button" className="ws-text-button" onClick={onOpen}>
-              查看包文件
-            </button>
-          )}
-        </div>
-      )}
+    <article className="md-skill md-skill-package">
+      <button type="button" className="md-skill-content" onClick={canInspect && onOpen ? onOpen : onUse}>
+        {body}
+      </button>
+      <div className="md-skill-actions">
+        {onUse && (
+          <button type="button" className="ws-text-button" onClick={onUse}>
+            {modeScope === "chat" ? "在聊天模式使用" : "在工作模式使用"}
+            <ArrowUpRight size={15} />
+          </button>
+        )}
+        {canInspect && onOpen && (
+          <button type="button" className="ws-text-button" onClick={onOpen}>
+            查看包文件
+          </button>
+        )}
+      </div>
     </article>
   );
 }
@@ -175,7 +164,7 @@ export default function Skills({ api, accountId, onError, error }: Props) {
   }
 
   const skills = query.data?.skills ?? [];
-  const { ready, comingSoon, mine } = splitSkillsByReadiness(skills, accountId);
+  const { ready, mine } = splitSkillsByReadiness(skills, accountId);
 
   function startSkill(skill: MaritimeSkill) {
     const targetMode = skill.mode_scope === "chat" ? "chat" : "work";
@@ -253,22 +242,6 @@ export default function Skills({ api, accountId, onError, error }: Props) {
               <p className="md-group-empty">暂时没有已开放的内置技能。</p>
             )}
           </section>
-
-          {comingSoon.length > 0 && (
-            <section className="md-skill-group" aria-labelledby="coming-skills">
-              <div className="md-skill-group-heading">
-                <div>
-                  <h2 id="coming-skills">持续推进中</h2>
-                </div>
-                <span className="md-group-count">{comingSoon.length}</span>
-              </div>
-              <div className="md-skill-list md-skill-coming-list">
-                {comingSoon.map((skill) => (
-                  <SkillCard key={skill.id} skill={skill} comingSoon />
-                ))}
-              </div>
-            </section>
-          )}
 
           <section className="md-skill-group" aria-labelledby="my-skills">
             <div className="md-skill-group-heading">

@@ -371,8 +371,8 @@ function Answer({
       {(actions.answer || actions.recovery) && <div className="ws-answer-tools">
         {actions.recovery && (
           <div className="ws-answer-action-group" aria-label="恢复操作">
-            {message.recovery?.can_continue && <button className="ws-text-button" disabled={uploading} onClick={onContinue}>继续处理</button>}
-            {message.recovery?.can_retry && <button className="ws-text-button" onClick={onRetry}>重新做</button>}
+            {message.recovery?.can_continue && <button className="ws-primary-button ws-button-compact" disabled={uploading} onClick={onContinue}>继续处理</button>}
+            {message.recovery?.can_retry && <button className="ws-secondary-button ws-button-compact" onClick={onRetry}>重新做</button>}
           </div>
         )}
         {actions.answer && <div className="ws-answer-action-group ws-answer-action-group-secondary" aria-label="回答操作">
