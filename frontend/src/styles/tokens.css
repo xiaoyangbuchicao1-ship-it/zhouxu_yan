@@ -38,3 +38,13 @@
     --zx-slow: 0.01ms;
   }
 }
+
+/* 减少动态效果：去掉悬停位移，只保留颜色变化。:root 前缀用来盖过后加载的页面样式 */
+@media (prefers-reduced-motion: reduce) {
+  :root .ws-welcome-card:hover,
+  :root .admin-ov-kpi:hover,
+  :root .md-result:hover,
+  :root .md-skill-content:hover .md-skill-chevron {
+    transform: none;
+  }
+}

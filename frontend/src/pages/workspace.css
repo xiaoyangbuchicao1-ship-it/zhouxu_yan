@@ -1762,6 +1762,18 @@
   text-align: center;
   font-size: 14px;
 }
+.ws-load-error.is-compact {
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 8px;
+  font-size: 13px;
+  text-align: left;
+}
+.ws-load-error.is-compact p {
+  flex: 1;
+  min-width: 0;
+}
 .ws-desktop-materials {
   flex: none;
   overflow: hidden;

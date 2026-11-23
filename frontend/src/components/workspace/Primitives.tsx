@@ -152,16 +152,18 @@ export function Loading({ label = "正在载入…" }: { label?: string }) {
 export function LoadError({
   retry,
   label = "暂时无法载入，请检查连接后重试。",
+  compact = false,
 }: {
   retry: () => void;
   label?: string;
+  compact?: boolean;
 }) {
   return (
-    <div className="ws-load-error" role="alert">
-      <AlertCircle size={18} />
+    <div className={`ws-load-error${compact ? " is-compact" : ""}`} role="alert">
+      <AlertCircle size={compact ? 15 : 18} />
       <p>{label}</p>
       <button className="ws-text-button" onClick={retry}>
-        重新载入
+        {compact ? "重试" : "重新载入"}
       </button>
     </div>
   );

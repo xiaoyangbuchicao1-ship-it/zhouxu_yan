@@ -214,7 +214,7 @@ export default function Sidebar({
               {ws.projects.isPending ? (
                 <Loading label="载入项目…" />
               ) : ws.projects.isError ? (
-                <LoadError retry={() => void ws.projects.refetch()} />
+                <LoadError compact label="项目载入失败" retry={() => void ws.projects.refetch()} />
               ) : (
                 <>
                   {(ws.projects.data?.projects || []).map((project) => {
@@ -291,7 +291,7 @@ export default function Sidebar({
               {ws.history.isPending ? (
                 <Loading label="载入对话…" />
               ) : ws.history.isError ? (
-                <LoadError retry={() => void ws.history.refetch()} />
+                <LoadError compact label="对话载入失败" retry={() => void ws.history.refetch()} />
               ) : (
                 <>
                   {pinned.length > 0 && (

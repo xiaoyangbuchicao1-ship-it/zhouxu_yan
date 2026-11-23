@@ -83,7 +83,7 @@ export function RunProgress({ activities = [], stages = [], nodes = [], live = f
           {live ? <ActivityIndicator /> : <span className="ws-progress-status-dot" />}
         </span>
         <span className="ws-progress-label">{label}</span>
-        {total != null && <time>{formatDuration(total)}</time>}
+        {total != null && status !== "pausing" && <time>{formatDuration(total)}</time>}
         {canExpand && <span className="ws-progress-toggle" aria-label={open ? "收起步骤" : "查看步骤"}>{stepCount} 个步骤<ChevronDown size={13} aria-hidden="true" /></span>}
       </>;
 
