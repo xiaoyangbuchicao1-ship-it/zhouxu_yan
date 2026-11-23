@@ -1,5 +1,6 @@
 import { useRef, useEffect } from "react";
 import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import gsap from "gsap";
 
 const VIDEO_SRC = "/media/zhouxu-bg.mp4";
@@ -8,7 +9,6 @@ const socials = [
   { name: "舟序 / ZHOUXU", href: "#home" },
   { name: "应用场景", href: "#work" },
   { name: "工作方式", href: "#workflow" },
-  { name: "功能规划", href: "#roadmap" },
 ];
 
 const ease = [0.25, 0.1, 0.25, 1] as [number, number, number, number];
@@ -78,13 +78,13 @@ const Contact = () => {
             transition={{ duration: 1, ease }}
             viewport={{ once: true, margin: "-100px" }}
           >
-            <p className="text-base md:text-lg text-muted mb-8 max-w-md mx-auto">
+            <p className="text-base md:text-lg text-muted mb-8 max-w-md mx-auto text-balance">
               从一份材料，到一个清楚的问题。让海事工作，更有条理。
             </p>
-            <motion.a
-              href="#roadmap"
+            <motion.div className="inline-block" whileTap={{ scale: 0.97 }}>
+            <Link
+              to="/workspace"
               className="group relative inline-flex items-center gap-3 px-8 py-4 bg-bg border-2 border-stroke rounded-full"
-              whileTap={{ scale: 0.97 }}
             >
               <span
                 className="absolute inset-0 rounded-full p-[2px] bg-gradient-to-r from-[#89AACC] to-[#4E85BF] opacity-0 group-hover:opacity-100 transition-opacity duration-300"
@@ -93,7 +93,7 @@ const Contact = () => {
                 <span className="block w-full h-full rounded-full bg-bg" />
               </span>
               <span className="relative z-10 text-lg text-text-primary break-all sm:break-normal">
-                探索舟序的下一步
+                进入工作台
               </span>
               <svg
                 className="relative z-10 w-[18px] h-[18px] text-muted group-hover:text-text-primary group-hover:translate-x-1 group-hover:-translate-y-1 transition-all duration-300"
@@ -104,7 +104,8 @@ const Contact = () => {
               >
                 <path d="M7 17L17 7M17 7H7M17 7V17" />
               </svg>
-            </motion.a>
+            </Link>
+            </motion.div>
           </motion.div>
 
           {/* Footer bar */}

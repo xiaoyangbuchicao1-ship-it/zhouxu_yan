@@ -15,21 +15,9 @@ const ArrowNE = ({ size = 18 }: { size?: number }) => (
   </svg>
 );
 
-const ViewAllButton = () => (
-  <a href="#workflow" className="group relative inline-flex items-center gap-2 px-5 py-2.5 bg-surface border border-stroke rounded-full text-sm text-muted hover:text-text-primary transition-colors duration-300">
-    <span className="absolute inset-0 rounded-full p-[2px] bg-gradient-to-r from-[#89AACC] to-[#4E85BF] opacity-0 group-hover:opacity-100 transition-opacity duration-300" style={{ margin: "-1px" }}>
-      <span className="block w-full h-full rounded-full bg-surface" />
-    </span>
-    <span className="relative z-10">查看协作步骤</span>
-    <svg className="relative z-10 w-4 h-4 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" viewBox="0 0 256 256" fill="currentColor">
-      <path d="M204,64V168a12,12,0,0,1-24,0V93L72.49,200.49a12,12,0,0,1-17-17L163,76H88a12,12,0,0,1,0-24H192A8,8,0,0,1,204,64Z" />
-    </svg>
-  </a>
-);
-
 const Journal = () => {
   return (
-    <section id="journal" className="relative bg-bg py-16 md:py-24 overflow-hidden">
+    <section id="workflow" className="relative bg-bg py-16 md:py-24 overflow-hidden">
       <div className="max-w-[1200px] mx-auto px-6 md:px-10 lg:px-16">
         {/* Header */}
         <motion.div
@@ -44,14 +32,13 @@ const Journal = () => {
               <span className="w-8 h-px bg-stroke" />
               <span className="text-xs text-muted uppercase tracking-[0.3em]">A CLEARER PROCESS</span>
             </div>
-            <h2 className="font-editorial text-3xl md:text-4xl lg:text-5xl text-text-primary leading-[1.45]">
+            <h2 className="font-editorial text-3xl md:text-4xl lg:text-5xl text-text-primary leading-[1.45] text-balance">
               把问题说清，让分析有据
             </h2>
             <p className="text-muted text-sm md:text-base mt-3 max-w-md">
               从提出问题到核对结果，用清楚的前提，推进每一次协作。点击展开说明。
             </p>
           </div>
-          <ViewAllButton />
         </motion.div>
 
         {/* Entries */}
