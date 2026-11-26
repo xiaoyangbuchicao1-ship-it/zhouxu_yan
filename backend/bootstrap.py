@@ -95,20 +95,13 @@ def build_harness(
     # Maritime research is an additive set of read-only business tools.  The
     # corpus adapter is shared by search and later citation projection, while
     # the existing Harness remains the sole dispatcher.
-    from backend.application.maritime.work_packages import (
-        WorkPackageTool,
-        configured_store,
-    )
     from backend.infrastructure.search.maritime_corpus import MaritimeCorpus
-    from backend.infrastructure.tools.maritime import ClaimTool, CorpusTool
+    from backend.infrastructure.tools.maritime import CorpusTool
 
     maritime_corpus = MaritimeCorpus()
-    maritime_tools = [
-        ClaimTool(),
-        WorkPackageTool(configured_store(settings), maritime_corpus),
-    ]
+    maritime_tools = []
     if settings.application.get("expose_legacy_corpus_tool", False):
-        maritime_tools.insert(0, CorpusTool(maritime_corpus))
+        maritime_tools.append(CorpusTool(maritime_corpus))
     for maritime_tool in maritime_tools:
         if maritime_tool.spec.name in registered:
             raise ValueError("duplicate_tool_registration")

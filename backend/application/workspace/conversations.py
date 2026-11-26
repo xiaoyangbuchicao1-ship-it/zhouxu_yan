@@ -337,7 +337,7 @@ class WorkspaceService:
             active_run = session.scalar(
                 select(ConversationRunModel.run_id).where(
                     ConversationRunModel.conversation_id == conversation_id,
-                    ConversationRunModel.status.in_({"queued", "running", "waiting_user"}),
+                    ConversationRunModel.status.in_({"queued", "running", "pausing", "waiting_user"}),
                 )
             )
             if active_run is not None:
@@ -436,6 +436,24 @@ class WorkspaceService:
                     .order_by(MaterialModel.created_at.desc())
                 )
             )
+        finally:
+            session.close()
+
+    def material_conversation_counts(self, *, account_id: str) -> dict[str, int]:
+        """How many of the account's conversations each material is attached to."""
+
+        session = self.database.session()
+        try:
+            rows = session.execute(
+                select(
+                    ConversationMaterialModel.material_id,
+                    func.count(ConversationMaterialModel.conversation_id),
+                )
+                .join(MaterialModel, MaterialModel.id == ConversationMaterialModel.material_id)
+                .where(MaterialModel.account_id == account_id)
+                .group_by(ConversationMaterialModel.material_id)
+            ).all()
+            return {material_id: int(count) for material_id, count in rows}
         finally:
             session.close()
 
@@ -572,6 +590,10 @@ class WorkspaceService:
                     )
                 )
             now = self._now()
+            # A conversation is "recent" because something happened in it.  A
+            # replay of an unchanged Run (every restart re-projects history)
+            # must not move it to the top of the list.
+            touched = record is None
             if record is None:
                 record = ConversationRunModel(
                     run_id=run_id,
@@ -602,6 +624,7 @@ class WorkspaceService:
                 )
                 session.add(record)
             else:
+                before = (record.status, record.revision, record.answer, record.partial_output, record.error_code)
                 record.status = status
                 if answer is not None:
                     record.answer = answer
@@ -643,11 +666,13 @@ class WorkspaceService:
                     record.retry_of_run_id = retry_of_run_id
                 if status in {"succeeded", "failed", "cancelled"}:
                     record.completed_at = record.completed_at or completed_at or now
+                touched = before != (record.status, record.revision, record.answer, record.partial_output, record.error_code)
             if payload is not None and payload.get("mode") == "work":
                 # Project the accepted durable Run; never elevate a conversation
                 # before its pending confirmation has been consumed.
                 conversation.mode = "work"
-            conversation.updated_at = now
+            if touched:
+                conversation.updated_at = now
             try:
                 session.commit()
             except IntegrityError:

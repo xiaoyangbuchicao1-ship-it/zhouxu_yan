@@ -22,6 +22,11 @@ services:
         hard: 65536
     volumes:
       - ${ZHOUXU_OPENSEARCH_DATA_DIR:-../../opensearch/vector_db_data/opensearch}:/usr/share/opensearch/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
     expose:
       - "9200"
     healthcheck:
@@ -41,6 +46,11 @@ services:
         PYPI_INDEX: ${PYPI_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
     container_name: zhouxu-init
     restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "2"
     depends_on:
       opensearch:
         condition: service_healthy
@@ -124,6 +134,11 @@ services:
         read_only: true
     expose:
       - "8010"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
     command: ["sh", "-c", "python -B /app/start/common/runtime_volume.py check && exec uvicorn backend.interfaces.api.app:app --host 0.0.0.0 --port 8010 --workers 1"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8010/healthz"]
@@ -144,6 +159,11 @@ services:
     depends_on:
       zhouxu-api:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
     ports:
       # Keep the app behind ECS Nginx/FRP; only the local host may reach it.
       - "127.0.0.1:${ZHOUXU_WEB_PORT:-8080}:80"

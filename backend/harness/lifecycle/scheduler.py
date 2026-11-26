@@ -7,6 +7,7 @@ behind a later port.
 
 import asyncio
 import logging
+import os
 import traceback
 from collections import deque
 from dataclasses import dataclass, field
@@ -66,12 +67,35 @@ class InMemoryRunScheduler:
     the runtime store without changing the lifecycle contracts.
     """
 
-    def __init__(self, executor: RunExecutor, store: RunStore | None = None, on_change=None):
+    def __init__(
+        self,
+        executor: RunExecutor,
+        store: RunStore | None = None,
+        on_change=None,
+        *,
+        max_restart_requeues: int = 1,
+        max_concurrent_runs: int | None = None,
+    ):
         self._executor = executor
         self._store = store
         self._sessions: dict[str, _SessionRuntime] = {}
         self._lock = asyncio.Lock()
         self.on_change = on_change
+        self._max_restart_requeues = max(0, int(max_restart_requeues))
+        if max_concurrent_runs is None:
+            raw_cap = os.environ.get("ZHOUXU_MAX_CONCURRENT_RUNS", "8").strip()
+            try:
+                max_concurrent_runs = int(raw_cap) if raw_cap else 8
+            except ValueError:
+                max_concurrent_runs = 8
+        self._max_concurrent_runs = max(0, int(max_concurrent_runs))
+        self._global_semaphore = (
+            asyncio.Semaphore(self._max_concurrent_runs)
+            if self._max_concurrent_runs > 0
+            else None
+        )
+        self._running_executions = 0
+        self._waiting_for_slot = 0
 
     async def recover(self) -> None:
         """Recover accepted work at startup, without requiring a browser visit."""
@@ -87,6 +111,18 @@ class InMemoryRunScheduler:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    def runtime_stats(self) -> dict[str, int]:
+        per_session_queued = sum(len(s.queue) for s in self._sessions.values())
+        active_sessions = sum(1 for s in self._sessions.values() if s.active_run_id is not None)
+        return {
+            "active_runs": self._running_executions,
+            "waiting_for_slot": self._waiting_for_slot,
+            "session_queued": per_session_queued,
+            "queued_runs": self._waiting_for_slot + per_session_queued,
+            "active_sessions": active_sessions,
+            "max_concurrent_runs": self._max_concurrent_runs,
+        }
 
     async def continue_run(
         self, *, session_id: str, run_id: str, guidance: str | None = None,
@@ -114,6 +150,7 @@ class InMemoryRunScheduler:
             ):
                 raise SchedulerCommandError("run continuation guidance is invalid")
             run.status, run.error, run.completed_at = "queued", None, None
+            run.restart_requeue_count = 0
             run.execution_state = prepared_state
             run.continuation_guidance = existing_guidance[-8:]
             if payload is not None:
@@ -255,8 +292,13 @@ class InMemoryRunScheduler:
                 original = RunInput.model_validate(run.payload)
                 payload = payload.model_copy(
                     update={
+                        # A steered Run keeps the model, thinking mode and
+                        # mode it was admitted with; only the text, facts and
+                        # materials change.
                         "thinking_mode": original.thinking_mode,
                         "mode": original.mode,
+                        "model_profile_id": original.model_profile_id,
+                        "model_snapshot": original.model_snapshot,
                     }
                 )
             run.payload = payload
@@ -331,11 +373,18 @@ class InMemoryRunScheduler:
         async with self._lock:
             session = self._require_session(session_id)
             run = self._require_run(session, run_id)
-            if run.status in {"succeeded", "failed", "cancelled", "paused", "pausing"}:
+            if terminal == "paused":
+                if run.status in {"succeeded", "failed", "cancelled", "paused", "pausing"}:
+                    return self._result_locked(session, run)
+            elif run.status in {"succeeded", "failed", "cancelled"}:
                 return self._result_locked(session, run)
             run.status = terminal if terminal == "cancelled" else "pausing"
             if terminal == "cancelled":
                 run.completed_at = datetime.now(timezone.utc)
+                for key in list(run.pending_request_ids):
+                    if key in session.requests:
+                        session.requests[key].status = "cancelled"
+                run.pending_request_ids = []
             run.revision += 1
             if run_id in session.queue:
                 session.queue.remove(run_id)
@@ -388,30 +437,95 @@ class InMemoryRunScheduler:
                 await self._persist_locked(session)
 
         control.graph_progress = graph_progress
-        try:
-            outcome = await self._executor.execute(execution_input, control)
-        except asyncio.CancelledError as exc:
-            if asyncio.current_task().cancelling():
-                # Service shutdown: retain running + latest checkpoint for restart.
-                async with self._lock:
-                    await self._persist_locked(session)
-                return
-            outcome = getattr(exc, "run_result", None) or RunResult(
-                run_id=run_id,
-                status="cancelled",
-                error=Error(code="cancelled", message="run cancelled"),
-                elapsed_seconds=0,
-            )
-        except Exception as exc:
-            logging.getLogger(__name__).error("executor failed run=%s type=%s stack=%s",
-                run_id, type(exc).__name__, traceback.format_tb(exc.__traceback__))
-            outcome = RunResult(
-                run_id=run_id,
-                status="failed",
-                error=Error(code="executor_failed", message=f"run executor failed: {type(exc).__name__}"),
-                execution_state=dict(run.execution_state),
-                elapsed_seconds=0,
-            )
+        acquired = False
+        outcome: RunResult | None = None
+        if self._global_semaphore is not None:
+            self._waiting_for_slot += 1
+            try:
+                if control.cancelled:
+                    outcome = RunResult(
+                        run_id=run_id,
+                        status="cancelled",
+                        error=Error(code="cancelled", message="run cancelled"),
+                        execution_state=dict(run.execution_state),
+                        elapsed_seconds=0,
+                    )
+                else:
+                    acquire_task = asyncio.ensure_future(self._global_semaphore.acquire())
+                    cancel_task = asyncio.ensure_future(control._cancel_requested.wait())
+                    try:
+                        await asyncio.wait(
+                            {acquire_task, cancel_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if (
+                            acquire_task.done()
+                            and not acquire_task.cancelled()
+                            and acquire_task.exception() is None
+                        ):
+                            acquired = True
+                            if control.cancelled:
+                                self._global_semaphore.release()
+                                acquired = False
+                                outcome = RunResult(
+                                    run_id=run_id,
+                                    status="cancelled",
+                                    error=Error(code="cancelled", message="run cancelled"),
+                                    execution_state=dict(run.execution_state),
+                                    elapsed_seconds=0,
+                                )
+                        else:
+                            outcome = RunResult(
+                                run_id=run_id,
+                                status="cancelled",
+                                error=Error(code="cancelled", message="run cancelled"),
+                                execution_state=dict(run.execution_state),
+                                elapsed_seconds=0,
+                            )
+                    finally:
+                        for pending in (acquire_task, cancel_task):
+                            if not pending.done():
+                                pending.cancel()
+                        await asyncio.gather(acquire_task, cancel_task, return_exceptions=True)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    async with self._lock:
+                        await self._persist_locked(session)
+                    return
+                raise
+            finally:
+                self._waiting_for_slot = max(0, self._waiting_for_slot - 1)
+
+        if outcome is None:
+            self._running_executions += 1
+            try:
+                outcome = await self._executor.execute(execution_input, control)
+            except asyncio.CancelledError as exc:
+                if asyncio.current_task().cancelling():
+                    # Service shutdown: retain running + latest checkpoint for restart.
+                    async with self._lock:
+                        await self._persist_locked(session)
+                    return
+                outcome = getattr(exc, "run_result", None) or RunResult(
+                    run_id=run_id,
+                    status="cancelled",
+                    error=Error(code="cancelled", message="run cancelled"),
+                    elapsed_seconds=0,
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).error("executor failed run=%s type=%s stack=%s",
+                    run_id, type(exc).__name__, traceback.format_tb(exc.__traceback__))
+                outcome = RunResult(
+                    run_id=run_id,
+                    status="failed",
+                    error=Error(code="executor_failed", message=f"run executor failed: {type(exc).__name__}"),
+                    execution_state=dict(run.execution_state),
+                    elapsed_seconds=0,
+                )
+            finally:
+                self._running_executions = max(0, self._running_executions - 1)
+                if acquired and self._global_semaphore is not None:
+                    self._global_semaphore.release()
 
         async with self._lock:
             session = self._require_session(session_id)
@@ -535,6 +649,27 @@ class InMemoryRunScheduler:
             await self._persist_locked(session)
             return
 
+    async def discard_session(self, session_id: str) -> list[str]:
+        """Forget a session and delete its stored checkpoints and events.
+
+        Only an idle session can be discarded; returns the Run ids removed.
+        """
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is not None:
+                busy = session.tasks or session.queue or any(
+                    run.status in {"queued", "running", "pausing"} for run in session.runs.values()
+                )
+                if busy:
+                    raise SchedulerCommandError("session is still running")
+            run_ids = list(session.runs) if session is not None else []
+            self._sessions.pop(session_id, None)
+            delete = getattr(self._store, "delete_session", None)
+            if callable(delete):
+                run_ids = list(dict.fromkeys(run_ids + delete(session_id)))
+            return run_ids
+
     async def _ensure_session(self, session_id: str) -> None:
         if self._store is None:
             async with self._lock:
@@ -547,7 +682,11 @@ class InMemoryRunScheduler:
             stored = await self._store.load(session_id=session_id)
             session = self._session(session_id)
             if stored is not None:
-                self._restore_session(session, stored)
+                self._restore_session(
+                    session,
+                    stored,
+                    max_restart_requeues=self._max_restart_requeues,
+                )
                 restored = True
         if restored:
             async with self._lock:
@@ -556,7 +695,12 @@ class InMemoryRunScheduler:
                 await self._dispatch_locked(session)
 
     @staticmethod
-    def _restore_session(session: _SessionRuntime, stored: PersistedSession) -> None:
+    def _restore_session(
+        session: _SessionRuntime,
+        stored: PersistedSession,
+        *,
+        max_restart_requeues: int = 1,
+    ) -> None:
         snapshot = stored.snapshot
         session.runs = {run.run_id: run.model_copy(deep=True) for run in snapshot.runs}
         session.requests = {
@@ -585,7 +729,21 @@ class InMemoryRunScheduler:
                 run.revision += 1
             if run.status == "running":
                 if run.partial_output:
+                    run.execution_state.setdefault("schema_version", 2)
                     run.execution_state["resume_visible_output"] = run.partial_output
+                if run.restart_requeue_count >= max_restart_requeues:
+                    # Stop automatic requeueing once a Run has already survived
+                    # the restart budget so a crashing Run cannot loop forever.
+                    run.status = "failed"
+                    run.error = Error(
+                        code="restart_interrupted",
+                        message="服务重启中断了这次任务，已停止自动重排；进度已保留，如需继续请手动点击继续。",
+                        retryable=True,
+                    )
+                    run.completed_at = datetime.now(timezone.utc)
+                    run.revision += 1
+                    continue
+                run.restart_requeue_count += 1
                 run.status = "queued"
                 run.error = None
                 run.revision += 1

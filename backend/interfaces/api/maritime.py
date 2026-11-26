@@ -16,14 +16,10 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
 from backend.application.accounts.service import AccountError
-from backend.application.maritime.calculator import calculate_claim
-from backend.application.maritime.catalog import COMMON
 from backend.application.maritime.service import MaritimeError, MaritimeOffice
 from backend.contracts.schemas.core import PortError
-from backend.infrastructure.database.models import AccountModel
 from backend.infrastructure.search.maritime_corpus import MaritimeCorpus
 from backend.infrastructure.sources import _paper_reference
 from backend.skills.packages import MAX_UPLOAD_BYTES
@@ -33,33 +29,19 @@ class Input(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class SkillInput(Input):
-    name: str = Field(min_length=1, max_length=80)
-    summary: str = Field(min_length=1, max_length=500)
-    instructions: str = Field(min_length=1, max_length=20000)
-    visibility: Literal["private", "community"] = "private"
-    parent_id: str | None = None
-    expected_version: int | None = None
+def office_for(app, settings) -> MaritimeOffice:
+    """The one skill/office store shared by the user routes and the admin routes."""
 
+    if not hasattr(app.state, "maritime_office"):
+        path = settings.application.get(
+            "office_store_path", "backend/.runtime/maritime-office.sqlite3"
+        )
+        if not Path(path).is_absolute():
+            from backend.config.settings import BACKEND_ROOT
 
-class CaseInput(Input):
-    title: str = Field(min_length=1, max_length=160)
-    summary: str = Field(default="", max_length=10000)
-
-
-class MemberInput(Input):
-    email: str = Field(min_length=3, max_length=320)
-    role: Literal["collaborator", "reviewer"] = "collaborator"
-
-
-class EntryInput(Input):
-    kind: Literal["task", "evidence", "document"] = "task"
-    title: str = Field(min_length=1, max_length=160)
-    content: str = Field(default="", max_length=100000)
-    due_at: str | None = None
-    assignee_id: str | None = None
-    status: Literal["open", "done", "draft", "reviewed"] = "open"
-    expected_version: int | None = None
+            path = BACKEND_ROOT.parent / path
+        app.state.maritime_office = MaritimeOffice(path)
+    return app.state.maritime_office
 
 
 class SearchInput(Input):
@@ -67,17 +49,6 @@ class SearchInput(Input):
     kind: Literal["laws", "cases", "information_cards"] = "laws"
     current_only: bool = True
     limit: int = Field(default=8, ge=1, le=10)
-
-
-class ClaimItem(Input):
-    name: str = Field(min_length=1, max_length=160)
-    quantity: str = Field(max_length=40)
-    rate: str = Field(max_length=40)
-    currency: str = Field(min_length=3, max_length=3)
-
-
-class ClaimInput(Input):
-    items: list[ClaimItem] = Field(min_length=1, max_length=100)
 
 
 def attach_maritime(app, settings):
@@ -97,16 +68,7 @@ def attach_maritime(app, settings):
             raise HTTPException(401, "authentication_required") from None
 
     def get_office():
-        if not hasattr(app.state, "maritime_office"):
-            path = settings.application.get(
-                "office_store_path", "backend/.runtime/maritime-office.sqlite3"
-            )
-            if not Path(path).is_absolute():
-                from backend.config.settings import BACKEND_ROOT
-
-                path = BACKEND_ROOT.parent / path
-            app.state.maritime_office = MaritimeOffice(path)
-        return app.state.maritime_office
+        return office_for(app, settings)
 
     def office(request: Request):
         return get_office()
@@ -210,21 +172,6 @@ def attach_maritime(app, settings):
             raise HTTPException(404, "file_not_found") from None
         return run, selected, target
 
-    def present_case(request, value):
-        ids = [member["account_id"] for member in value["members"]]
-        with request.app.state.account_service.database.session() as db:
-            names = {
-                row.id: row
-                for row in db.scalars(
-                    select(AccountModel).where(AccountModel.id.in_(ids))
-                )
-            }
-            for member in value["members"]:
-                target = names.get(member["account_id"])
-                if target:
-                    member.update(display_name=target.display_name, email=target.email)
-        return value
-
     def resolve_skill(request, account_id, facts):
         # Never trust an HTTP caller's claimed resolved body or owner/version.
         clean = {
@@ -236,36 +183,8 @@ def attach_maritime(app, settings):
                 "skill_version",
                 "skill_owner",
                 "skill_requires_work_mode",
-                "case_context",
             }
         }
-        case_id = clean.get("case_id")
-        if case_id:
-            if not isinstance(case_id, str):
-                raise HTTPException(422, "invalid_case_id")
-            case = invoke(office(request).case, account_id, case_id)
-            budget = 24000
-            entries = []
-            for item in case["entries"]:
-                text = item["content"][: min(budget, 6000)]
-                budget -= len(text)
-                entries.append(
-                    {
-                        k: item[k]
-                        for k in ("id", "kind", "title", "status", "version", "due_at")
-                    }
-                    | {"content": text, "truncated": len(text) < len(item["content"])}
-                )
-                if budget <= 0:
-                    break
-            clean["case_context"] = {
-                "id": case_id,
-                "title": case["title"],
-                "summary": case["summary"],
-                "entries": entries,
-                "total_entries": len(case["entries"]),
-                "notice": "本次提交时的案件记录快照；正文可能截断，未附原始文件不代表已审阅证据。仅供当前有权成员分析，不允许据此修改案件或确认复核。",
-            }
         skill_id = clean.get("skill_id")
         if skill_id:
             if not isinstance(skill_id, str):
@@ -291,7 +210,6 @@ def attach_maritime(app, settings):
                 "mode_scope": mode_scope,
                 "requires_work_mode": requires_work_mode,
                 "source": "builtin" if selected.get("owner_id") is None else "account",
-                "runtime_rules": COMMON,
                 "notice": "本任务选定的技能元数据；正文由 read_skill 按账户权限和固定版本读取，不授予额外权限。",
             }
         return clean
@@ -304,8 +222,6 @@ def attach_maritime(app, settings):
     async def deliverables(
         run_id: str, conversation_id: str, request: Request, user=Depends(account)
     ):
-        from backend.application.maritime.citations import expand_citations
-        from backend.application.maritime.work_packages import configured_store
         from backend.harness.lifecycle.scheduler import SchedulerCommandError
 
         try:
@@ -316,16 +232,6 @@ def attach_maritime(app, settings):
             raise HTTPException(404, "run_not_found") from None
         if run.account_id != user.id or run.conversation_id != conversation_id:
             raise HTTPException(404, "run_not_found")
-        store = configured_store(settings)
-        packages = store.list(run_id)
-        corpus = MaritimeCorpus()
-        for package in packages:
-            for section in package["sections"]:
-                section["rows"] = [
-                    {k: expand_citations(v, corpus) for k, v in row.items()}
-                    for row in section["rows"]
-                ]
-            package["notes"] = [expand_citations(v, corpus) for v in package["notes"]]
         raw_artifacts = run.execution_state.get("artifacts", []) if isinstance(run.execution_state, dict) else []
         files = [
             {
@@ -341,7 +247,7 @@ def attach_maritime(app, settings):
             and item.get("artifact_id")
             and item.get("kind") != "preview"
         ]
-        return {"packages": packages, "files": files}
+        return {"files": files}
 
     @router.get('/runs/{run_id}/files/{artifact_id}')
     async def task_file(run_id: str, artifact_id: str, conversation_id: str, request: Request, user=Depends(account)):
@@ -393,17 +299,6 @@ def attach_maritime(app, settings):
             },
         )
 
-    @router.get("/status")
-    def status(request: Request, user=Depends(account)):
-        return {
-            "model_runtime_ready": bool(
-                getattr(request.app.state, "runtime_ready", False)
-            ),
-            "corpus": MaritimeCorpus(settings=settings).status(),
-            "skill_execution": "instruction-pack-with-tools",
-            "code_execution": f"{settings.execution.provider}-on-demand",
-        }
-
     def public_skill_view(item: dict) -> dict:
         if item.get("owner_id") is None:
             return {**item, "instructions": ""}
@@ -414,7 +309,7 @@ def attach_maritime(app, settings):
         items = office(request).skills(user.id)
         ops = getattr(request.app.state, "admin_operations_service", None)
         if ops is None:
-            return {"skills": [public_skill_view(item) for item in items]}
+            return {"skills": [public_skill_view(item) for item in items], "can_upload_skill": True}
         grant = ops.account_grant(user.id)
         filtered = [
             public_skill_view(item)
@@ -426,7 +321,7 @@ def attach_maritime(app, settings):
                 grant=grant,
             )
         ]
-        return {"skills": filtered}
+        return {"skills": filtered, "can_upload_skill": bool(grant["can_upload_skill"])}
 
     @router.post("/skills/import", status_code=201)
     async def import_skill_package(
@@ -457,19 +352,6 @@ def attach_maritime(app, settings):
     def remove_skill(skill_id: str, request: Request, user=Depends(account)):
         return invoke(office(request).remove_skill, user.id, skill_id)
 
-    @router.post("/skills", status_code=201)
-    def create_skill(body: SkillInput, request: Request, user=Depends(account)):
-        require_upload_allowed(user.id)
-        return invoke(office(request).save_skill, user.id, body.model_dump())
-
-    @router.put("/skills/{skill_id}")
-    def update_skill(
-        skill_id: str, body: SkillInput, request: Request, user=Depends(account)
-    ):
-        selected = invoke(office(request).skill, user.id, skill_id)
-        require_skill_allowed(user.id, selected["id"], selected.get("owner_id") is None)
-        return invoke(office(request).save_skill, user.id, body.model_dump(), skill_id)
-
     @router.get("/skills/{skill_id}")
     def skill(
         skill_id: str,
@@ -483,6 +365,28 @@ def attach_maritime(app, settings):
 
     @router.post("/search")
     async def search(body: SearchInput, request: Request, user=Depends(account)):
+        from time import perf_counter
+
+        from backend.infrastructure.telemetry import metrics as telemetry
+
+        started = perf_counter()
+        outcome = "error"
+        try:
+            result = await _search(body, request)
+            outcome = "ok" if result.get("items") else "empty"
+            return result
+        finally:
+            store = telemetry.get_store()
+            if store is not None:
+                store.record_tool(
+                    tool="用户检索页",
+                    source={"laws": "laws", "cases": "cases", "information_cards": "papers"}[body.kind],
+                    outcome=outcome,
+                    duration_ms=int((perf_counter() - started) * 1000),
+                    account_id=user.id,
+                )
+
+    async def _search(body: SearchInput, request: Request):
         try:
             if body.kind == "information_cards":
                 retriever = getattr(request.app.state, "information_card_retriever", None)
@@ -493,120 +397,18 @@ def attach_maritime(app, settings):
                 for card in result["items"]:
                     reference = _paper_reference(card)
                     if reference is None:
-                        raise ValueError("paper_reference_invalid")
+                        # One unreadable card must not hide the other results.
+                        continue
                     items.append({**reference, "id": card["card_id"], "kind": "information_cards",
                                   "text": "", "current": None, "version": reference.get("version_date")})
                 return {"items": items}
             return await MaritimeCorpus(settings=settings).search(**body.model_dump())
         except PortError:
-            raise HTTPException(503, "论文检索暂时不可用，请稍后重试。") from None
+            what = "论文检索" if body.kind == "information_cards" else "法规和案例检索"
+            raise HTTPException(503, f"{what}暂时不可用，请稍后重试。") from None
         except LookupError:
             raise HTTPException(503, "暂时没有可用的海事资料，请稍后再试。") from None
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-
-    @router.get("/sources/{kind}/{source_id:path}")
-    def source(
-        kind: Literal["laws", "cases"],
-        source_id: str,
-        snapshot: str | None = None,
-        user=Depends(account),
-    ):
-        try:
-            return MaritimeCorpus(settings=settings).source(kind, source_id, snapshot)
-        except LookupError:
-            raise HTTPException(404, "source_not_found") from None
-
-    @router.post("/claims/calculate")
-    def claim(body: ClaimInput, user=Depends(account)):
-        try:
-            return calculate_claim([item.model_dump() for item in body.items])
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from None
-
-    @router.get("/cases")
-    def cases(request: Request, user=Depends(account)):
-        return {"cases": office(request).cases(user.id)}
-
-    @router.post("/cases", status_code=201)
-    def create_case(body: CaseInput, request: Request, user=Depends(account)):
-        return present_case(
-            request,
-            invoke(office(request).create_case, user.id, body.title, body.summary),
-        )
-
-    @router.get("/cases/{case_id}")
-    def case(case_id: str, request: Request, user=Depends(account)):
-        return present_case(request, invoke(office(request).case, user.id, case_id))
-
-    @router.post("/cases/{case_id}/members")
-    def add_member(
-        case_id: str, body: MemberInput, request: Request, user=Depends(account)
-    ):
-        # Access must be established before looking up another account.
-        current = invoke(office(request).case, user.id, case_id)
-        if current["role"] != "owner":
-            raise HTTPException(403, "只有负责人可以邀请成员")
-        with request.app.state.account_service.database.session() as db:
-            target = db.scalar(
-                select(AccountModel).where(
-                    AccountModel.email == body.email.strip().lower(),
-                    AccountModel.status == "active",
-                )
-            )
-            if target is None:
-                raise HTTPException(404, "请先让协作者注册，再使用其邮箱加入案件")
-            target_id = target.id
-        return present_case(
-            request,
-            invoke(office(request).add_member, user.id, case_id, target_id, body.role),
-        )
-
-    @router.post("/cases/{case_id}/entries", status_code=201)
-    def create_entry(
-        case_id: str, body: EntryInput, request: Request, user=Depends(account)
-    ):
-        return invoke(office(request).save_entry, user.id, case_id, body.model_dump())
-
-    @router.delete("/cases/{case_id}/members/{member_id}")
-    def remove_member(
-        case_id: str, member_id: str, request: Request, user=Depends(account)
-    ):
-        return present_case(
-            request, invoke(office(request).remove_member, user.id, case_id, member_id)
-        )
-
-    @router.put("/cases/{case_id}/entries/{entry_id}")
-    def update_entry(
-        case_id: str,
-        entry_id: str,
-        body: EntryInput,
-        request: Request,
-        user=Depends(account),
-    ):
-        return invoke(
-            office(request).save_entry, user.id, case_id, body.model_dump(), entry_id
-        )
-
-    @router.get("/cases/{case_id}/entries/{entry_id}/versions")
-    def versions(case_id: str, entry_id: str, request: Request, user=Depends(account)):
-        service = office(request)
-        invoke(service.case, user.id, case_id)
-        with service.connection() as db:
-            if not db.execute(
-                "SELECT 1 FROM entries WHERE id=? AND case_id=?", (entry_id, case_id)
-            ).fetchone():
-                raise HTTPException(404, "entry_not_found")
-            import json
-
-            return {
-                "versions": [
-                    json.loads(r["snapshot"])
-                    for r in db.execute(
-                        "SELECT snapshot FROM entry_versions WHERE entry_id=? ORDER BY version DESC",
-                        (entry_id,),
-                    )
-                ]
-            }
 
     app.include_router(router)

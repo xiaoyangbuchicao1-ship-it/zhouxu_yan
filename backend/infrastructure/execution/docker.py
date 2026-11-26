@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.config.settings import Settings
@@ -23,6 +24,8 @@ class _DockerContainer:
     settings: Settings
     packages_root: Path | None = None
     started: bool = False
+    _closing: bool = field(default=False, init=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False)
 
     def _run(
         self,
@@ -47,64 +50,67 @@ class _DockerContainer:
         return result
 
     def start(self):
-        if self.started:
-            return
-        self.workspace.mkdir(parents=True, exist_ok=True)
-        try:
-            self.workspace.chmod(0o777)
-        except OSError:
-            pass
-        cfg = self.settings.execution
-        mounts = []
-        if self.packages_root is not None:
-            self.packages_root.mkdir(parents=True, exist_ok=True)
-            mounts = ["--mount", f"type=bind,source={self.packages_root},target=/workspace/.skills,readonly"]
-        self._run(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                self.name,
-                "--user",
-                "65534:65534",
-                "--network",
-                "none",
-                "--read-only",
-                "--tmpfs",
-                f"/tmp:rw,noexec,nosuid,size={cfg.tmpfs_size}",
-                "--tmpfs",
-                "/run:rw,noexec,nosuid,size=16m",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--pids-limit",
-                str(cfg.pids_limit),
-                "--memory",
-                cfg.memory,
-                "--cpus",
-                cfg.cpus,
-                "--env",
-                "HOME=/tmp/home",
-                "--env",
-                "TMPDIR=/tmp",
-                "--env",
-                "PYTHONUNBUFFERED=1",
-                "--env",
-                "PYTHONIOENCODING=utf-8",
-                "--mount",
-                f"type=bind,source={self.workspace},target=/workspace",
-                *mounts,
-                "--workdir",
-                "/workspace",
-                cfg.image,
-                "sleep",
-                "86400",
-            ],
-            timeout=45,
-        )
-        self.started = True
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("runtime_closed")
+            if self.started:
+                return
+            self.workspace.mkdir(parents=True, exist_ok=True)
+            try:
+                self.workspace.chmod(0o777)
+            except OSError:
+                pass
+            cfg = self.settings.execution
+            mounts = []
+            if self.packages_root is not None:
+                self.packages_root.mkdir(parents=True, exist_ok=True)
+                mounts = ["--mount", f"type=bind,source={self.packages_root},target=/workspace/.skills,readonly"]
+            self._run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    self.name,
+                    "--user",
+                    "65534:65534",
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--tmpfs",
+                    f"/tmp:rw,noexec,nosuid,size={cfg.tmpfs_size}",
+                    "--tmpfs",
+                    "/run:rw,noexec,nosuid,size=16m",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--pids-limit",
+                    str(cfg.pids_limit),
+                    "--memory",
+                    cfg.memory,
+                    "--cpus",
+                    cfg.cpus,
+                    "--env",
+                    "HOME=/tmp/home",
+                    "--env",
+                    "TMPDIR=/tmp",
+                    "--env",
+                    "PYTHONUNBUFFERED=1",
+                    "--env",
+                    "PYTHONIOENCODING=utf-8",
+                    "--mount",
+                    f"type=bind,source={self.workspace},target=/workspace",
+                    *mounts,
+                    "--workdir",
+                    "/workspace",
+                    cfg.image,
+                    "sleep",
+                    "86400",
+                ],
+                timeout=45,
+            )
+            self.started = True
 
     def exec(
         self,
@@ -156,10 +162,13 @@ class _DockerContainer:
         return self.exec(["bash", "-lc", wrapped], timeout=seconds + 8, check=check)
 
     def close(self):
-        if not self.started:
+        with self._lock:
+            self._closing = True
+            started = self.started
+            self.started = False
+        if not started:
             return
         self._run(["docker", "rm", "-f", self.name], timeout=30, check=False)
-        self.started = False
 
 
 class DockerProvider(WorkspaceExecutionProvider):

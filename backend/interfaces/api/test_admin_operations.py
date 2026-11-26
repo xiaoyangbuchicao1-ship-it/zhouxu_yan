@@ -55,6 +55,10 @@ class AdminOperationsHttpContractTests(unittest.IsolatedAsyncioTestCase):
             workspace_service=self.workspace,
             settings=self._settings(settings),
         )
+        from backend.application.maritime.service import MaritimeOffice
+
+        self.office = MaritimeOffice(Path(self.tmp.name) / "office.sqlite3")
+        self.app.state.maritime_office = self.office
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app), base_url="http://test"
         )
@@ -81,7 +85,7 @@ class AdminOperationsHttpContractTests(unittest.IsolatedAsyncioTestCase):
             "/admin/capabilities",
             "/admin/skills",
             "/admin/resources/health",
-            "/admin/tasks?limit=20",
+            "/admin/overview",
             "/admin/runtime/health",
         ):
             response = await self.client.get(path, headers=headers)
@@ -98,12 +102,11 @@ class AdminOperationsHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("instructions" not in item for item in skills["skills"]))
         self.assertTrue(all("path" not in item for item in skills["skills"]))
 
-        tasks = (await self.client.get("/admin/tasks?limit=20", headers=headers)).json()
-        task = next(item for item in tasks["tasks"] if item["run_id"] == "operations-run-1")
-        self.assertEqual(task["status"], "succeeded")
-        self.assertEqual(task["account_email"], "user@example.com")
-        self.assertEqual(task["answer_chars"], len("已完成公开资料整理。"))
-        self.assertNotIn("payload_json", task)
+        overview = (await self.client.get("/admin/overview", headers=headers)).json()["overview"]
+        self.assertEqual(overview["tasks_24h"], 1)
+        self.assertEqual(overview["failed_24h"], 0)
+        self.assertEqual(overview["recent_failed"], [])
+        self.assertNotIn("payload_json", overview)
 
         resource_health = (await self.client.get("/admin/resources/health", headers=headers)).json()
         self.assertIn(resource_health["status"], {"ready", "degraded", "unavailable"})
@@ -181,39 +184,79 @@ class AdminOperationsHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(down_body["sources"]["laws"]["status"], "unavailable")
         self.assertEqual(down_body["sources"]["cases"]["status"], "unavailable")
 
-    async def test_admin_tasks_support_status_filter_and_reject_invalid_status(self):
+    async def test_overview_lists_failed_and_stuck_runs_but_not_cancelled_or_paused(self):
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import update
+
+        from backend.infrastructure.database.models import ConversationRunModel
+
         headers = {"Authorization": f"Bearer {self.admin_login.token}"}
         conv = self.workspace.create(
             account_id=self.user.account.id, title="失败任务排查", mode="work"
         )
-        self.workspace.record_run(
-            account_id=self.user.account.id,
-            conversation_id=conv.id,
-            run_id="operations-run-failed",
-            question="触发失败测试",
-            status="failed",
-        )
-        self.workspace.record_run(
-            account_id=self.user.account.id,
-            conversation_id=conv.id,
-            run_id="operations-run-paused",
-            question="暂停任务测试",
-            status="paused",
-        )
+        for run_id, status in (
+            ("operations-run-failed", "failed"),
+            ("operations-run-cancelled", "cancelled"),
+            ("operations-run-paused", "paused"),
+            ("operations-run-stuck", "running"),
+            ("operations-run-fresh", "running"),
+        ):
+            self.workspace.record_run(
+                account_id=self.user.account.id,
+                conversation_id=conv.id,
+                run_id=run_id,
+                question=f"问题 {run_id}",
+                status=status,
+            )
+        with self.database.session() as session:
+            session.execute(
+                update(ConversationRunModel)
+                .where(ConversationRunModel.run_id == "operations-run-stuck")
+                .values(created_at=datetime.now(timezone.utc) - timedelta(hours=3))
+            )
+            session.commit()
 
-        failed_res = await self.client.get("/admin/tasks?status=failed", headers=headers)
-        self.assertEqual(failed_res.status_code, 200, failed_res.text)
-        failed_ids = {item["run_id"] for item in failed_res.json()["tasks"]}
-        self.assertEqual(failed_ids, {"operations-run-failed"})
+        overview = (await self.client.get("/admin/overview", headers=headers)).json()["overview"]
+        self.assertEqual({item["run_id"] for item in overview["recent_failed"]}, {"operations-run-failed"})
+        self.assertEqual({item["run_id"] for item in overview["stuck_tasks"]}, {"operations-run-stuck"})
+        self.assertEqual(overview["failed_24h"], 1)
+        self.assertEqual(overview["active_tasks"], 2)
+        failed = overview["recent_failed"][0]
+        self.assertEqual(failed["account_email"], "user@example.com")
+        self.assertEqual(failed["conversation_id"], conv.id)
 
-        active_res = await self.client.get("/admin/tasks?status=active", headers=headers)
-        self.assertEqual(active_res.status_code, 200, active_res.text)
-        active_ids = {item["run_id"] for item in active_res.json()["tasks"]}
-        self.assertEqual(active_ids, {"operations-run-paused"})
+    async def test_admin_lists_and_deletes_uploaded_skills_with_an_audit_record(self):
+        from backend.application.maritime.test_skill_packages import skill_zip
 
-        invalid_res = await self.client.get("/admin/tasks?status=bogus", headers=headers)
-        self.assertEqual(invalid_res.status_code, 422)
-        self.assertEqual(invalid_res.json()["detail"], "invalid_task_status")
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        uploaded = self.office.import_skill_package(self.user.account.id, "demo.zip", skill_zip())
+
+        listing = (await self.client.get("/admin/skills", headers=headers)).json()
+        row = next(item for item in listing["uploaded"] if item["id"] == uploaded["id"])
+        self.assertEqual(row["owner_email"], "user@example.com")
+        self.assertTrue(row["active"])
+        self.assertGreaterEqual(row["file_count"], 1)
+        self.assertNotIn("instructions", row)
+
+        user_headers = {"Authorization": f"Bearer {self.accounts.login(email='user@example.com', password='a-long-user-password').token}"}
+        denied = await self.client.delete(f"/admin/skills/{uploaded['id']}", headers=user_headers)
+        self.assertEqual(denied.status_code, 403)
+
+        removed = await self.client.delete(f"/admin/skills/{uploaded['id']}", headers=headers)
+        self.assertEqual(removed.status_code, 200, removed.text)
+        after = (await self.client.get("/admin/skills", headers=headers)).json()
+        self.assertNotIn(uploaded["id"], {item["id"] for item in after["uploaded"]})
+        missing = await self.client.delete(f"/admin/skills/{uploaded['id']}", headers=headers)
+        self.assertEqual(missing.status_code, 404)
+
+        audit = (await self.client.get("/admin/audit", headers=headers)).json()["events"]
+        self.assertIn("skill.removed", {item["action"] for item in audit})
+
+    async def test_removed_task_list_route_is_not_served(self):
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        response = await self.client.get("/admin/tasks", headers=headers)
+        self.assertIn(response.status_code, {404, 405})
 
 
 if __name__ == "__main__":

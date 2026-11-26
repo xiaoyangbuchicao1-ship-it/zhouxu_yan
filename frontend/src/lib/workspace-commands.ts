@@ -7,21 +7,16 @@ export function skillDisplayName(skill: MaritimeSkill): string {
 
 export function splitSkillsByReadiness(skills: MaritimeSkill[], accountId: string) {
   const ready: MaritimeSkill[] = [];
-  const comingSoon: MaritimeSkill[] = [];
   const mine: MaritimeSkill[] = [];
 
   for (const skill of skills) {
     if (skill.owner_id === accountId) {
       mine.push(skill);
     } else if (skill.visibility === "builtin") {
-      if (skill.status === "coming_soon") {
-        comingSoon.push(skill);
-      } else {
-        ready.push(skill);
-      }
+      ready.push(skill);
     }
   }
-  return { ready, comingSoon, mine };
+  return { ready, mine };
 }
 
 export function matchPromptCommands(

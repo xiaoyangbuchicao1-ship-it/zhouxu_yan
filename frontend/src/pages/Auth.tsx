@@ -1,8 +1,21 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, LoaderCircle, LogOut, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, LoaderCircle, LogOut } from "lucide-react";
 import AuthVaultBackground from "@/components/AuthVaultBackground";
-import { authenticate, AuthApiError, revokeSession, validateCredentials, verifySession, type AuthCredentials, type AuthMode } from "@/lib/auth";
+import CaptchaSliderModal from "@/components/CaptchaSliderModal";
+import {
+  authenticate,
+  AuthApiError,
+  fetchAuthConfig,
+  resetPassword,
+  revokeSession,
+  sendVerificationCode,
+  validateCredentials,
+  verifySession,
+  type AuthConfig,
+  type AuthCredentials,
+  type AuthMode,
+} from "@/lib/auth";
 import { saveSession, useAuthSession } from "@/lib/auth-session";
 import { createAccountSettingsApi } from "@/lib/account-settings-api";
 import "./auth.css";
@@ -15,6 +28,18 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
   const [email, setEmail] = useState(location.state?.email || "");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [authConfig, setAuthConfig] = useState<AuthConfig>({
+    email_verification_enabled: false,
+    allow_password_reset: false,
+    captcha_enabled: true,
+  });
+  const [captchaOpen, setCaptchaOpen] = useState(false);
+  const [pendingCaptchaAction, setPendingCaptchaAction] = useState<"send_code" | "register">("send_code");
+  const [resetMode, setResetMode] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
+  const [codeCooldown, setCodeCooldown] = useState(0);
+  const [codeNotice, setCodeNotice] = useState("");
   const [reveal, setReveal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(Boolean(session));
@@ -34,8 +59,10 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
     const previousTitle = document.title;
-    document.title = `${mode === "account" ? "我的账户" : register ? "注册" : "登录"} · 舟序 Zhouxu`;
+    document.title = `${mode === "account" ? "我的账户" : resetMode ? "重置密码" : register ? "注册" : "登录"} · 舟序 Zhouxu`;
     setPassword("");
+    setVerificationCode("");
+    setCodeNotice("");
     setReveal(false);
     setFieldErrors({});
     setError(null);
@@ -44,6 +71,30 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
     redirectingRef.current = false;
     return () => { requestRef.current?.abort(); document.title = previousTitle; };
   }, [mode, register]);
+
+  useEffect(() => {
+    setResetMode(false);
+    setCodeCooldown(0);
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode === "account") return;
+    const controller = new AbortController();
+    fetchAuthConfig(controller.signal)
+      .then(cfg => {
+        if (!controller.signal.aborted) setAuthConfig(cfg);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [mode]);
+
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setCodeCooldown(prev => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [codeCooldown]);
 
   useEffect(() => {
     if (!token) {
@@ -101,34 +152,114 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
     }
   }
 
-  async function submit(event: FormEvent) {
+  function handleSendCode() {
+    if (sendingCode || busy || codeCooldown > 0 || mode === "account") return;
+    setError(null);
+    setErrorCode("");
+    setCodeNotice("");
+    const normalizedEmail = email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setFieldErrors(errors => ({ ...errors, email: "请填写有效的邮箱地址。" }));
+      formRef.current?.querySelector<HTMLInputElement>('[name="email"]')?.focus();
+      return;
+    }
+    if (authConfig.captcha_enabled !== false) {
+      setPendingCaptchaAction("send_code");
+      setCaptchaOpen(true);
+    } else {
+      void executeSendCode();
+    }
+  }
+
+  async function executeSendCode(captchaToken?: string) {
+    const normalizedEmail = email.trim();
+    setSendingCode(true);
+    try {
+      const purpose = resetMode ? "reset_password" : "register";
+      const res = await sendVerificationCode(normalizedEmail, purpose, captchaToken);
+      setCodeCooldown(res.cooldown_seconds || 60);
+      setCodeNotice("验证码已发送至邮箱，5 分钟内有效。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "验证码发送失败，请稍后重试。");
+      setErrorCode(err instanceof AuthApiError ? err.code : "");
+    } finally {
+      setSendingCode(false);
+    }
+  }
+
+  function submit(event: FormEvent) {
     event.preventDefault();
     if (busy || mode === "account") return;
     setError(null);
     setErrorCode("");
-    const values = { email, password, display_name: name };
-    const errors = validateCredentials(mode, values);
+    const effectiveMode: AuthMode = resetMode ? "register" : mode === "login" ? "login" : "register";
+    const values: AuthCredentials = {
+      email,
+      password,
+      display_name: name,
+      verification_code: verificationCode.trim() || undefined,
+    };
+    const errors = validateCredentials(effectiveMode, values);
+    const needCode = resetMode || (register && authConfig.email_verification_enabled);
+    if (needCode && !/^\d{6}$/.test(verificationCode.trim())) {
+      errors.verification_code = "请输入 6 位数字验证码。";
+    }
     setFieldErrors(errors);
     const firstError = Object.keys(errors)[0];
     if (firstError) {
       formRef.current?.querySelector<HTMLInputElement>(`[name="${firstError}"]`)?.focus();
       return;
     }
+
+    if (effectiveMode === "register" && !needCode && authConfig.captcha_enabled !== false) {
+      setPendingCaptchaAction("register");
+      setCaptchaOpen(true);
+      return;
+    }
+
+    void executeSubmit();
+  }
+
+  async function executeSubmit(captchaToken?: string) {
+    const effectiveMode: AuthMode = resetMode ? "register" : mode === "login" ? "login" : "register";
+    const values: AuthCredentials = {
+      email,
+      password,
+      display_name: name,
+      verification_code: verificationCode.trim() || undefined,
+    };
     const controller = new AbortController();
     requestRef.current = controller;
     setBusy(true);
     try {
-      const result = await authenticate(mode, values, controller.signal);
+      const result = resetMode
+        ? await resetPassword(
+            { email, verification_code: verificationCode.trim(), new_password: password },
+            controller.signal,
+          )
+        : await authenticate(effectiveMode, values, controller.signal, captchaToken);
       if (controller.signal.aborted) return;
       saveSession(result);
       setPassword("");
+      setVerificationCode("");
       navigate("/workspace", { replace: true, state: { created: register } });
     } catch (error) {
       if (!controller.signal.aborted) {
         setError(error instanceof Error ? error.message : "暂时无法连接，请稍后重试。");
         setErrorCode(error instanceof AuthApiError ? error.code : "");
       }
-    } finally { if (!controller.signal.aborted) setBusy(false); }
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+
+  function handleCaptchaSuccess(token: string) {
+    setCaptchaOpen(false);
+    if (pendingCaptchaAction === "send_code") {
+      void executeSendCode(token);
+    } else {
+      void executeSubmit(token);
+    }
   }
 
   async function logout() {
@@ -221,8 +352,8 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
                 <Link to="/register" aria-current={register ? "page" : undefined} aria-disabled={busy} onClick={e => { if (busy) e.preventDefault(); }}>注册</Link>
               </nav>
               <div className="auth-form-heading">
-                <h1 className="font-editorial">{register ? "从这里，开启舟序。" : "欢迎回到舟序。"}</h1>
-                <p className="auth-intro">{register ? "建立你的账户，让每一次研判有迹可循。" : "登录你的账户，接续每一次思考。"}</p>
+                <h1 className="font-editorial">{register ? "创建舟序账户" : resetMode ? "重置密码" : "欢迎回来"}</h1>
+                <p className="auth-intro">{register ? "填写邮箱，完成验证后即可开始。" : resetMode ? "通过邮箱验证码设置新密码。" : "登录后继续你的工作。"}</p>
               </div>
               {location.state?.notice && <p className="auth-notice" role="status">{location.state.notice}</p>}
               <form ref={formRef} onSubmit={submit} noValidate aria-busy={busy}>
@@ -236,22 +367,83 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
                     <input id="auth-email" name="email" type="email" autoComplete="username" inputMode="email" autoCapitalize="none" spellCheck={false} required value={email} onChange={e => { setEmail(e.target.value); setFieldErrors(errors => ({ ...errors, email: undefined })); }} aria-invalid={Boolean(fieldErrors.email)} aria-describedby={fieldErrors.email ? "auth-email-error" : undefined} placeholder="name@example.com" />
                     {fieldErrors.email && <p id="auth-email-error" className="auth-field-error">{fieldErrors.email}</p>}
                   </div>
+                  {(resetMode || (register && authConfig.email_verification_enabled)) && (
+                    <div className="auth-field">
+                      <label htmlFor="auth-code">邮箱验证码</label>
+                      <div className="auth-code-row">
+                        <input
+                          id="auth-code"
+                          name="verification_code"
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          maxLength={6}
+                          value={verificationCode}
+                          onChange={e => {
+                            setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6));
+                            setFieldErrors(errors => ({ ...errors, verification_code: undefined }));
+                          }}
+                          aria-invalid={Boolean(fieldErrors.verification_code)}
+                          aria-describedby={fieldErrors.verification_code ? "auth-code-error" : codeNotice ? "auth-code-hint" : undefined}
+                          placeholder="6 位数字验证码"
+                        />
+                        <button
+                          type="button"
+                          className="auth-code-btn"
+                          disabled={sendingCode || codeCooldown > 0}
+                          onClick={() => void handleSendCode()}
+                        >
+                          {sendingCode ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s` : "发送验证码"}
+                        </button>
+                      </div>
+                      {fieldErrors.verification_code
+                        ? <p id="auth-code-error" className="auth-field-error">{fieldErrors.verification_code}</p>
+                        : codeNotice && <p id="auth-code-hint" className="auth-field-hint">{codeNotice}</p>}
+                    </div>
+                  )}
                   <div className="auth-field">
-                    <label htmlFor="auth-password">密码</label>
+                    <div className="auth-field-heading">
+                      <label htmlFor="auth-password">{resetMode ? "新密码" : "密码"}</label>
+                      {!register && !resetMode && authConfig.allow_password_reset && (
+                        <button type="button" className="auth-link-btn" onClick={() => {
+                          setResetMode(true);
+                          setError(null);
+                          setErrorCode("");
+                          setCodeNotice("");
+                          setFieldErrors({});
+                        }}>忘记密码？</button>
+                      )}
+                    </div>
                     <div className="auth-password-wrap">
-                      <input id="auth-password" name="password" type={reveal ? "text" : "password"} autoComplete={register ? "new-password" : "current-password"} required value={password} onChange={e => { setPassword(e.target.value); setFieldErrors(errors => ({ ...errors, password: undefined })); }} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? "auth-password-error" : register ? "auth-password-hint" : undefined} placeholder={register ? "创建至少 12 位密码" : "输入你的密码"} />
+                      <input id="auth-password" name="password" type={reveal ? "text" : "password"} autoComplete={register || resetMode ? "new-password" : "current-password"} required value={password} onChange={e => { setPassword(e.target.value); setFieldErrors(errors => ({ ...errors, password: undefined })); }} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? "auth-password-error" : (register || resetMode) ? "auth-password-hint" : undefined} placeholder={(register || resetMode) ? "设置至少 12 位密码" : "输入你的密码"} />
                       <button className="auth-reveal" type="button" aria-label={reveal ? "隐藏密码" : "显示密码"} aria-pressed={reveal} onClick={() => setReveal(value => !value)}>{reveal ? <EyeOff size={17} aria-hidden="true" /> : <Eye size={17} aria-hidden="true" />}</button>
                     </div>
-                    {fieldErrors.password ? <p id="auth-password-error" className="auth-field-error">{fieldErrors.password}</p> : register && <p id="auth-password-hint" className="auth-field-hint">至少 12 个字符，建议混合字母、数字与符号。</p>}
+                    {fieldErrors.password ? <p id="auth-password-error" className="auth-field-error">{fieldErrors.password}</p> : (register || resetMode) && <p id="auth-password-hint" className="auth-field-hint">至少 12 个字符，建议混合字母、数字与符号。</p>}
                   </div>
                   <button className="auth-submit" type="submit" disabled={busy}>
-                    <span>{busy ? register ? "正在创建账户…" : "正在登录…" : register ? "创建账户" : "登录舟序"}</span>
+                    <span>{busy ? resetMode ? "正在重置密码…" : register ? "正在创建账户…" : "正在登录…" : resetMode ? "重置密码并登录" : register ? "创建账户" : "登录舟序"}</span>
                     {busy ? <LoaderCircle className="auth-spinner" size={17} aria-hidden="true" /> : <ArrowRight size={17} aria-hidden="true" />}
                   </button>
                 </fieldset>
               </form>
-              <p className="auth-switch-copy">{register ? "已有账户？" : "初次来到舟序？"}<Link to={register ? "/login" : "/register"} state={{ email }} aria-disabled={busy} onClick={e => { if (busy) e.preventDefault(); }}>{register ? "直接登录" : "创建一个账户"}<ArrowRight size={12} aria-hidden="true" /></Link></p>
-              {!register && <Link className="auth-admin-link" to="/admin/login">管理员入口</Link>}
+              {resetMode ? (
+                <div className="auth-secondary-links">
+                  <button
+                    type="button"
+                    className="auth-link-btn"
+                    onClick={() => {
+                      setResetMode(false);
+                      setError(null);
+                      setErrorCode("");
+                      setCodeNotice("");
+                      setVerificationCode("");
+                      setFieldErrors({});
+                    }}
+                  >
+                    返回登录
+                  </button>
+                </div>
+              ) : <div className="auth-secondary-links"><Link className="auth-admin-link" to="/admin/login">管理员登录<ArrowRight size={13} aria-hidden="true" /></Link></div>}
             </>
           )}
 
@@ -261,13 +453,18 @@ export default function AuthPage({ mode = "login" }: { mode?: AuthMode | "accoun
           </div>}
         </div>
 
-        <p className="auth-panel-assurance"><ShieldCheck size={14} aria-hidden="true" /><span>让专业判断，始终由你掌握。</span></p>
       </section>
       </div>
       <footer className="auth-page-footer">
         <p className="font-editorial">让事实有序，让判断有据。</p>
         <span lang="en">RESEARCH <span className="auth-dot">/</span> REASON <span className="auth-dot">/</span> RESOLVE</span>
       </footer>
+
+      <CaptchaSliderModal
+        open={captchaOpen}
+        onClose={() => setCaptchaOpen(false)}
+        onSuccess={handleCaptchaSuccess}
+      />
     </main>
   );
 }

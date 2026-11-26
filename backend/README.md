@@ -16,7 +16,7 @@ Python 3.11、FastAPI、Pydantic v2、httpx、SQLAlchemy 与自研 Harness。提
 
 模型支持官方 DeepSeek Flash / Pro，none / low / high / max 四档；review 与 compaction 关闭思考。凭证由配置读取器在运行时获取，不进入 TOML、Trace、公开事件或前端。
 
-`/healthz` 是健康检查，`/auth/*` 是账户接口，认证后的 `/workspace/*` 是产品接口；`/harness/*` 保留内部控制边界。
+`/healthz` 是健康检查，`/auth/*` 是账户接口，认证后的 `/workspace/*` 是产品接口。旧的 `/harness/*` 公开接口已移除。
 
 ## 目录与扩展
 

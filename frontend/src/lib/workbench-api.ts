@@ -81,7 +81,25 @@ export class WorkbenchError extends Error { constructor(message: string, public 
 const base = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 const segment = encodeURIComponent;
 
+const CODE_MESSAGES: Record<string, string> = {
+  model_not_permitted: "这个账户不能使用所选模型，请换一个模型。",
+  model_profile_unavailable: "所选模型暂时不可用，请换一个模型。",
+  model_profile_invalid: "所选模型不存在，请重新选择。",
+  thinking_mode_unsupported: "这个模型不支持所选的思考档位。",
+  skill_not_permitted: "这个账户不能使用该技能。",
+  conversation_has_active_runs: "这个对话还有任务在运行，请先停止或等它结束。",
+  material_cursor_expired_or_invalid: "资料内容有更新，请重新打开预览。",
+  material_filename_invalid: "文件名不能使用，请改名后再上传。",
+  material_unavailable: "这份资料暂时不能使用。",
+  material_type_unsupported: "这种文件暂时不能预览。",
+  material_quota_exceeded: "个人资料空间已满，请先在资料库删除不再需要的旧附件后再上传。",
+  storage_space_low: "服务器存储空间紧张，暂时无法上传新附件，请联系管理员清理空间。",
+};
+
 function messageFor(status: number, detail: unknown) {
+  if (typeof detail === "string" && CODE_MESSAGES[detail]) return CODE_MESSAGES[detail];
+  if (typeof detail === "string" && detail.startsWith("material_status_")) return "这份资料现在不能这样操作。";
+  if (Array.isArray(detail)) return "填写的内容有误，请检查后重试。";
   if (status === 401) return "登录状态已失效，请重新登录。";
   if (status === 404) return "这项内容已不存在，或无法访问。";
   if (status === 413) return "文件超过当前配置允许的大小。";
@@ -122,7 +140,7 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
   const conversationPath = (id: string) => `/workspace/conversations/${segment(id)}`;
   const runPath = (id: string) => `/workspace/runs/${segment(id)}`;
   const artifactUrl = (runId: string, conversationId: string, artifactId: string) => `${base}${runPath(runId)}/artifacts/${segment(artifactId)}?conversation_id=${segment(conversationId)}`;
-  const material = (raw: any): Resource => ({ id: raw.material_id, filename: raw.name, status: raw.status, size_bytes: raw.size_bytes, issue: raw.issue ?? null, content_type: raw.media_type, created_at: raw.created_at || new Date().toISOString(), updated_at: raw.updated_at || raw.created_at || new Date().toISOString() });
+  const material = (raw: any): Resource => ({ conversation_count: typeof raw.conversation_count === "number" ? raw.conversation_count : 0, id: raw.material_id, filename: raw.name, status: raw.status, size_bytes: raw.size_bytes, issue: raw.issue ?? null, content_type: raw.media_type, created_at: raw.created_at || new Date().toISOString(), updated_at: raw.updated_at || raw.created_at || new Date().toISOString() });
   const conversation = (raw: any): Conversation => ({ id: raw.conversation_id, title: raw.title, mode: raw.mode === "work" ? "work" : "chat", project_id: raw.project_id ?? null, pinned: raw.pinned, created_at: raw.created_at, updated_at: raw.updated_at, material_count: raw.material_count });
   const sourceReference = (raw: any): SourceReference => ({ source_id: String(raw.source_id), kind: raw.kind === "case" ? "case" : raw.kind === "paper" ? "paper" : "law", title: String(raw.title || "来源"), locator: raw.locator ?? null, section: raw.section ?? null, version_date: raw.version_date ?? null, version_label: raw.version_label ?? null, authors: raw.authors ?? null, collection: raw.collection ?? null });
   const artifact = (raw: any): Artifact => ({ artifact_id: String(raw.artifact_id), name: String(raw.name || "文件"), media_type: String(raw.media_type || "application/octet-stream"), size_bytes: Number(raw.size_bytes || 0), sha256: String(raw.sha256 || ""), version: Number(raw.version || 1), kind: raw.kind === "preview" ? "preview" : raw.kind === "document" ? "document" : "file", preview_artifact_id: raw.preview_artifact_id ?? null, preview_of_artifact_id: raw.preview_of_artifact_id ?? null });

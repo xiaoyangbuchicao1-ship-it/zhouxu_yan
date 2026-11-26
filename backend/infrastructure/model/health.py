@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping
+from urllib.parse import urlparse
 
 import httpx
 
@@ -15,6 +17,7 @@ from backend.infrastructure.model.endpoint_policy import (
     pinned_async_transport,
     validate_model_endpoint,
 )
+from backend.infrastructure.model.inference import infer_model_defaults
 from backend.infrastructure.model.registry import model_family
 from backend.infrastructure.model.relay_config import RelayConfig, relay_endpoint_for_protocol
 
@@ -46,12 +49,32 @@ class DiscoveredModel:
     id: str
     family: str
     label: str
+    context_tokens: int = 131_072
+    max_output_tokens: int = 16_384
+    thinking_modes: tuple[str, ...] = ("none",)
+    default_thinking: str = "none"
+    inferred_matched: bool = False
+    inferred_source: str = "通用默认值"
 
 
 @dataclass(frozen=True)
 class ProviderDiscoveryResult:
     supported: bool
     models: list[DiscoveredModel]
+    notice: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderBalanceResult:
+    status: str  # "ok" | "unsupported" | "auth_failed" | "unreachable"
+    supported: bool
+    display: str | None = None
+    currency: str | None = None
+    total_balance: str | None = None
+    granted_balance: str | None = None
+    topped_up_balance: str | None = None
+    used_amount: str | None = None
+    source: str | None = None
     notice: str | None = None
 
 
@@ -238,14 +261,352 @@ async def discover_provider_models(
             continue
         seen.add(model_id)
         label = item.get("displayName") if isinstance(item.get("displayName"), str) else model_id
+        inferred = infer_model_defaults(model_id)
+        ctx = inferred.context_tokens
+        out = inferred.max_output_tokens
+        matched = inferred.matched
+        source_hint = inferred.source_hint
+        if not matched:
+            for key in ("context_length", "max_model_len", "inputTokenLimit", "context_window"):
+                val = item.get(key)
+                if isinstance(val, int) and not isinstance(val, bool) and 4_096 <= val <= 10_000_000:
+                    ctx = val
+                    matched = True
+                    source_hint = "上游接口返回"
+                    break
+            for key in ("max_output_tokens", "outputTokenLimit", "max_completion_tokens"):
+                val = item.get(key)
+                if isinstance(val, int) and not isinstance(val, bool) and 256 <= val <= ctx:
+                    out = val
+                    break
         discovered.append(
             DiscoveredModel(
                 id=model_id,
                 family=model_family(model_id),
                 label=label.strip() or model_id,
+                context_tokens=ctx,
+                max_output_tokens=out,
+                thinking_modes=inferred.thinking_modes,
+                default_thinking=inferred.default_thinking,
+                inferred_matched=matched,
+                inferred_source=source_hint,
             )
         )
     return ProviderDiscoveryResult(supported=True, models=discovered)
+
+
+def _balance_origins(base_url: str) -> tuple[str, str]:
+    clean = base_url.strip().rstrip("/")
+    for suffix in ("/chat/completions", "/responses", "/messages", "/models"):
+        if clean.endswith(suffix):
+            clean = clean[: -len(suffix)]
+            break
+    if ":generateContent" in clean:
+        clean = clean.split("/models/", 1)[0]
+    root = _VERSION_SUFFIX_RE.sub("", clean).rstrip("/")
+    v1_base = clean if _VERSION_SUFFIX_RE.search(clean) else f"{root}/v1"
+    return root, v1_base
+
+
+def _format_money(amount: float | str, currency: str | None) -> str:
+    try:
+        numeric = float(amount)
+        formatted = f"{numeric:.2f}"
+    except (TypeError, ValueError):
+        formatted = str(amount)
+    code = (currency or "").upper()
+    if code in {"CNY", "RMB"}:
+        return f"¥{formatted}"
+    if code == "USD":
+        return f"${formatted}"
+    return f"{formatted} {code}".strip()
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_deepseek_balance(payload: object) -> ProviderBalanceResult | None:
+    if not isinstance(payload, dict):
+        return None
+    infos = payload.get("balance_infos")
+    if not isinstance(infos, list) or not infos:
+        return None
+    picked = next(
+        (item for item in infos if isinstance(item, dict) and str(item.get("currency", "")).upper() == "CNY"),
+        None,
+    )
+    if picked is None:
+        picked = next((item for item in infos if isinstance(item, dict)), None)
+    if picked is None or picked.get("total_balance") is None:
+        return None
+    currency = str(picked.get("currency") or "CNY").upper()
+    total = str(picked.get("total_balance"))
+    granted = str(picked.get("granted_balance")) if picked.get("granted_balance") is not None else None
+    topped = str(picked.get("topped_up_balance")) if picked.get("topped_up_balance") is not None else None
+    return ProviderBalanceResult(
+        status="ok",
+        supported=True,
+        display=_format_money(total, currency),
+        currency=currency,
+        total_balance=total,
+        granted_balance=granted,
+        topped_up_balance=topped,
+        source="deepseek",
+    )
+
+
+def _parse_siliconflow_balance(payload: object) -> ProviderBalanceResult | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    raw_total = data.get("totalBalance")
+    if raw_total is None:
+        raw_total = data.get("balance")
+    if raw_total is None:
+        return None
+    total = _as_float(raw_total)
+    if total is None:
+        return None
+    charge = _as_float(data.get("chargeBalance"))
+    granted = _as_float(data.get("balance"))
+    return ProviderBalanceResult(
+        status="ok",
+        supported=True,
+        display=_format_money(total, "CNY"),
+        currency="CNY",
+        total_balance=f"{total:.2f}",
+        granted_balance=f"{granted:.2f}" if granted is not None else None,
+        topped_up_balance=f"{charge:.2f}" if charge is not None else None,
+        source="siliconflow",
+    )
+
+
+def _parse_openrouter_balance(payload: object) -> ProviderBalanceResult | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    total_credits = _as_float(data.get("total_credits"))
+    total_usage = _as_float(data.get("total_usage"))
+    if total_credits is None:
+        return None
+    used = total_usage or 0.0
+    remaining = max(0.0, total_credits - used)
+    return ProviderBalanceResult(
+        status="ok",
+        supported=True,
+        display=_format_money(remaining, "USD"),
+        currency="USD",
+        total_balance=f"{remaining:.2f}",
+        used_amount=f"{used:.2f}",
+        source="openrouter",
+    )
+
+
+def _parse_credit_grants_balance(payload: object) -> ProviderBalanceResult | None:
+    if not isinstance(payload, dict):
+        return None
+    available = _as_float(payload.get("total_available"))
+    granted = _as_float(payload.get("total_granted"))
+    used = _as_float(payload.get("total_used"))
+    if available is None and granted is None:
+        return None
+    if available is None and granted is not None:
+        available = max(0.0, granted - (used or 0.0))
+    return ProviderBalanceResult(
+        status="ok",
+        supported=True,
+        display=_format_money(available or 0.0, "USD"),
+        currency="USD",
+        total_balance=f"{(available or 0.0):.2f}",
+        granted_balance=f"{granted:.2f}" if granted is not None else None,
+        used_amount=f"{used:.2f}" if used is not None else None,
+        source="credit_grants",
+    )
+
+
+def _is_json_response(response: httpx.Response) -> bool:
+    ctype = response.headers.get("content-type", "").lower()
+    return "json" in ctype
+
+
+async def probe_provider_balance(
+    base_url: str,
+    preset_type: str,
+    auth_style: str,
+    api_key: str,
+    *,
+    extra_headers: Mapping[str, str] | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> ProviderBalanceResult:
+    """Query account balance from providers/relays that expose a JSON balance API.
+
+    Never fakes a balance: relays without a balance API (or returning SPA HTML)
+    cleanly resolve to ``status="unsupported"``.
+    """
+    if auth_style == "none":
+        return ProviderBalanceResult(
+            status="unsupported",
+            supported=False,
+            notice="本地无密钥服务不需要查询余额。",
+        )
+
+    allow_local = local_model_hosts_enabled()
+    root, v1_base = _balance_origins(base_url)
+    host = (urlparse(root).hostname or "").lower()
+    preset = (preset_type or "").strip().lower()
+
+    headers = _build_probe_headers(auth_style, api_key, "openai_chat_completions", extra_headers)
+    resolved_transport = transport or pinned_async_transport(allow_local=allow_local)
+
+    # Order probes so known providers hit their exact official endpoint first.
+    probes: list[tuple[str, str]] = []
+    if preset == "deepseek" or "deepseek" in host:
+        probes.append(("deepseek", f"{root}/user/balance"))
+    elif preset == "siliconflow" or "siliconflow" in host:
+        probes.append(("siliconflow", f"{v1_base}/user/info"))
+    elif "openrouter" in host:
+        probes.append(("openrouter", f"{v1_base}/credits"))
+    else:
+        probes.extend([
+            ("oneapi_sub", f"{v1_base}/dashboard/billing/subscription"),
+            ("credit_grants", f"{v1_base}/dashboard/billing/credit_grants"),
+            ("credit_grants_root", f"{root}/dashboard/billing/credit_grants"),
+            ("siliconflow", f"{v1_base}/user/info"),
+            ("deepseek", f"{root}/user/balance"),
+            ("openrouter", f"{v1_base}/credits"),
+        ])
+
+    saw_auth_error = False
+    saw_network_error = False
+    strict_primary = len(probes) == 1
+
+    async with httpx.AsyncClient(
+        headers=headers,
+        timeout=httpx.Timeout(10.0),
+        follow_redirects=False,
+        trust_env=False,
+        transport=resolved_transport,
+    ) as client:
+        for kind, url in probes:
+            validate_model_endpoint(url, allow_local=allow_local)
+            try:
+                response = await client.get(url)
+            except httpx.RequestError:
+                saw_network_error = True
+                if strict_primary:
+                    return ProviderBalanceResult(
+                        status="unreachable",
+                        supported=False,
+                        notice="无法连接到服务商余额接口，请检查地址或网络。",
+                    )
+                continue
+
+            if response.status_code in {401, 403}:
+                saw_auth_error = True
+                if strict_primary:
+                    return ProviderBalanceResult(
+                        status="auth_failed",
+                        supported=False,
+                        notice=f"上游鉴权失败（HTTP {response.status_code}），请检查 API Key。",
+                    )
+                continue
+
+            if not response.is_success or not _is_json_response(response):
+                continue
+
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+
+            if kind == "deepseek":
+                parsed = _parse_deepseek_balance(payload)
+                if parsed is not None:
+                    return parsed
+            elif kind == "siliconflow":
+                parsed = _parse_siliconflow_balance(payload)
+                if parsed is not None:
+                    return parsed
+            elif kind == "openrouter":
+                parsed = _parse_openrouter_balance(payload)
+                if parsed is not None:
+                    return parsed
+            elif kind in {"credit_grants", "credit_grants_root"}:
+                parsed = _parse_credit_grants_balance(payload)
+                if parsed is not None:
+                    return parsed
+            elif kind == "oneapi_sub" and isinstance(payload, dict):
+                hard_limit = _as_float(payload.get("hard_limit_usd"))
+                if hard_limit is None:
+                    hard_limit = _as_float(payload.get("system_hard_limit_usd"))
+                if hard_limit is None:
+                    continue
+                if hard_limit >= 100_000_000:
+                    return ProviderBalanceResult(
+                        status="ok",
+                        supported=True,
+                        display="无限额度",
+                        currency="USD",
+                        source="oneapi",
+                    )
+                used_usd = 0.0
+                now = datetime.now(timezone.utc)
+                start = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+                end = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+                usage_base_url = f"{v1_base}/dashboard/billing/usage"
+                try:
+                    validate_model_endpoint(usage_base_url, allow_local=allow_local)
+                    usage_resp = await client.get(
+                        usage_base_url,
+                        params={"start_date": start, "end_date": end},
+                    )
+                    if usage_resp.is_success and _is_json_response(usage_resp):
+                        usage_data = usage_resp.json()
+                        if isinstance(usage_data, dict):
+                            raw_usage = _as_float(usage_data.get("total_usage"))
+                            if raw_usage is not None:
+                                used_usd = raw_usage / 100.0
+                except Exception:
+                    used_usd = 0.0
+                remaining = max(0.0, hard_limit - used_usd)
+                return ProviderBalanceResult(
+                    status="ok",
+                    supported=True,
+                    display=_format_money(remaining, "USD"),
+                    currency="USD",
+                    total_balance=f"{remaining:.2f}",
+                    granted_balance=f"{hard_limit:.2f}",
+                    used_amount=f"{used_usd:.2f}",
+                    source="oneapi",
+                )
+
+    if saw_auth_error:
+        return ProviderBalanceResult(
+            status="auth_failed",
+            supported=False,
+            notice="上游鉴权失败，请检查 API Key 是否有余额查询权限。",
+        )
+    if saw_network_error:
+        return ProviderBalanceResult(
+            status="unreachable",
+            supported=False,
+            notice="无法连接到服务商余额接口，请检查地址或网络。",
+        )
+    return ProviderBalanceResult(
+        status="unsupported",
+        supported=False,
+        notice="该服务商未开放余额查询，请前往服务商控制台查看。",
+    )
 
 
 async def probe_model_endpoint(
@@ -280,6 +641,12 @@ async def probe_model_endpoint(
             transport=resolved_transport,
         ) as client:
             response = await client.post(url, json=payload)
+    except EndpointPolicyError as exc:
+        return ConnectivityProbeResult(
+            ok=False,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_code=str(exc),
+        )
     except httpx.TimeoutException:
         return ConnectivityProbeResult(
             ok=False,
@@ -408,8 +775,10 @@ __all__ = [
     "ConnectivityProbeResult",
     "DiscoveredModel",
     "ModelProbe",
+    "ProviderBalanceResult",
     "ProviderDiscoveryResult",
     "discover_provider_models",
     "probe_model_endpoint",
+    "probe_provider_balance",
     "probe_relay_models",
 ]

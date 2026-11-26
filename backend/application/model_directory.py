@@ -30,7 +30,12 @@ from backend.infrastructure.model.endpoint_policy import (
     local_model_hosts_enabled,
     validate_model_endpoint,
 )
-from backend.infrastructure.model.health import discover_provider_models, probe_model_endpoint
+from backend.infrastructure.model.health import (
+    discover_provider_models,
+    probe_model_endpoint,
+    probe_provider_balance,
+)
+from backend.infrastructure.model.inference import infer_model_defaults
 from backend.infrastructure.model.registry import model_family
 from backend.infrastructure.model.relay_config import load_relay_config
 
@@ -449,10 +454,32 @@ class ModelDirectoryAdminService:
             family = raw_family
         else:
             family = None
-        modes = self._modes(data.get("thinking_modes", ["none"]))
-        default = data.get("default_thinking", modes[0])
+        inferred_defaults = infer_model_defaults(upstream_model_id)
+        raw_modes = data.get("thinking_modes")
+        modes = self._modes(list(inferred_defaults.thinking_modes) if raw_modes is None else raw_modes)
+        raw_default_thinking = data.get("default_thinking")
+        if raw_default_thinking is None:
+            default = (
+                inferred_defaults.default_thinking
+                if inferred_defaults.default_thinking in modes
+                else modes[0]
+            )
+        else:
+            default = raw_default_thinking
         if default not in modes:
             raise AdminServiceError("thinking_mode_invalid")
+        raw_context_tokens = data.get("context_tokens")
+        context_tokens = (
+            inferred_defaults.context_tokens
+            if raw_context_tokens is None
+            else self._positive_int(raw_context_tokens, "context_tokens_invalid")
+        )
+        raw_max_output = data.get("max_output_tokens")
+        max_output_tokens = (
+            inferred_defaults.max_output_tokens
+            if raw_max_output is None
+            else self._positive_int(raw_max_output, "max_output_tokens_invalid")
+        )
         access_scope = str(data.get("access_scope", "all"))
         if access_scope not in _ACCESS_SCOPES:
             raise AdminServiceError("access_scope_invalid")
@@ -498,17 +525,17 @@ class ModelDirectoryAdminService:
                 label=self._text(data.get("label"), "model_label_required", 160),
                 family=family,
                 protocol_override=protocol,
-                context_tokens=self._positive_int(data.get("context_tokens"), "context_tokens_invalid"),
-                max_output_tokens=self._positive_int(
-                    data.get("max_output_tokens"), "max_output_tokens_invalid"
-                ),
+                context_tokens=context_tokens,
+                max_output_tokens=max_output_tokens,
                 thinking_modes_json=json.dumps(modes, separators=(",", ":")),
                 default_thinking=default,
-                capabilities_json=json.dumps(data.get("capabilities", {}), separators=(",", ":")),
+                capabilities_json=json.dumps(
+                    self._capabilities(data.get("capabilities", {})), separators=(",", ":")
+                ),
                 enabled=False,
                 access_scope=access_scope,
                 is_default=False,
-                sort_order=int(data.get("sort_order", 100)),
+                sort_order=self._sort_order(data.get("sort_order", 100)),
                 verification_json=json.dumps(verification, ensure_ascii=False, separators=(",", ":")),
                 current_revision=1,
                 source=data.get("source", "admin"),
@@ -611,14 +638,16 @@ class ModelDirectoryAdminService:
             profile.thinking_modes_json = json.dumps(modes, separators=(",", ":"))
 
             if "sort_order" in data:
-                profile.sort_order = int(data["sort_order"])
+                profile.sort_order = self._sort_order(data["sort_order"])
             if "access_scope" in data:
                 scope = str(data["access_scope"])
                 if scope not in _ACCESS_SCOPES:
                     raise AdminServiceError("access_scope_invalid")
                 profile.access_scope = scope
             if "capabilities" in data:
-                profile.capabilities_json = json.dumps(data["capabilities"], separators=(",", ":"))
+                profile.capabilities_json = json.dumps(
+                    self._capabilities(data["capabilities"]), separators=(",", ":")
+                )
 
             next_revision = profile.current_revision + 1
             verification = _json_dict(profile.verification_json)
@@ -803,9 +832,79 @@ class ModelDirectoryAdminService:
                     "family": item.family,
                     "label": item.label,
                     "already_added": item.id in existing_upstream,
+                    "context_tokens": item.context_tokens,
+                    "max_output_tokens": item.max_output_tokens,
+                    "thinking_modes": list(item.thinking_modes),
+                    "default_thinking": item.default_thinking,
+                    "inferred_matched": item.inferred_matched,
+                    "inferred_source": item.inferred_source,
                 }
                 for item in result.models
             ],
+            "notice": result.notice,
+        }
+
+    def infer_model(self, *, actor_id: str, model_id: str) -> dict:
+        clean_id = self._text(model_id, "upstream_model_required", 200)
+        with self.database.session() as session:
+            self._require_admin(session, actor_id)
+        inferred = infer_model_defaults(clean_id)
+        return {
+            "model_id": clean_id,
+            "family": model_family(clean_id),
+            **inferred.to_dict(),
+        }
+
+    async def query_provider_balance(self, *, actor_id: str, provider_id: str) -> dict:
+        with self.database.session() as session:
+            self._require_admin(session, actor_id)
+            provider = session.get(ModelProviderModel, provider_id)
+            if provider is None or provider.archived_at is not None:
+                raise AdminServiceError("provider_not_found")
+            revision = self._provider_revision(session, provider_id)
+            base_url = provider.base_url
+            preset_type = provider.preset_type
+            auth_style = provider.auth_style
+            extra_headers = _json_dict(provider.extra_headers_json)
+            try:
+                api_key = self._resolve_provider_secret(provider, revision)
+            except AdminServiceError:
+                return {
+                    "status": "auth_failed",
+                    "supported": False,
+                    "display": None,
+                    "currency": None,
+                    "total_balance": None,
+                    "granted_balance": None,
+                    "topped_up_balance": None,
+                    "used_amount": None,
+                    "source": None,
+                    "notice": "尚未配置可用的 API Key。",
+                }
+
+        try:
+            result = await probe_provider_balance(
+                base_url,
+                preset_type,
+                auth_style,
+                api_key,
+                extra_headers=extra_headers,
+            )
+        except EndpointPolicyError as exc:
+            raise AdminServiceError(str(exc)) from None
+        except ValueError as exc:
+            raise AdminServiceError(str(exc)) from None
+
+        return {
+            "status": result.status,
+            "supported": result.supported,
+            "display": result.display,
+            "currency": result.currency,
+            "total_balance": result.total_balance,
+            "granted_balance": result.granted_balance,
+            "topped_up_balance": result.topped_up_balance,
+            "used_amount": result.used_amount,
+            "source": result.source,
             "notice": result.notice,
         }
 
@@ -1020,6 +1119,24 @@ class ModelDirectoryAdminService:
     def _positive_int(value, code: str) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise AdminServiceError(code)
+        return value
+
+    @staticmethod
+    def _capabilities(value) -> dict:
+        # Capabilities are read back on every directory/catalog request, so a
+        # wrong type stored here would break those pages for everyone.
+        if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+            raise AdminServiceError("capabilities_invalid")
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            raise AdminServiceError("capabilities_invalid") from None
+        return value
+
+    @staticmethod
+    def _sort_order(value) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not -1_000_000 <= value <= 1_000_000:
+            raise AdminServiceError("sort_order_invalid")
         return value
 
     @staticmethod

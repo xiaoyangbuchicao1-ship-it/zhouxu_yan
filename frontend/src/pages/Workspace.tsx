@@ -636,6 +636,7 @@ function Desk({ session }: { session: AuthSession }) {
           initialTab={userCenterTab}
           account={session.account}
           preferences={prefs}
+          preferencesUnavailable={!preferencesQuery.data}
           commands={commands}
           summary={summaryQuery.data}
           summaryLoading={summaryQuery.isFetching}

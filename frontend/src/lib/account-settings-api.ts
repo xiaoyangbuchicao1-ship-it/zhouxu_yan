@@ -73,7 +73,8 @@ async function accountRequest<T>(
   if (response.status === 204) return undefined as T;
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    const code = payload && typeof payload === "object" && "detail" in payload ? String(payload.detail) : "unknown";
+    const detail = payload && typeof payload === "object" && "detail" in payload ? (payload as { detail: unknown }).detail : undefined;
+    const code = typeof detail === "string" ? detail : Array.isArray(detail) ? "validation_failed" : "unknown";
     throw new Error(accountErrorMessage(code));
   }
   return payload as T;
@@ -89,6 +90,7 @@ function accountErrorMessage(code: string): string {
     command_title_invalid: "请填写 80 字以内的指令标题。",
     command_content_invalid: "指令正文不能为空，且不超过 4000 字。",
     memory_text_too_long: "个人记忆内容不能超过 1200 字。",
+    validation_failed: "填写的内容有误，请检查长度后再试。",
   };
   return map[code] ?? authErrorMessage(code);
 }

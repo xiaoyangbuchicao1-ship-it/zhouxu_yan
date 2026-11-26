@@ -107,6 +107,9 @@ class Database:
                         "dynamic_admin_v2",
                         "dynamic_admin_v3",
                         "user_workspace_v1",
+                        "ops_email_v1",
+                        "account_register_ip_v1",
+                        "account_quota_v1",
                     ):
                         connection.exec_driver_sql(
                             f"INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES ('{version}', datetime('now'))"
@@ -125,6 +128,24 @@ class Database:
                         text(
                             "ALTER TABLE accounts ADD COLUMN role VARCHAR(16) "
                             "NOT NULL DEFAULT 'user'"
+                        )
+                    )
+            if "register_ip" not in account_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text("ALTER TABLE accounts ADD COLUMN register_ip VARCHAR(64)")
+                    )
+        if "account_capability_grants" in tables:
+            grant_columns = {
+                column["name"]
+                for column in inspector.get_columns("account_capability_grants")
+            }
+            if "material_quota_mb" not in grant_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE account_capability_grants "
+                            "ADD COLUMN material_quota_mb INTEGER"
                         )
                     )
         if "conversations" not in tables:

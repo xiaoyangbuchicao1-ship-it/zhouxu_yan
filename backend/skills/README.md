@@ -8,14 +8,10 @@
 
 - `maritime-case-research/`：海事案例候选检索、原文读取、主张与裁判认定分离、案例依据与现行法规依据分离。
 - `maritime-legal-research/`：通用海事法律问答的法规与案例来源选择、版本处理和引用边界。
-- `maritime/case-assessment/`：案件初步研判。
-- `maritime/case-management/`：案件管理与协同。
-- `maritime/case-research/`：案例检索与分析。
-- `maritime/claim-calculation/`：索赔测算。
-- `maritime/contract-review/`：合同与提单审查。
-- `maritime/document-drafting/`：文书起草。
-- `maritime/evidence-review/`：证据整理。
-- `maritime/law-research/`：法律检索与问答。
+- `maritime-paper-research/`：海事法学论文信息卡检索与原文核验。
+- `csl-law-paper-generator/`：中文海事法学论文写作与 PDF/Word 编译（工作模式）。
+
+已移除：法律适用对照表、类案差异对比表两个工作包技能，以及合同审查、案件研判、证据整理、文书起草、案件管理、索赔测算 6 个未开放的占位技能。
 
 Skill 由 Harness 按当前任务需要提供方法约束；实时数据仍由 `search_cases`、`read_case` 和法规 RAG 工具返回。目录中的 Skill 文档不是一个绕过权限的执行入口。
 

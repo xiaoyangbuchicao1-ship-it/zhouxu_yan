@@ -264,7 +264,7 @@ class ExecutionSettings(BaseModel):
     native_python: str | None = None
     native_bash: str | None = None
     workspace_root: str = "data/files/generated/run-workspaces"
-    command_timeout_seconds: float = Field(default=40, gt=0, le=300)
+    command_timeout_seconds: float = Field(default=120, gt=0, le=300)
     max_file_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     max_read_chars: int = Field(default=120_000, gt=0)
     max_output_chars: int = Field(default=30_000, gt=0)

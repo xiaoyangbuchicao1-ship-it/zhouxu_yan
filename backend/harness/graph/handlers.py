@@ -226,7 +226,8 @@ class HarnessGraphHandlers:
             },
         )
         operation = action.handle(request)
-        response = await control.read(operation) if spec.read_only else await operation
+        interruptible = spec.read_only or name in {"bash", "paper_compile"}
+        response = await control.read(operation) if interruptible else await operation
         result = _module_output(response, "graph_tool_failed", f"工具执行失败：{name}")
         if result.outcome == "error" or result.error is not None:
             raise PortError(result.error or Error(code="graph_tool_failed", message=f"工具执行失败：{name}"))

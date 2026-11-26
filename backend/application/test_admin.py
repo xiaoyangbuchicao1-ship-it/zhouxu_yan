@@ -38,7 +38,7 @@ class AdminServiceContractTests(unittest.TestCase):
     def test_admin_can_disable_user_and_new_login_is_rejected(self):
         updated = self.service.update_account(actor_id=self.admin.id, account_id=self.user.account.id, status="disabled")
         self.assertEqual(updated["status"], "disabled")
-        with self.assertRaisesRegex(Exception, "authentication_failed"):
+        with self.assertRaisesRegex(Exception, "account_disabled"):
             self.accounts.login(email="user@example.com", password="a-long-user-password")
 
     def test_cannot_disable_last_admin_or_change_self(self):
@@ -88,7 +88,8 @@ class AdminServiceContractTests(unittest.TestCase):
             live = session.scalars(select(AccountModel).where(AccountModel.role == "admin", AccountModel.status == "active")).all()
         self.assertEqual(len(live), 1)
         self.assertEqual(outcomes.count("changed"), 1)
-        self.assertEqual(len(self.service.list_audit()), 1)
+        changes = [item for item in self.service.list_audit() if item["action"].startswith("account.")]
+        self.assertEqual(len(changes), 1)
 
 
 if __name__ == "__main__":

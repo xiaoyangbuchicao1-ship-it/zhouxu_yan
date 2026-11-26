@@ -7,7 +7,7 @@ export interface MaritimeSkill {
   name: string;
   display_name?: string;
   starter_prompt?: string;
-  status?: "ready" | "coming_soon";
+  status?: "ready";
   mode_scope?: "chat" | "work";
   deliverable_tag?: string;
   summary: string;
@@ -37,59 +37,7 @@ export interface SkillResource {
   sha256: string;
   size_bytes: number;
 }
-export interface WorkPackage {
-  id: string;
-  run_id: string;
-  skill_id: string;
-  skill_name: string;
-  method_version: number;
-  title: string;
-  created_at: string;
-  sections: {
-    key: string;
-    name: string;
-    columns: string[];
-    rows: Record<string, string>[];
-  }[];
-  notes: string[];
-  checks: {
-    structure: string;
-    arithmetic?: string;
-    professional_review: string;
-    totals?: Record<string, string>;
-  };
-}
 export interface TaskFile { id: string; name: string; size: number; sha256: string; preview_artifact_id?: string | null; }
-export interface CaseEntry {
-  id: string;
-  case_id: string;
-  kind: "task" | "evidence" | "document";
-  title: string;
-  content: string;
-  due_at: string | null;
-  assignee_id: string | null;
-  status: "open" | "done" | "draft" | "reviewed";
-  version: number;
-  author_id: string;
-  created_at: string;
-  updated_at: string;
-}
-export interface MaritimeCase {
-  id: string;
-  title: string;
-  summary: string;
-  status: string;
-  role: string;
-  updated_at: string;
-  members: {
-    account_id: string;
-    role: string;
-    display_name?: string;
-    email?: string;
-  }[];
-  entries: CaseEntry[];
-  audit: { id: string; action: string; actor_id: string; created_at: string }[];
-}
 export interface CorpusSource {
   id: string;
   kind: "laws" | "cases" | "information_cards";
@@ -108,6 +56,22 @@ export interface CorpusSource {
 }
 export interface SearchResult {
   items: CorpusSource[];
+}
+
+const MARITIME_CODES: Record<string, string> = {
+  skill_not_permitted: "这个账户不能使用该技能。",
+  skill_upload_forbidden: "这个账户没有上传技能的权限。",
+  run_not_found: "没有找到这次任务。",
+  file_not_found: "这个文件已不存在。",
+  invalid_skill_id: "技能编号不正确。",
+  source_not_found: "没有找到这条资料。",
+  paper_reference_invalid: "有一条论文引用无法打开，请重新检索。",
+};
+
+/* 后端给的是中文句子就原样显示；是内部代码就翻成中文，翻不出就用通用提示。 */
+function maritimeErrorText(detail: string): string {
+  if (MARITIME_CODES[detail]) return MARITIME_CODES[detail];
+  return /^[a-z0-9_]+$/.test(detail) ? "这次操作没有完成，请稍后重试。" : detail;
 }
 
 export function maritimeApi(token: string) {
@@ -139,7 +103,7 @@ export function maritimeApi(token: string) {
           response.status === 401
             ? "登录已失效，请重新登录。"
             : typeof value?.detail === "string"
-              ? value.detail
+              ? maritimeErrorText(value.detail)
               : "输入未通过校验，或服务暂不可用。",
           response.status,
         );
@@ -157,12 +121,12 @@ export function maritimeApi(token: string) {
   }
   return {
     deliverables: (runId: string, conversationId: string) =>
-      call<{ packages: WorkPackage[]; files?: TaskFile[] }>(
+      call<{ files: TaskFile[] }>(
         `/runs/${encodeURIComponent(runId)}/deliverables?conversation_id=${encodeURIComponent(conversationId)}`,
       ),
     downloadFile: async (runId: string, conversationId: string, file: TaskFile) => {
       const response = await fetch(`${base}/maritime/runs/${encodeURIComponent(runId)}/files/${encodeURIComponent(file.id)}?conversation_id=${encodeURIComponent(conversationId)}`, {cache:'no-store',credentials:'omit',headers:{Authorization:`Bearer ${token}`}});
-      if (!response.ok) throw new WorkbenchError('文件下载失败，请确认登录状态后重试。',response.status);
+      if (!response.ok) throw new WorkbenchError(response.status === 404 ? '这个文件已不存在。' : response.status === 401 ? '登录已失效，请重新登录。' : '文件下载失败，请稍后重试。',response.status);
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement('a'); link.href=url; link.download=file.name; link.click();
       setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -172,16 +136,17 @@ export function maritimeApi(token: string) {
       if (!response.ok) {
         await response.json().catch(() => null);
         throw new WorkbenchError(
-          response.status === 503
-            ? '在线预览暂不可用，请先下载文件。'
-            : '文件预览失败，请先下载文件。',
+          response.status === 415
+            ? '这种文件不能在线预览，请直接下载。'
+            : response.status === 404
+              ? '这个文件已不存在。'
+              : '文件预览失败，请先下载文件。',
           response.status,
         );
       }
       return URL.createObjectURL(await response.blob());
     },
-    skills: () => call<{ skills: MaritimeSkill[] }>("/skills"),
-    skill: (id: string) => call<MaritimeSkill>(`/skills/${encodeURIComponent(id)}`),
+    skills: () => call<{ skills: MaritimeSkill[]; can_upload_skill?: boolean }>("/skills"),
     importSkill: (file: File) => {
       const form = new FormData();
       form.append("file", file);
@@ -191,44 +156,6 @@ export function maritimeApi(token: string) {
       call<{ status: "removed" }>(`/skills/${encodeURIComponent(id)}`, "DELETE"),
     skillResource: (id: string, path: string, version: number | string) =>
       call<SkillResource>(`/skills/${encodeURIComponent(id)}/resources?${new URLSearchParams({ path, version: String(version) })}`),
-    saveSkill: (
-      input: Partial<MaritimeSkill> & { expected_version?: number | string },
-      id?: string,
-    ) =>
-      call<MaritimeSkill>(
-        `/skills${id ? `/${encodeURIComponent(id)}` : ""}`,
-        id ? "PUT" : "POST",
-        input,
-      ),
-    cases: () => call<{ cases: MaritimeCase[] }>("/cases"),
-    createCase: (title: string, summary: string) =>
-      call<MaritimeCase>("/cases", "POST", { title, summary }),
-    case: (id: string) =>
-      call<MaritimeCase>(`/cases/${encodeURIComponent(id)}`),
-    invite: (id: string, email: string, role: string) =>
-      call<MaritimeCase>(`/cases/${encodeURIComponent(id)}/members`, "POST", {
-        email,
-        role,
-      }),
-    removeMember: (id: string, memberId: string) =>
-      call<MaritimeCase>(
-        `/cases/${encodeURIComponent(id)}/members/${encodeURIComponent(memberId)}`,
-        "DELETE",
-      ),
-    saveEntry: (
-      id: string,
-      body: Partial<CaseEntry> & { expected_version?: number },
-      entryId?: string,
-    ) =>
-      call<CaseEntry>(
-        `/cases/${encodeURIComponent(id)}/entries${entryId ? `/${encodeURIComponent(entryId)}` : ""}`,
-        entryId ? "PUT" : "POST",
-        body,
-      ),
-    versions: (caseId: string, entryId: string) =>
-      call<{ versions: CaseEntry[] }>(
-        `/cases/${encodeURIComponent(caseId)}/entries/${encodeURIComponent(entryId)}/versions`,
-      ),
     search: (query: string, kind: "laws" | "cases" | "information_cards", current_only: boolean) =>
       call<SearchResult>("/search", "POST", {
         query,
@@ -236,26 +163,5 @@ export function maritimeApi(token: string) {
         current_only,
         limit: 8,
       }),
-    source: (kind: string, id: string, snapshot?: string) =>
-      call<CorpusSource>(
-        `/sources/${kind}/${encodeURIComponent(id)}${snapshot ? `?snapshot=${encodeURIComponent(snapshot)}` : ""}`,
-      ),
-    status: () =>
-      call<{
-        model_runtime_ready: boolean;
-        corpus: { indexed: boolean; counts: Record<string, number> };
-      }>("/status"),
   };
-}
-
-export function downloadDraft(title: string, content: string) {
-  const text = `# ${title}\n\n> 工作草稿 · 请由海事专业人员复核；导出不表示发送或提交。\n\n${content}\n`;
-  const url = URL.createObjectURL(
-    new Blob([text], { type: "text/markdown;charset=utf-8" }),
-  );
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${title.replace(/[<>:"/\\|?*]/g, "_").slice(0, 80)}.md`;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

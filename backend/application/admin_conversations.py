@@ -300,6 +300,45 @@ class AdminConversationService:
                 "next_cursor": next_cursor,
             }
 
+    def resolve_run_artifact(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        run_id: str,
+        artifact_id: str,
+    ) -> dict:
+        with self.database.session() as session:
+            conversation = session.scalar(
+                select(ConversationModel).where(
+                    ConversationModel.id == conversation_id,
+                    ConversationModel.account_id == account_id,
+                )
+            )
+            if conversation is None:
+                raise AdminServiceError("conversation_not_found")
+            run = session.scalar(
+                select(ConversationRunModel).where(
+                    ConversationRunModel.run_id == run_id,
+                    ConversationRunModel.conversation_id == conversation_id,
+                )
+            )
+            if run is None:
+                raise AdminServiceError("artifact_not_found")
+            progress = self._progress(run.progress_json)
+            raw_artifacts = progress.get("artifacts") if isinstance(progress, dict) else None
+            selected = next(
+                (
+                    item
+                    for item in (raw_artifacts if isinstance(raw_artifacts, list) else [])
+                    if isinstance(item, dict) and item.get("artifact_id") == artifact_id
+                ),
+                None,
+            )
+            if selected is None or not isinstance(selected.get("relative_path"), str) or not selected["relative_path"]:
+                raise AdminServiceError("artifact_not_found")
+            return dict(selected)
+
     @staticmethod
     def _summary(
         conversation,

@@ -16,6 +16,7 @@ class AdminAccountView(Contract):
     display_name: str
     status: Literal["active", "disabled"]
     role: Literal["user", "admin"]
+    register_ip: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -31,6 +32,11 @@ class AdminOverviewView(Contract):
     disabled_accounts: int = Field(ge=0)
     admin_accounts: int = Field(ge=0)
     audit_events: int = Field(ge=0)
+    tasks_24h: int = Field(default=0, ge=0)
+    failed_24h: int = Field(default=0, ge=0)
+    active_tasks: int = Field(default=0, ge=0)
+    recent_failed: list["AdminTaskView"] = Field(default_factory=list)
+    stuck_tasks: list["AdminTaskView"] = Field(default_factory=list)
 
 
 class AdminAuditView(Contract):
@@ -244,10 +250,10 @@ class AdminModelCreateRequest(Contract):
     label: str = Field(min_length=1, max_length=160)
     family: Literal["deepseek", "gpt", "claude", "gemini", "glm", "qwen", "kimi", "other"] | None = None
     protocol_override: str | None = None
-    context_tokens: int = Field(gt=0)
-    max_output_tokens: int = Field(gt=0)
-    thinking_modes: list[Literal["none", "low", "medium", "high", "xhigh", "max"]] = Field(default_factory=lambda: ["none"])
-    default_thinking: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
+    context_tokens: int | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    thinking_modes: list[Literal["none", "low", "medium", "high", "xhigh", "max"]] | None = None
+    default_thinking: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
     capabilities: dict[str, str] = Field(default_factory=dict)
     enabled: bool = False
     access_scope: Literal["all", "admin_only", "allowlist"] = "all"
@@ -318,12 +324,42 @@ class AdminDiscoveredModelView(Contract):
     family: str
     label: str
     already_added: bool = False
+    context_tokens: int = 131_072
+    max_output_tokens: int = 16_384
+    thinking_modes: list[str] = Field(default_factory=lambda: ["none"])
+    default_thinking: str = "none"
+    inferred_matched: bool = False
+    inferred_source: str = "通用默认值"
 
 
 class AdminProviderDiscoverResponse(Contract):
     supported: bool
     models: list[AdminDiscoveredModelView] = Field(default_factory=list)
     notice: str | None = None
+
+
+class AdminProviderBalanceResponse(Contract):
+    status: Literal["ok", "unsupported", "auth_failed", "unreachable"]
+    supported: bool
+    display: str | None = None
+    currency: str | None = None
+    total_balance: str | None = None
+    granted_balance: str | None = None
+    topped_up_balance: str | None = None
+    used_amount: str | None = None
+    source: str | None = None
+    notice: str | None = None
+
+
+class AdminModelInferResponse(Contract):
+    model_id: str
+    family: str
+    context_tokens: int
+    max_output_tokens: int
+    thinking_modes: list[str]
+    default_thinking: str
+    matched: bool
+    source_hint: str
 
 
 class AdminConnectivityTestResponse(Contract):
@@ -342,6 +378,8 @@ class AdminCapabilityView(Contract):
     allowed_models: list[str] = Field(default_factory=list)
     skill_policy: Literal["default", "builtin_only", "disabled"]
     can_upload_skill: bool
+    material_quota_mb: int | None = None
+    material_used_bytes: int = Field(default=0, ge=0)
     updated_at: datetime | None = None
 
 
@@ -350,6 +388,8 @@ class AdminCapabilityUpdateRequest(Contract):
     allowed_models: list[str] | None = None
     skill_policy: Literal["default", "builtin_only", "disabled"] | None = None
     can_upload_skill: bool | None = None
+    material_quota_mb: int | None = Field(default=None, ge=0, le=1_048_576)
+    clear_material_quota: bool | None = None
 
 
 class AdminCapabilitiesResponse(Contract):
@@ -362,16 +402,31 @@ class AdminSkillView(Contract):
     summary: str
     version: str
     visibility: str
-    status: Literal["ready", "coming_soon", "unavailable", "not_configured"]
+    status: Literal["ready", "unavailable", "not_configured"]
     mode_scope: Literal["chat", "work"] | None = None
     owner_email: str | None = None
     updated_at: datetime | None = None
+
+
+class AdminUploadedSkillView(Contract):
+    id: str
+    name: str
+    summary: str
+    version: int
+    owner_id: str
+    owner_email: str | None = None
+    active: bool
+    file_count: int = Field(ge=0)
+    size_bytes: int = Field(ge=0)
+    created_at: str
+    updated_at: str
 
 
 class AdminSkillsResponse(Contract):
     status: Literal["ready", "degraded", "unavailable"]
     total: int = Field(ge=0)
     skills: list[AdminSkillView]
+    uploaded: list[AdminUploadedSkillView] = Field(default_factory=list)
 
 
 class AdminTaskView(Contract):
@@ -387,11 +442,7 @@ class AdminTaskView(Contract):
     completed_at: datetime | None = None
     elapsed_ms: int | None = Field(default=None, ge=0)
     answer_chars: int = Field(ge=0)
-
-
-class AdminTasksResponse(Contract):
-    tasks: list[AdminTaskView]
-    next_cursor: str | None = None
+    error_code: str | None = None
 
 
 class AdminResourceHealthResponse(Contract):
@@ -402,3 +453,58 @@ class AdminResourceHealthResponse(Contract):
 class AdminRuntimeHealthResponse(Contract):
     status: Literal["ready", "degraded", "unavailable"]
     components: dict[str, dict]
+
+
+class AdminSystemMetricsResponse(Contract):
+    collected_at: datetime
+    compute: dict
+    opensearch: dict
+    concurrency: dict
+    http: dict
+    model_calls: dict
+    storage: dict
+    capacity: dict
+
+
+class AdminOpsSettingsView(Contract):
+    credential_encryption_ready: bool = False
+    email_verification_enabled: bool = False
+    allow_password_reset: bool = True
+    email_ready: bool = False
+    resend_from_email: str = ""
+    resend_from_name: str = "舟序 Zhouxu"
+    resend_api_key_hint: str | None = None
+    resend_key_configured: bool = False
+    resend_key_source: str = "none"
+    material_quota_mb: int = 1024
+    auto_maintenance_enabled: bool = True
+    backup_keep_days: int = 7
+    updated_at: datetime | None = None
+
+
+class AdminOpsSettingsUpdateRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    email_verification_enabled: bool | None = None
+    allow_password_reset: bool | None = None
+    resend_from_email: str | None = None
+    resend_from_name: str | None = None
+    resend_api_key: str | None = Field(default=None, repr=False)
+    clear_resend_api_key: bool | None = None
+    material_quota_mb: int | None = Field(default=None, ge=0, le=1048576)
+    auto_maintenance_enabled: bool | None = None
+    backup_keep_days: int | None = Field(default=None, ge=1, le=90)
+
+
+class AdminEmailTestRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    to_email: str = Field(min_length=3, max_length=320)
+
+
+class AdminEmailTestResponse(Contract):
+    ok: bool
+    message_id: str | None = None
+    error_code: str | None = None
+    detail: str | None = None
+
+
+AdminOverviewView.model_rebuild()

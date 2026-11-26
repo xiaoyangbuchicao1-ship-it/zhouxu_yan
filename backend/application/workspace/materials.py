@@ -8,7 +8,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from backend.config.settings import Settings
 from backend.contracts.modules.materials import MaterialInput, StoredMaterialRef
@@ -46,12 +46,25 @@ class MaterialService:
         filename: str,
         media_type: str | None,
         content: bytes,
+        quota_bytes: int | None = None,
     ) -> StoredMaterialRef:
         safe_name = Path(filename or "").name.strip()
         if not safe_name or safe_name in {".", ".."}:
             raise MaterialServiceError("material_filename_invalid")
         if len(content) > self.settings.materials.max_file_bytes:
             raise MaterialServiceError("material_too_large")
+        if quota_bytes is not None and quota_bytes > 0:
+            check_session = self.database.session()
+            try:
+                used = check_session.scalar(
+                    select(func.coalesce(func.sum(MaterialModel.size_bytes), 0)).where(
+                        MaterialModel.account_id == account_id
+                    )
+                ) or 0
+            finally:
+                check_session.close()
+            if int(used) + len(content) > quota_bytes:
+                raise MaterialServiceError("material_quota_exceeded")
         material_id = secrets.token_hex(16)
         checksum = hashlib.sha256(content).hexdigest()
         guessed = mimetypes.guess_type(safe_name)[0]
@@ -207,6 +220,26 @@ class MaterialService:
             except OSError:
                 break
 
+    def resolve_for_admin(self, *, material_id: str) -> tuple[MaterialModel, MaterialInput]:
+        """Resolve any account's material for authorized admin inspection/download."""
+        session = self.database.session()
+        try:
+            record = session.get(MaterialModel, material_id)
+        finally:
+            session.close()
+        if record is None:
+            raise MaterialServiceError("material_unavailable")
+        root = self._storage_root().resolve()
+        path = (root / record.storage_key).resolve()
+        if root not in path.parents or not path.is_file():
+            raise MaterialServiceError("material_unavailable")
+        return record, MaterialInput(
+            uri=str(path),
+            material_id=record.id,
+            name=record.filename,
+            media_type=record.media_type,
+        )
+
     def delete_account_material(self, *, account_id: str, material_id: str) -> None:
         """Delete an account-owned material regardless of its conversation scope."""
         session = self.database.session()
@@ -232,3 +265,23 @@ class MaterialService:
                 parent.rmdir()
             except OSError:
                 break
+
+    def resolve_for_admin(self, *, material_id: str) -> tuple[MaterialModel, MaterialInput]:
+        """Resolve any account's material for authorized admin inspection/download."""
+        session = self.database.session()
+        try:
+            record = session.get(MaterialModel, material_id)
+        finally:
+            session.close()
+        if record is None:
+            raise MaterialServiceError("material_unavailable")
+        root = self._storage_root().resolve()
+        path = (root / record.storage_key).resolve()
+        if root not in path.parents or not path.is_file():
+            raise MaterialServiceError("material_unavailable")
+        return record, MaterialInput(
+            uri=str(path),
+            material_id=record.id,
+            name=record.filename,
+            media_type=record.media_type,
+        )

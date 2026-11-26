@@ -9,14 +9,13 @@ database and model directory as the user-facing application.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.application.admin import AdminService, AdminServiceError
-from backend.application.admin_conversations import resolve_status_filter
 from backend.config.settings import Settings
 from backend.infrastructure.database.connection import Database
 from backend.infrastructure.database.models import (
@@ -24,6 +23,7 @@ from backend.infrastructure.database.models import (
     AccountModel,
     ConversationModel,
     ConversationRunModel,
+    MaterialModel,
 )
 from backend.infrastructure.search.maritime_corpus import MaritimeCorpus
 from backend.skills.registry import default_skill_registry
@@ -53,6 +53,7 @@ class AdminOperationsService:
                     "allowed_models": [],
                     "skill_policy": "default",
                     "can_upload_skill": True,
+                    "material_quota_mb": None,
                 }
             allowed: list[str] = []
             if grant.allowed_models_json:
@@ -68,6 +69,7 @@ class AdminOperationsService:
                 "allowed_models": allowed,
                 "skill_policy": grant.skill_policy,
                 "can_upload_skill": bool(grant.can_upload_skill),
+                "material_quota_mb": grant.material_quota_mb,
             }
 
     def is_model_permitted(
@@ -112,22 +114,6 @@ class AdminOperationsService:
             )
         ]
 
-    def assert_model_allowed(
-        self,
-        *,
-        account_id: str,
-        account_role: str,
-        profile_id: str,
-        access_scope: str,
-    ) -> None:
-        if not self.is_model_permitted(
-            account_id=account_id,
-            account_role=account_role,
-            profile_id=profile_id,
-            access_scope=access_scope,
-        ):
-            raise AdminServiceError("model_not_permitted")
-
     def is_skill_permitted(
         self,
         *,
@@ -157,6 +143,13 @@ class AdminOperationsService:
                 )
                 .order_by(AccountModel.created_at.desc(), AccountModel.id)
             ).all()
+            usage_rows = session.execute(
+                select(
+                    MaterialModel.account_id,
+                    func.coalesce(func.sum(MaterialModel.size_bytes), 0),
+                ).group_by(MaterialModel.account_id)
+            ).all()
+            usage_map = {str(aid): int(total or 0) for aid, total in usage_rows}
             result = []
             for account, grant in rows:
                 allowed = []
@@ -177,6 +170,8 @@ class AdminOperationsService:
                         "allowed_models": allowed,
                         "skill_policy": grant.skill_policy if grant is not None else "default",
                         "can_upload_skill": bool(grant.can_upload_skill) if grant is not None else True,
+                        "material_quota_mb": grant.material_quota_mb if grant is not None else None,
+                        "material_used_bytes": usage_map.get(account.id, 0),
                         "updated_at": grant.updated_at if grant is not None else None,
                     }
                 )
@@ -191,6 +186,8 @@ class AdminOperationsService:
         allowed_models: list[str] | None = None,
         skill_policy: str | None = None,
         can_upload_skill: bool | None = None,
+        material_quota_mb: int | None = None,
+        clear_material_quota: bool | None = None,
     ) -> dict:
         if model_policy is not None and model_policy not in _MODEL_POLICIES:
             raise AdminServiceError("capability_model_policy_invalid")
@@ -202,7 +199,20 @@ class AdminOperationsService:
             allowed_models = list(dict.fromkeys(item.strip() for item in allowed_models))
         if model_policy == "allowlist" and allowed_models is not None and not allowed_models:
             raise AdminServiceError("capability_model_list_required")
-        if all(value is None for value in (model_policy, allowed_models, skill_policy, can_upload_skill)):
+        if material_quota_mb is not None and (
+            isinstance(material_quota_mb, bool)
+            or not isinstance(material_quota_mb, int)
+            or material_quota_mb < 0
+            or material_quota_mb > 1_048_576
+        ):
+            raise AdminServiceError("material_quota_invalid")
+        if (
+            all(
+                value is None
+                for value in (model_policy, allowed_models, skill_policy, can_upload_skill, material_quota_mb)
+            )
+            and not clear_material_quota
+        ):
             raise AdminServiceError("capability_change_required")
 
         now = datetime.now(timezone.utc)
@@ -221,6 +231,7 @@ class AdminOperationsService:
                     allowed_models_json=None,
                     skill_policy="default",
                     can_upload_skill=True,
+                    material_quota_mb=None,
                     updated_at=now,
                 )
                 session.add(grant)
@@ -233,7 +244,19 @@ class AdminOperationsService:
                 grant.skill_policy = skill_policy
             if can_upload_skill is not None:
                 grant.can_upload_skill = can_upload_skill
+            if clear_material_quota:
+                grant.material_quota_mb = None
+            elif material_quota_mb is not None:
+                grant.material_quota_mb = int(material_quota_mb)
             grant.updated_at = now
+            used_bytes = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(MaterialModel.size_bytes), 0)).where(
+                        MaterialModel.account_id == account_id
+                    )
+                )
+                or 0
+            )
             AdminService._add_audit(
                 session,
                 actor_id=actor_id,
@@ -246,10 +269,11 @@ class AdminOperationsService:
                     "allowed_models": json.loads(grant.allowed_models_json) if grant.allowed_models_json else [],
                     "skill_policy": grant.skill_policy,
                     "can_upload_skill": bool(grant.can_upload_skill),
+                    "material_quota_mb": grant.material_quota_mb,
                 },
             )
             session.commit()
-            return self._capability_view(account, grant)
+            return self._capability_view(account, grant, material_used_bytes=used_bytes)
 
     def list_skills(self) -> dict:
         from backend.application.maritime.catalog import READY_BUILTIN_METADATA
@@ -257,9 +281,7 @@ class AdminOperationsService:
         skills = []
         for descriptor in default_skill_registry().descriptors():
             ready_meta = READY_BUILTIN_METADATA.get(descriptor.skill_id)
-            if not descriptor.ready:
-                skill_status = "coming_soon"
-            elif descriptor.path.is_file():
+            if descriptor.path.is_file():
                 skill_status = "ready"
             else:
                 skill_status = "unavailable"
@@ -280,57 +302,87 @@ class AdminOperationsService:
                     else None,
                 }
             )
-        active = [item for item in skills if item["status"] != "coming_soon"]
-        status = "ready" if active and all(item["status"] == "ready" for item in active) else "degraded"
+        status = "ready" if skills and all(item["status"] == "ready" for item in skills) else "degraded"
         return {"status": status, "total": len(skills), "skills": skills}
 
-    def list_tasks(
-        self,
-        *,
-        limit: int = 50,
-        cursor: str | None = None,
-        status: str | None = None,
-    ) -> dict:
-        if limit < 1 or limit > 100:
-            raise AdminServiceError("invalid_task_limit")
-        _, status_values = resolve_status_filter(
-            status,
-            allow_no_runs=False,
-            error_code="invalid_task_status",
-        )
-        # The cursor is intentionally a simple opaque run id.  The first
-        # implementation has stable ordering and a bounded page; a malformed
-        # cursor is an input error rather than a silent restart at page one.
-        if cursor is not None and not cursor.strip():
-            raise AdminServiceError("invalid_task_cursor")
+    def account_emails(self, account_ids) -> dict[str, str]:
+        ids = list({item for item in account_ids if item})
+        if not ids:
+            return {}
         with self.database.session() as session:
-            statement = (
+            rows = session.execute(
+                select(AccountModel.id, AccountModel.email).where(AccountModel.id.in_(ids))
+            ).all()
+        return {row[0]: row[1] for row in rows}
+
+    def record_skill_removed(self, *, actor_id: str, owner_id: str, skill_id: str, name: str) -> None:
+        with self.database.session() as session:
+            actor = session.get(AccountModel, actor_id)
+            if actor is None or actor.role != "admin" or actor.status != "active":
+                raise AdminServiceError("admin_required")
+            AdminService._add_audit(
+                session,
+                actor_id=actor_id,
+                target_account_id=owner_id,
+                action="skill.removed",
+                resource_type="skill",
+                resource_id=skill_id,
+                details={"name": name},
+            )
+            session.commit()
+
+    def attention_summary(self) -> dict:
+        """What an administrator should look at: recent failures and stuck runs.
+
+        Cancelled runs are the user's own choice and are not failures.  A run
+        that is still queued or running an hour after it was created is
+        reported as stuck rather than hidden in a long list.
+        """
+
+        now = datetime.now(timezone.utc)
+        day_ago = now - timedelta(hours=24)
+        week_ago = now - timedelta(days=7)
+        stuck_before = now - timedelta(minutes=60)
+        live = ("queued", "running", "pausing")
+        with self.database.session() as session:
+            def count(*conditions) -> int:
+                return int(
+                    session.scalar(
+                        select(func.count(ConversationRunModel.run_id)).where(*conditions)
+                    )
+                    or 0
+                )
+
+            base = (
                 select(ConversationRunModel, ConversationModel, AccountModel)
                 .join(ConversationModel, ConversationModel.id == ConversationRunModel.conversation_id)
                 .join(AccountModel, AccountModel.id == ConversationModel.account_id)
-                .order_by(ConversationRunModel.created_at.desc(), ConversationRunModel.run_id.desc())
-                .limit(limit + 1)
             )
-            if status_values:
-                statement = statement.where(ConversationRunModel.status.in_(status_values))
-            if cursor:
-                current = session.get(ConversationRunModel, cursor)
-                if current is None:
-                    raise AdminServiceError("invalid_task_cursor")
-                statement = statement.where(
-                    (ConversationRunModel.created_at < current.created_at)
-                    | (
-                        (ConversationRunModel.created_at == current.created_at)
-                        & (ConversationRunModel.run_id < current.run_id)
-                    )
+            failed_rows = session.execute(
+                base.where(
+                    ConversationRunModel.status == "failed",
+                    ConversationRunModel.created_at >= week_ago,
                 )
-            rows = session.execute(statement).all()
-            has_more = len(rows) > limit
-            rows = rows[:limit]
-            tasks = [self._task_view(run, conversation, account) for run, conversation, account in rows]
+                .order_by(ConversationRunModel.created_at.desc(), ConversationRunModel.run_id.desc())
+                .limit(8)
+            ).all()
+            stuck_rows = session.execute(
+                base.where(
+                    ConversationRunModel.status.in_(live),
+                    ConversationRunModel.created_at < stuck_before,
+                )
+                .order_by(ConversationRunModel.created_at.asc())
+                .limit(8)
+            ).all()
             return {
-                "tasks": tasks,
-                "next_cursor": tasks[-1]["run_id"] if has_more and tasks else None,
+                "tasks_24h": count(ConversationRunModel.created_at >= day_ago),
+                "failed_24h": count(
+                    ConversationRunModel.status == "failed",
+                    ConversationRunModel.created_at >= day_ago,
+                ),
+                "active_tasks": count(ConversationRunModel.status.in_(live)),
+                "recent_failed": [self._task_view(*row) for row in failed_rows],
+                "stuck_tasks": [self._task_view(*row) for row in stuck_rows],
             }
 
     def resource_health(self) -> dict:
@@ -419,7 +471,12 @@ class AdminOperationsService:
         return {"status": overall, "components": components}
 
     @staticmethod
-    def _capability_view(account: AccountModel, grant: AccountCapabilityGrantModel) -> dict:
+    def _capability_view(
+        account: AccountModel,
+        grant: AccountCapabilityGrantModel,
+        *,
+        material_used_bytes: int = 0,
+    ) -> dict:
         allowed = json.loads(grant.allowed_models_json) if grant.allowed_models_json else []
         return {
             "account_id": account.id,
@@ -429,6 +486,8 @@ class AdminOperationsService:
             "allowed_models": allowed,
             "skill_policy": grant.skill_policy,
             "can_upload_skill": bool(grant.can_upload_skill),
+            "material_quota_mb": grant.material_quota_mb,
+            "material_used_bytes": int(material_used_bytes),
             "updated_at": grant.updated_at,
         }
 
@@ -459,6 +518,7 @@ class AdminOperationsService:
             "completed_at": run.completed_at,
             "elapsed_ms": elapsed_ms,
             "answer_chars": len(text),
+            "error_code": run.error_code,
         }
 
 

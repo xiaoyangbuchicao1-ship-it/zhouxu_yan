@@ -19,7 +19,6 @@ from pydantic import SecretStr
 from backend.application.accounts.service import AccountService
 from backend.application.admin_operations import AdminOperationsService
 from backend.application.maritime.service import MaritimeOffice
-from backend.application.maritime.work_packages import WorkPackageTool
 from backend.application.workspace.conversations import WorkspaceService
 from backend.config.settings import AuthSettings, DatabaseSettings, load_settings
 from backend.contracts.model_profiles import ModelCapabilityFlags, ModelProfile
@@ -108,7 +107,7 @@ class ChatWorkRefactorTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("<w:tbl", doc_xml)
                 self.assertNotIn("#table(", doc_xml)
 
-    async def test_skill_read_and_work_package_enforce_chat_work_boundary(self):
+    async def test_skill_read_enforces_chat_work_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = load_settings().model_copy(deep=True)
             office = MaritimeOffice(Path(tmp) / "office.sqlite3")
@@ -122,7 +121,7 @@ class ChatWorkRefactorTests(unittest.IsolatedAsyncioTestCase):
             chat_spec = tool.spec_for_mode("chat")
             for name in ("maritime-legal-research", "maritime-case-research", "maritime-paper-research"):
                 self.assertIn(f"- {name} ", chat_spec.description)
-            for forbidden in ("law-research", "case-research", "csl-law-paper-generator", "claim-calculation"):
+            for forbidden in ("csl-law-paper-generator",):
                 self.assertNotIn(f"- {forbidden} ", chat_spec.description)
             self.assertTrue(chat_spec.read_only)
 
@@ -131,20 +130,10 @@ class ChatWorkRefactorTests(unittest.IsolatedAsyncioTestCase):
                 "maritime-legal-research",
                 "maritime-case-research",
                 "maritime-paper-research",
-                "law-research",
-                "case-research",
                 "csl-law-paper-generator",
             ):
                 self.assertIn(f"- {name} ", work_spec.description)
-            self.assertNotIn("- claim-calculation ", work_spec.description)
             self.assertFalse(work_spec.read_only)
-
-            # WorkPackageTool only accepts ready work tables
-            pkg_spec = WorkPackageTool().spec
-            self.assertEqual(
-                set(pkg_spec.parameters["properties"]["skill_id"]["enum"]),
-                {"law-research", "case-research"},
-            )
 
             # Chat mode allows maritime-paper-research directly
             ok_req = ModuleRequest(
@@ -157,7 +146,7 @@ class ChatWorkRefactorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ok_res.outcome, "ok")
 
             # Chat mode refuses work Skill and user custom Skill package
-            for denied_name in ("csl-law-paper-generator", "law-research", custom["id"]):
+            for denied_name in ("csl-law-paper-generator", custom["id"]):
                 denied_req = ModuleRequest(
                     run_id="r-chat-deny",
                     call_id="c2",
@@ -299,7 +288,8 @@ class ChatWorkRefactorTests(unittest.IsolatedAsyncioTestCase):
                     by_id = {r["id"]: r for r in rows}
                     self.assertEqual(by_id["maritime-paper-research"]["mode_scope"], "chat")
                     self.assertEqual(by_id["csl-law-paper-generator"]["mode_scope"], "work")
-                    self.assertEqual(by_id["claim-calculation"]["status"], "coming_soon")
+                    self.assertNotIn("claim-calculation", by_id)
+                    self.assertNotIn("law-research", by_id)
             finally:
                 db.close()
 

@@ -1,10 +1,10 @@
-import { Activity, ArrowLeft, Bot, History, LayoutDashboard, LogOut, Menu, ShieldCheck, Users, Wrench } from "lucide-react";
+import { ArrowLeft, Bot, Database, History, LayoutDashboard, LogOut, Menu, ShieldCheck, Sparkles, Users, Wrench } from "lucide-react";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Sheet, SheetClose, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { revokeSession } from "@/lib/auth";
 import { saveSession, useAuthSession } from "@/lib/auth-session";
-import { adminNavigation } from "./admin-navigation";
+import { adminNavigationGroups } from "./admin-navigation";
 import "../admin.css";
 
 interface AdminOutletValue {
@@ -23,8 +23,10 @@ export function useAdminOutlet(): AdminOutletValue {
 const icons: Record<string, ReactNode> = {
   "/admin/overview": <LayoutDashboard size={17} />,
   "/admin/accounts": <Users size={17} />,
-  "/admin/operations": <Wrench size={17} />,
   "/admin/models": <Bot size={17} />,
+  "/admin/skills": <Sparkles size={17} />,
+  "/admin/tools": <Wrench size={17} />,
+  "/admin/data": <Database size={17} />,
   "/admin/audit": <History size={17} />,
 };
 
@@ -32,17 +34,22 @@ function Navigation({ mobile = false }: { mobile?: boolean }) {
   const location = useLocation();
   return (
     <nav className={mobile ? "admin-mobile-nav" : "admin-rail-nav"} aria-label="管理台">
-      {adminNavigation.map(item => {
-        const active = item.end
-          ? location.pathname === item.to
-          : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
-        const link = (
-          <NavLink key={item.to} to={item.to} className={active ? "is-active" : ""} end={item.end}>
-            {icons[item.to]}<span>{item.label}</span>
-          </NavLink>
-        );
-        return mobile ? <SheetClose asChild key={item.to}>{link}</SheetClose> : link;
-      })}
+      {adminNavigationGroups.map(group => (
+        <div className="admin-nav-group" key={group.label}>
+          <span className="admin-nav-heading">{group.label}</span>
+          {group.items.map(item => {
+            const active = item.end
+              ? location.pathname === item.to
+              : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+            const link = (
+              <NavLink key={item.to} to={item.to} className={active ? "is-active" : ""} end={item.end}>
+                {icons[item.to]}<span>{item.label}</span>
+              </NavLink>
+            );
+            return mobile ? <SheetClose asChild key={item.to}>{link}</SheetClose> : link;
+          })}
+        </div>
+      ))}
     </nav>
   );
 }
@@ -93,7 +100,6 @@ export default function AdminLayout() {
               </SheetContent>
             </Sheet>
           </div>
-          <span className="admin-shell-context"><Activity size={15} />管理与运行</span>
           <div className="admin-header-actions">
             <span className="admin-identity"><ShieldCheck size={15} />{session.account.display_name || session.account.email}</span>
             <button className="admin-icon-button" type="button" onClick={logout} disabled={loggingOut} aria-label="退出登录"><LogOut size={17} /></button>

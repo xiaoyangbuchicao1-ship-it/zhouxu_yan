@@ -21,7 +21,13 @@ class SkillPackageMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "office.sqlite3"
             office = MaritimeOffice(path)
-            original = office.save_skill("owner", {"name": "旧技能", "summary": "保留原内容", "instructions": "原始方法"})
+            original = {
+                "id": "legacy-skill", "owner_id": "owner", "name": "旧技能", "summary": "保留原内容",
+                "instructions": "原始方法", "version": 1, "visibility": "private", "parent_id": None,
+                "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00",
+            }
+            with office.connection() as db:
+                db.execute("INSERT INTO skills VALUES (:id,:owner_id,:name,:summary,:instructions,:version,:visibility,:parent_id,:created_at,:updated_at)", original)
             with sqlite3.connect(path) as db:
                 db.executescript("DROP TABLE skill_package_files; DROP TABLE skill_packages; DROP TABLE skill_installations;")
             with self.assertRaisesRegex(RuntimeError, "skill_package_migration_required"):

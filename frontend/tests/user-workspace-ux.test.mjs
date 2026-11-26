@@ -33,20 +33,18 @@ test("审计日志接口传递分类、结果、搜索与游标参数给后端",
   assert.match(calls[0], /limit=25/);
 });
 
-test("技能区严格区分 5 个已开放能力与 6 个持续推进中占位项", () => {
+test("技能区把内置技能和用户上传的技能分开，没有占位项", () => {
   const grouped = splitSkillsByReadiness(
     [
-      { id: "law-research", name: "法律检索", summary: "s", instructions: "", version: 2, owner_id: null, visibility: "builtin", status: "ready" },
-      { id: "case-assessment", name: "案件研判", summary: "s", instructions: "", version: 2, owner_id: null, visibility: "builtin", status: "coming_soon" },
+      { id: "maritime-legal-research", name: "条文检索", summary: "s", instructions: "", version: 2, owner_id: null, visibility: "builtin", status: "ready" },
       { id: "custom-zip", name: "我的包", summary: "s", instructions: "ok", version: 1, owner_id: "u1", visibility: "private" },
     ],
     "u1",
   );
   assert.equal(grouped.ready.length, 1);
-  assert.equal(grouped.ready[0].id, "law-research");
-  assert.equal(grouped.comingSoon.length, 1);
-  assert.equal(grouped.comingSoon[0].id, "case-assessment");
+  assert.equal(grouped.ready[0].id, "maritime-legal-research");
   assert.equal(grouped.mine.length, 1);
+  assert.equal(grouped.comingSoon, undefined);
 });
 
 test("斜杠快捷指令按输入前缀实时过滤且不暴露内置隐藏指令", () => {

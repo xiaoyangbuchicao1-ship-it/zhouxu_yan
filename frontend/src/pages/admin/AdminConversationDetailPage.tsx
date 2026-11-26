@@ -9,7 +9,9 @@ import {
   CircleX,
   Clock3,
   Cpu,
+  Download,
   ExternalLink,
+  Eye,
   FileText,
   LoaderCircle,
   MessageSquare,
@@ -30,6 +32,7 @@ import {
   createAdminApi,
   type AdminConversationRun,
   type AdminConversationSource,
+  type AdminPassageListResponse,
   type AdminSourceDocument,
 } from "@/lib/admin-api";
 import { useAdminOutlet } from "./AdminLayout";
@@ -75,8 +78,6 @@ function unitLabel(unit: string | null | undefined): string | null {
     file_reading: "读取文稿",
     file_writing: "撰写与保存文稿",
     file_compiling: "编译输出文档",
-    work_package: "生成工作包对照表",
-    calculating: "海事索赔测算",
     execution: "执行校验",
     writing: "组织最终回答",
     finalizing: "整理交付",
@@ -100,6 +101,17 @@ export default function AdminConversationDetailPage() {
     doc: AdminSourceDocument | null;
     error: string | null;
   } | null>(null);
+
+  const [materialPreview, setMaterialPreview] = useState<{
+    materialId: string;
+    filename: string;
+    loading: boolean;
+    loadingMore: boolean;
+    data: AdminPassageListResponse | null;
+    error: string | null;
+  } | null>(null);
+  const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const detailQuery = useQuery({
     queryKey: ["admin", "account", accountId, "conversation", conversationId],
@@ -137,11 +149,78 @@ export default function AdminConversationDetailPage() {
     } catch (cause) {
       const message =
         cause && typeof cause === "object" && "status" in cause && cause.status === 404
-          ? "该条来源未在当前本地资料库中收录原文（可能是测试条目或旧版快照），上方已展示完整标题与条文定位信息。"
+          ? "资料库里没有这条来源的原文。"
           : cause instanceof Error
             ? cause.message
-            : "暂时无法读取该条来源原文。";
+            : "原文没有加载出来。";
       setSourcePreview({ source, loading: false, doc: null, error: message });
+    }
+  }
+
+  async function openMaterialPreview(materialId: string, filename: string) {
+    setDownloadError(null);
+    setMaterialPreview({ materialId, filename, loading: true, loadingMore: false, data: null, error: null });
+    try {
+      const data = await api.materialPassages(materialId);
+      setMaterialPreview({ materialId, filename, loading: false, loadingMore: false, data, error: null });
+    } catch (cause) {
+      setMaterialPreview({
+        materialId,
+        filename,
+        loading: false,
+        loadingMore: false,
+        data: null,
+        error: cause instanceof Error ? cause.message : "附件内容暂时无法读取。",
+      });
+    }
+  }
+
+  async function loadMoreMaterialPassages() {
+    if (!materialPreview?.data?.next_cursor || materialPreview.loadingMore) return;
+    const { materialId, data } = materialPreview;
+    setMaterialPreview(prev => prev ? { ...prev, loadingMore: true } : prev);
+    try {
+      const next = await api.materialPassages(materialId, data.next_cursor);
+      setMaterialPreview(prev => prev && prev.data ? {
+        ...prev,
+        loadingMore: false,
+        data: {
+          ...next,
+          chunks: [...prev.data.chunks, ...next.chunks],
+        },
+      } : prev);
+    } catch (cause) {
+      setMaterialPreview(prev => prev ? {
+        ...prev,
+        loadingMore: false,
+        error: cause instanceof Error ? cause.message : "加载更多片段失败。",
+      } : prev);
+    }
+  }
+
+  async function handleDownloadMaterial(materialId: string, filename: string) {
+    if (downloadingKey) return;
+    setDownloadingKey(`mat:${materialId}`);
+    setDownloadError(null);
+    try {
+      await api.downloadMaterial(materialId, filename);
+    } catch (cause) {
+      setDownloadError(cause instanceof Error ? cause.message : "下载附件失败，请稍后重试。");
+    } finally {
+      setDownloadingKey(null);
+    }
+  }
+
+  async function handleDownloadArtifact(runId: string, artifactId: string, filename: string) {
+    if (downloadingKey) return;
+    setDownloadingKey(`art:${artifactId}`);
+    setDownloadError(null);
+    try {
+      await api.downloadRunArtifact(accountId, conversationId, runId, artifactId, filename);
+    } catch (cause) {
+      setDownloadError(cause instanceof Error ? cause.message : "下载交付文件失败，请稍后重试。");
+    } finally {
+      setDownloadingKey(null);
     }
   }
 
@@ -149,9 +228,11 @@ export default function AdminConversationDetailPage() {
     (item, idx, arr) => arr.findIndex(other => other.run_id === item.run_id) === idx,
   );
   const owner = detail?.account;
-  const headerDesc = owner
-    ? `所属账户：${owner.display_name ? `${owner.display_name}（${owner.email}）` : owner.email} · 共 ${allRuns.length} 次运行记录，展示用户提问、检索依据、工具过程与公开回答。`
-    : "展示用户提问、检索查到的法规/案例/论文依据、工具过程与公开回答。";
+  const headerDesc = [
+    detail ? modeLabel(detail.conversation.mode) : null,
+    owner ? owner.display_name || owner.email : null,
+    `${allRuns.length} 次运行`,
+  ].filter(Boolean).join(" · ");
 
   return (
     <div className="admin-route-page admin-detail-page">
@@ -169,7 +250,6 @@ export default function AdminConversationDetailPage() {
       ) : (
         <>
           <PageHeader
-            eyebrow={`${modeLabel(detail.conversation.mode)} · 会话详情与检索追溯`}
             title={detail.conversation.title}
             description={headerDesc}
             action={<RefreshButton loading={detailQuery.isFetching} onClick={() => void detailQuery.refetch()} />}
@@ -180,6 +260,7 @@ export default function AdminConversationDetailPage() {
               onRetry={() => void detailQuery.refetch()}
             />
           )}
+          {downloadError && <InlineError message={downloadError} />}
           <section className="admin-run-list" aria-label="会话运行记录">
             {allRuns.length === 0 ? (
               <p className="admin-empty">还没有运行记录。</p>
@@ -188,7 +269,11 @@ export default function AdminConversationDetailPage() {
                 <RunCard
                   key={run.run_id}
                   run={run}
+                  downloadingKey={downloadingKey}
                   onInspectSource={src => void openSourcePreview(src)}
+                  onPreviewMaterial={(id, name) => void openMaterialPreview(id, name)}
+                  onDownloadMaterial={(id, name) => void handleDownloadMaterial(id, name)}
+                  onDownloadArtifact={(runId, artId, name) => void handleDownloadArtifact(runId, artId, name)}
                 />
               ))
             )}
@@ -251,16 +336,95 @@ export default function AdminConversationDetailPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={Boolean(materialPreview)} onOpenChange={open => { if (!open) setMaterialPreview(null); }}>
+        <DialogContent className="admin-dialog admin-source-dialog">
+          <DialogHeader>
+            <DialogTitle>{materialPreview ? `用户附件 · ${materialPreview.filename}` : "用户附件"}</DialogTitle>
+            <DialogDescription>
+              {materialPreview?.data
+                ? `解析状态：${materialPreview.data.parse_status} · 已显示 ${materialPreview.data.chunks.length} 段`
+                : "查看已解析的正文片段或下载原始附件"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="admin-source-body">
+            {materialPreview && (
+              <div className="admin-row-actions" style={{ justifyContent: "flex-start" }}>
+                <button
+                  type="button"
+                  className="admin-row-action"
+                  disabled={downloadingKey !== null}
+                  onClick={() => void handleDownloadMaterial(materialPreview.materialId, materialPreview.filename)}
+                >
+                  {downloadingKey === `mat:${materialPreview.materialId}` ? <LoaderCircle className="admin-spin" size={14} /> : <Download size={14} />}
+                  下载原文件
+                </button>
+              </div>
+            )}
+            {materialPreview?.loading ? (
+              <div className="admin-loading" style={{ minHeight: 160 }}>
+                <LoaderCircle className="admin-spin" size={18} />
+                正在读取附件内容…
+              </div>
+            ) : materialPreview?.data ? (
+              <>
+                {materialPreview.data.notices.length > 0 && (
+                  <p className="admin-cc-hint">{materialPreview.data.notices.join(" ")}</p>
+                )}
+                {materialPreview.data.chunks.length === 0 ? (
+                  <p className="admin-cc-hint">这份附件暂未提取出文本内容，请直接点击上方「下载原文件」。</p>
+                ) : (
+                  <ul className="admin-passage-list">
+                    {materialPreview.data.chunks.map(chunk => (
+                      <li key={chunk.id} className="admin-passage-item">
+                        <div className="admin-passage-meta">
+                          <span>#{chunk.ordinal}</span>
+                          {chunk.locator && <span>{chunk.locator}</span>}
+                          {chunk.heading_path && chunk.heading_path.length > 0 && <span>{chunk.heading_path.join(" / ")}</span>}
+                        </div>
+                        <pre className="admin-passage-text">{chunk.text}</pre>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {materialPreview.data.next_cursor && (
+                  <div className="admin-load-more">
+                    <button
+                      type="button"
+                      className="admin-page-button"
+                      disabled={materialPreview.loadingMore}
+                      onClick={() => void loadMoreMaterialPassages()}
+                    >
+                      {materialPreview.loadingMore && <LoaderCircle className="admin-spin" size={14} />}
+                      {materialPreview.loadingMore ? "加载中…" : "加载更多片段"}
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="admin-cc-hint">{materialPreview?.error}</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function RunCard({
   run,
+  downloadingKey,
   onInspectSource,
+  onPreviewMaterial,
+  onDownloadMaterial,
+  onDownloadArtifact,
 }: {
   run: AdminConversationRun;
+  downloadingKey: string | null;
   onInspectSource: (source: AdminConversationSource) => void;
+  onPreviewMaterial: (materialId: string, filename: string) => void;
+  onDownloadMaterial: (materialId: string, filename: string) => void;
+  onDownloadArtifact: (runId: string, artifactId: string, filename: string) => void;
 }) {
   const [sourceFilter, setSourceFilter] = useState<"all" | "law" | "case" | "paper">("all");
   const [showAllSources, setShowAllSources] = useState(false);
@@ -321,8 +485,25 @@ function RunCard({
               {materials.map(mat => (
                 <span key={mat.material_id} className="admin-cc-material-pill">
                   <Paperclip size={12} />
-                  {mat.filename}
+                  <span>{mat.filename}</span>
                   <small>{formatBytes(mat.size_bytes)}</small>
+                  <button
+                    type="button"
+                    className="admin-pill-btn"
+                    onClick={() => onPreviewMaterial(mat.material_id, mat.filename)}
+                  >
+                    <Eye size={12} />
+                    查看
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-pill-btn"
+                    disabled={downloadingKey !== null}
+                    onClick={() => onDownloadMaterial(mat.material_id, mat.filename)}
+                  >
+                    {downloadingKey === `mat:${mat.material_id}` ? <LoaderCircle className="admin-spin" size={12} /> : <Download size={12} />}
+                    下载
+                  </button>
                 </span>
               ))}
             </div>
@@ -475,9 +656,20 @@ function RunCard({
           </span>
           <ul className="admin-run-artifact-list">
             {deliverables.map(artifact => (
-              <li key={artifact.artifact_id}>
-                <strong>{artifact.name}</strong>
-                <small>{artifact.media_type} · {formatBytes(artifact.size_bytes)}</small>
+              <li key={artifact.artifact_id} className="admin-run-artifact-row">
+                <div>
+                  <strong>{artifact.name}</strong>
+                  <small>{artifact.media_type} · {formatBytes(artifact.size_bytes)}</small>
+                </div>
+                <button
+                  type="button"
+                  className="admin-row-action"
+                  disabled={downloadingKey !== null}
+                  onClick={() => onDownloadArtifact(run.run_id, artifact.artifact_id, artifact.name)}
+                >
+                  {downloadingKey === `art:${artifact.artifact_id}` ? <LoaderCircle className="admin-spin" size={13} /> : <Download size={13} />}
+                  {downloadingKey === `art:${artifact.artifact_id}` ? "下载中…" : "下载"}
+                </button>
               </li>
             ))}
           </ul>

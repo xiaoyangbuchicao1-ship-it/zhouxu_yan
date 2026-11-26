@@ -100,8 +100,8 @@ class EventStreamAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     def stream_path(self, kind: str) -> str:
-        prefix = f"/workspace/conversations/{self.run.session_id}" if kind == "workbench" else f"/harness/sessions/{self.run.session_id}"
-        return f"{prefix}/events?run_id={self.run.run_id}&timeout_seconds=2"
+        assert kind == "workbench"
+        return f"/workspace/conversations/{self.run.session_id}/events?run_id={self.run.run_id}&timeout_seconds=2"
 
     async def assert_revoked_stream_stops(self, kind: str, revoke):
         headers = {"Authorization": f"Bearer {self.user.token}"}
@@ -115,8 +115,8 @@ class EventStreamAuthorizationTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(anext(lines), timeout=0.8)
         self.assertEqual(self.run.status, "running", "revoking a stream must not cancel its background Run")
 
-    async def test_disabled_account_loses_both_open_streams(self):
-        for kind in ("workbench", "harness"):
+    async def test_disabled_account_loses_open_stream(self):
+        for kind in ("workbench",):
             with self.subTest(stream=kind):
                 self.hub.stream_events.clear()
                 try:
@@ -128,14 +128,14 @@ class EventStreamAuthorizationTests(unittest.IsolatedAsyncioTestCase):
                         actor_id=self.admin.id, account_id=self.user.account.id, status="active",
                     )
 
-    async def test_logged_out_session_loses_both_open_streams(self):
-        for kind in ("workbench", "harness"):
+    async def test_logged_out_session_loses_open_stream(self):
+        for kind in ("workbench",):
             with self.subTest(stream=kind):
                 self.hub.stream_events.clear()
                 self.user = self.accounts.login(email="user@example.com", password="stream-test-password")
                 await self.assert_revoked_stream_stops(kind, lambda: self.accounts.logout(self.user.token))
 
-    async def test_expired_session_loses_both_open_streams(self):
+    async def test_expired_session_loses_open_stream(self):
         def expire():
             with self.database.session() as session:
                 row = session.scalar(select(SessionModel).where(
@@ -144,25 +144,39 @@ class EventStreamAuthorizationTests(unittest.IsolatedAsyncioTestCase):
                 row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
                 session.commit()
 
-        for kind in ("workbench", "harness"):
+        for kind in ("workbench",):
             with self.subTest(stream=kind):
                 self.hub.stream_events.clear()
                 self.user = self.accounts.login(email="user@example.com", password="stream-test-password")
                 await self.assert_revoked_stream_stops(kind, expire)
 
-    async def test_harness_session_stream_never_contains_other_sessions_events(self):
+    async def test_stream_never_contains_other_runs_events(self):
         self.run.status = "succeeded"
         for run_id in (self.run.run_id, "another-account-run"):
             self.hub.emit(RunEvent(run_id=run_id, module="test", phase="started"))
             self.hub.emit_stream(StreamEvent(run_id=run_id, type="delta", text=run_id))
+        headers = {"Authorization": f"Bearer {self.user.token}"}
+        own = await self.client.get(
+            f"/workspace/conversations/{self.run.session_id}/events"
+            f"?run_id={self.run.run_id}&timeout_seconds=1",
+            headers=headers,
+        )
+        self.assertEqual(own.status_code, 200)
+        self.assertIn(self.run.run_id, own.text)
+        self.assertNotIn("another-account-run", own.text)
+        foreign = await self.client.get(
+            f"/workspace/conversations/{self.run.session_id}/events"
+            "?run_id=another-account-run&timeout_seconds=1",
+            headers=headers,
+        )
+        self.assertNotIn("another-account-run", foreign.text)
+
+    async def test_removed_legacy_stream_route_is_not_served(self):
         response = await self.client.get(
             f"/harness/sessions/{self.run.session_id}/events?timeout_seconds=1",
             headers={"Authorization": f"Bearer {self.user.token}"},
         )
-        self.assertEqual(response.status_code, 200)
-        rows = [json.loads(line) for line in response.text.splitlines()]
-        self.assertEqual({row["event"]["run_id"] for row in rows if "event" in row}, {self.run.run_id})
-        self.assertEqual({row["type"] for row in rows}, {"lifecycle", "runtime", "stream"})
+        self.assertEqual(response.status_code, 404)
 
     async def test_open_stream_rechecks_are_read_only(self):
         def last_seen():
@@ -171,7 +185,7 @@ class EventStreamAuthorizationTests(unittest.IsolatedAsyncioTestCase):
                     SessionModel.token_hash == self.accounts._hash_token(self.user.token),
                 ))
 
-        for kind in ("workbench", "harness"):
+        for kind in ("workbench",):
             with self.subTest(stream=kind):
                 self.hub.stream_events.clear()
                 async with self.client.stream(

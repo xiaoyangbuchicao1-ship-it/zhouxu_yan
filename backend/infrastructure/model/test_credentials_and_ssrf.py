@@ -111,6 +111,24 @@ class PinnedDnsBackendTests(unittest.IsolatedAsyncioTestCase):
         await safe_backend.connect_tcp("models.example.com", 443)
         self.assertEqual(calls, [("93.184.216.34", 443)])
 
+        fake_ip_calls = []
+
+        class _FakeIpInner:
+            async def connect_tcp(self, host, port, **kwargs):
+                fake_ip_calls.append((host, port))
+                return object()
+
+        tun_backend = PinnedAsyncNetworkBackend(
+            inner=_FakeIpInner(),
+            resolver=lambda host, port: ["198.18.0.152"],
+        )
+        await tun_backend.connect_tcp("api.deepseek.com", 443)
+        self.assertEqual(fake_ip_calls, [("198.18.0.152", 443)])
+
+        # Direct literal 198.18.x.x IP addresses remain blocked as SSRF guard
+        with self.assertRaises(EndpointPolicyError):
+            await tun_backend.connect_tcp("198.18.0.152", 443)
+
 
 if __name__ == "__main__":
     unittest.main()

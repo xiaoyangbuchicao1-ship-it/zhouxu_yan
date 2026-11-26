@@ -302,6 +302,32 @@ class AdminDynamicModelHttpContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pinned.profile.model_dump(mode="json"), before.profile.model_dump(mode="json"))
         self.assertEqual(pinned.endpoint, before.endpoint)
 
+    async def test_explicit_null_capabilities_or_sort_order_are_rejected_not_stored(self):
+        await self.create_model()
+        headers = {"Authorization": f"Bearer {self.admin_login.token}"}
+        for body, code in (
+            ({"capabilities": None}, "capabilities_invalid"),
+            ({"sort_order": None}, "sort_order_invalid"),
+        ):
+            with self.subTest(body=body):
+                response = await self.client.patch(
+                    "/admin/models/preview-relay%3Agpt-preview", headers=headers, json=body
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"], code)
+        for body in ({"capabilities": ["tools"]}, {"sort_order": "first"}):
+            with self.subTest(body=body):
+                response = await self.client.patch(
+                    "/admin/models/preview-relay%3Agpt-preview", headers=headers, json=body
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+        directory = await self.client.get("/admin/model-directory", headers=headers)
+        self.assertEqual(directory.status_code, 200, directory.text)
+        catalog = await self.client.get(
+            "/workspace/models", headers={"Authorization": f"Bearer {self.user_login.token}"}
+        )
+        self.assertEqual(catalog.status_code, 200, catalog.text)
+
     async def test_plaintext_api_key_is_rejected_at_the_http_boundary(self):
         response = await self.client.post(
             "/admin/model-providers",

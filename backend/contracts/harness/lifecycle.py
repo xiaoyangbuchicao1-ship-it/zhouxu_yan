@@ -139,6 +139,9 @@ class RunEnvelope(Contract):
     wall_elapsed_ms: int = Field(default=0, ge=0)
     # User-visible explanation that older turns were condensed in this Run.
     context_compaction_count: int = Field(default=0, ge=0)
+    # Count of automatic requeues after process restarts to prevent infinite
+    # crash-restart loops for a Run that keeps killing the worker.
+    restart_requeue_count: int = Field(default=0, ge=0)
     # Run recovery only. Public serialization must never contain evidence bodies.
     execution_state: dict[str, Any] = Field(default_factory=dict, exclude=True)
 

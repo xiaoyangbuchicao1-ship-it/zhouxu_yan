@@ -93,11 +93,9 @@ function Research({ api, sourceApi, accountId, onError }: Props & { sourceApi: R
     <>
       <div className="md-heading">
         <div>
-          <span className="md-eyebrow">依据先于结论</span>
-          <h1>回到真实的海事资料。</h1>
+          <h1>海事检索</h1>
           <p>检索法规、案例与论文，查看原文。</p>
         </div>
-        <BookOpen size={28} strokeWidth={1.2} />
       </div>
       <form
         className="md-search"
@@ -155,24 +153,21 @@ function Research({ api, sourceApi, accountId, onError }: Props & { sourceApi: R
               checked={current}
               onChange={(e) => setCurrent(e.target.checked)}
             />
-            优先显示现行资料
+            只看现行有效的
           </label>
         )}
       </form>
-      {busy && <Loading label="正在检索真实语料…" />}
+      {busy && <Loading label="正在检索…" />}
       {!result && !busy && (
         <div className="md-empty md-research-empty">
-          <BookOpen size={38} strokeWidth={1} />
-          <h2>每一个判断，都应有来处。</h2>
-          <p>
-            输入具体主题或条文关键词。案例检索请同时核对关键事实与裁判语境。
-          </p>
+          <BookOpen size={32} strokeWidth={1.2} />
+          <p>输入主题或条文关键词开始检索。</p>
         </div>
       )}
       {result && (
         <>
           <div className="md-result-info">
-            <span>找到 {result.items.length} 条匹配资料</span>
+            <span>显示前 {result.items.length} 条最相关的资料</span>
           </div>
           {result.items.map((item) => (
             <article className="md-result" key={item.id}>

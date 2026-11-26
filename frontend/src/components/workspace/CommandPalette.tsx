@@ -202,9 +202,13 @@ export function CommandPalette({
                 <Search className="w-4 h-4 text-[#8fa2b7] shrink-0" />
                 <span>海事检索</span>
               </CommandItem>
-              <CommandItem className={ITEM_CLASS} value="记忆与指令 memory slash" onSelect={() => runAndClose(() => onOpenUserCenter("memory"))}>
+              <CommandItem className={ITEM_CLASS} value="长期记忆 memory" onSelect={() => runAndClose(() => onOpenUserCenter("memory"))}>
                 <Sparkles className="w-4 h-4 text-[#8fa2b7] shrink-0" />
-                <span>管理长期记忆与 / 指令</span>
+                <span>长期记忆设置</span>
+              </CommandItem>
+              <CommandItem className={ITEM_CLASS} value="快捷指令 slash commands" onSelect={() => runAndClose(() => onOpenUserCenter("commands"))}>
+                <Sparkles className="w-4 h-4 text-[#8fa2b7] shrink-0" />
+                <span>管理快捷 / 指令</span>
               </CommandItem>
               <CommandItem className={ITEM_CLASS} value="工作习惯与界面设置 habits" onSelect={() => runAndClose(() => onOpenUserCenter("habits"))}>
                 <SlidersHorizontal className="w-4 h-4 text-[#8fa2b7] shrink-0" />

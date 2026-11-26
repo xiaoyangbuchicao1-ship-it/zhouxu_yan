@@ -4,16 +4,29 @@ export interface AdminNavigationItem {
   end?: boolean;
 }
 
-// Only expose pages that already have a real API and a complete user journey.
-// Models, corpus, skills, runs and operations join this list when their own
-// vertical slices are connected; they are never shipped as empty menu shells.
-export const adminNavigation: AdminNavigationItem[] = [
-  { label: "总览", to: "/admin/overview", end: true },
-  { label: "人员", to: "/admin/accounts" },
-  { label: "能力与状态", to: "/admin/operations" },
-  { label: "模型", to: "/admin/models" },
-  { label: "审计日志", to: "/admin/audit" },
+export interface AdminNavigationGroup {
+  label: string;
+  items: AdminNavigationItem[];
+}
+
+// Pages are grouped by what the administrator is looking after, not by when
+// they were built.  Only pages with a real API and a complete journey appear.
+export const adminNavigationGroups: AdminNavigationGroup[] = [
+  { label: "运行", items: [{ label: "总览", to: "/admin/overview", end: true }] },
+  { label: "用户", items: [{ label: "账户", to: "/admin/accounts" }] },
+  {
+    label: "能力与数据",
+    items: [
+      { label: "模型", to: "/admin/models" },
+      { label: "技能", to: "/admin/skills" },
+      { label: "工具", to: "/admin/tools" },
+      { label: "数据库", to: "/admin/data" },
+    ],
+  },
+  { label: "安全", items: [{ label: "审计", to: "/admin/audit" }] },
 ];
+
+export const adminNavigation: AdminNavigationItem[] = adminNavigationGroups.flatMap(group => group.items);
 
 export function accountConversationPath(accountId: string): string {
   return `/admin/accounts/${encodeURIComponent(accountId)}/conversations`;

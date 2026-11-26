@@ -1,19 +1,24 @@
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
-  Cloud,
-  Cpu,
   Download,
   Eye,
   EyeOff,
   FlaskConical,
   Link2,
   LoaderCircle,
+  Pencil,
   Plus,
   Save,
+  Search,
   Server,
+  Settings2,
+  Sparkles,
   Star,
   Trash2,
+  Wallet,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
@@ -28,6 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import {
   Dialog,
   DialogContent,
@@ -37,16 +43,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AdminApiError,
   adminErrorMessage,
   createAdminApi,
   type AdminConnectivityTestResult,
   type AdminDiscoveredModel,
   type AdminModelProfile,
   type AdminModelProvider,
-  type AdminProviderDiscoverResult,
+  type AdminProviderBalance,
   type ModelProtocol,
   type ThinkingMode,
 } from "@/lib/admin-api";
+import { inferModelSpecLocal, type InferredModelSpec } from "./model-inference";
 import { InitialLoading, InlineError, LoadError, PageHeader, RefreshButton } from "./AdminShared";
 import { useAdminOutlet } from "./AdminLayout";
 
@@ -74,10 +82,12 @@ const PROVIDER_TEMPLATES: ProviderTemplate[] = [
   { key: "custom", label: "自定义中转", name: "", ecosystem: "openai", openAiMode: "openai_chat_completions", baseUrl: "" },
 ];
 
-const ECOSYSTEMS: Array<{ value: ApiEcosystem; label: string; hint: string }> = [
-  { value: "openai", label: "OpenAI", hint: "兼容 /chat/completions 与 Responses" },
-  { value: "anthropic", label: "Anthropic", hint: "Claude Messages 接口" },
-  { value: "gemini", label: "Gemini", hint: "Google Generative 接口" },
+/* 接口格式只有四种选法；OpenAI 的两个版本直接并排，不再多一层子选项。 */
+const API_FORMATS: Array<{ key: string; label: string; ecosystem: ApiEcosystem; openAiMode?: OpenAISubMode }> = [
+  { key: "openai-chat", label: "OpenAI 兼容", ecosystem: "openai", openAiMode: "openai_chat_completions" },
+  { key: "openai-responses", label: "OpenAI Responses", ecosystem: "openai", openAiMode: "openai_responses" },
+  { key: "anthropic", label: "Anthropic", ecosystem: "anthropic" },
+  { key: "gemini", label: "Gemini", ecosystem: "gemini" },
 ];
 
 const CONTEXT_PRESETS = [
@@ -165,12 +175,28 @@ function probeErrorText(code: string | null | undefined): string {
   return map[code] ?? adminErrorMessage(code);
 }
 
+function formatThinkingSummary(modes: ThinkingMode[], defaultThinking: ThinkingMode): string {
+  if (modes.length === 1 && modes[0] === "none") return "关闭思考";
+  const defLabel = THINKING_LABELS[defaultThinking] ?? defaultThinking;
+  return defaultThinking === "none" ? "支持思考（默认关闭）" : `支持思考（默认${defLabel}）`;
+}
+
+function balanceTooltip(balance: AdminProviderBalance): string | undefined {
+  if (balance.status !== "ok") return balance.notice || undefined;
+  const parts: string[] = [];
+  if (balance.topped_up_balance != null) parts.push(`充值 ${balance.topped_up_balance}`);
+  if (balance.granted_balance != null) parts.push(`赠送/额度 ${balance.granted_balance}`);
+  if (balance.used_amount != null) parts.push(`已用 ${balance.used_amount}`);
+  return parts.length ? parts.join(" · ") : undefined;
+}
+
 interface ModelModalState {
   mode: "create" | "edit";
   providerId: string;
   model?: AdminModelProfile;
   prefillUpstreamId?: string;
   prefillLabel?: string;
+  prefillSpec?: InferredModelSpec;
 }
 
 export default function AdminModelsPage() {
@@ -182,6 +208,7 @@ export default function AdminModelsPage() {
 
   const [selectedProviderId, setSelectedProviderId] = useState<string>(initialParamProvider);
   const [creatingProvider, setCreatingProvider] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelModal, setModelModal] = useState<ModelModalState | null>(null);
   const [discoverTarget, setDiscoverTarget] = useState<AdminModelProvider | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<{ kind: "provider" | "model"; id: string; label: string } | null>(null);
@@ -194,8 +221,8 @@ export default function AdminModelsPage() {
     placeholderData: previous => previous,
   });
 
-  const providers = directoryQuery.data?.providers ?? [];
-  const models = directoryQuery.data?.models ?? [];
+  const providers = useMemo(() => directoryQuery.data?.providers ?? [], [directoryQuery.data]);
+  const models = useMemo(() => directoryQuery.data?.models ?? [], [directoryQuery.data]);
   const localHostsAllowed = Boolean(directoryQuery.data?.local_hosts_allowed);
 
   async function refreshDirectory() {
@@ -241,7 +268,7 @@ export default function AdminModelsPage() {
       if (target.kind === "provider" && target.id === selectedProviderId) {
         setSelectedProviderId("");
       }
-      setPageBanner({ tone: "ok", text: target.kind === "provider" ? "已归档该服务商及其下模型。" : "已归档该模型。" });
+      setPageBanner({ tone: "ok", text: target.kind === "provider" ? "服务商已归档。" : "模型已归档。" });
       await refreshDirectory();
     },
     onError: error => {
@@ -264,13 +291,24 @@ export default function AdminModelsPage() {
     setPageBanner(null);
   }
 
-  function openAddModel(providerId?: string, prefillUpstream?: string, prefillLabel?: string) {
+  function openAddModel(providerId?: string, discovered?: AdminDiscoveredModel) {
     setPageBanner(null);
+    const prefillSpec: InferredModelSpec | undefined = discovered?.context_tokens
+      ? {
+          context_tokens: discovered.context_tokens,
+          max_output_tokens: discovered.max_output_tokens ?? 16384,
+          thinking_modes: discovered.thinking_modes?.length ? discovered.thinking_modes : ["none"],
+          default_thinking: discovered.default_thinking ?? "none",
+          matched: Boolean(discovered.inferred_matched),
+          source_hint: discovered.inferred_source || "通用默认值",
+        }
+      : undefined;
     setModelModal({
       mode: "create",
       providerId: providerId || activeProvider?.id || providers[0]?.id || "",
-      prefillUpstreamId: prefillUpstream,
-      prefillLabel,
+      prefillUpstreamId: discovered?.id,
+      prefillLabel: discovered ? (discovered.label || discovered.id) : undefined,
+      prefillSpec,
     });
   }
 
@@ -279,18 +317,12 @@ export default function AdminModelsPage() {
   return (
     <div className="admin-route-page admin-cc-models">
       <PageHeader
-        eyebrow="模型与渠道"
-        title="模型接入"
-        description="先配置服务商地址与 API Key，再在旗下添加或拉取模型；模型测通后即可开放使用。"
+        title="模型"
         action={
           <div className="admin-cc-header-actions">
             <RefreshButton loading={directoryQuery.isFetching} onClick={() => void directoryQuery.refetch()} />
-            <button type="button" className="admin-secondary-button" onClick={() => openAddModel(activeProvider?.id)}>
-              <Plus size={15} />
-              添加模型
-            </button>
             <button type="button" className="admin-primary-button" onClick={openNewProvider}>
-              <Cloud size={15} />
+              <Plus size={15} />
               添加服务商
             </button>
           </div>
@@ -305,10 +337,10 @@ export default function AdminModelsPage() {
       )}
 
       {!directoryQuery.data && directoryQuery.isPending ? (
-        <InitialLoading label="正在读取服务商与模型…" />
+        <InitialLoading label="正在读取模型…" />
       ) : !directoryQuery.data ? (
         <LoadError
-          message={directoryQuery.error instanceof Error ? directoryQuery.error.message : "模型目录暂时不可用。"}
+          message={directoryQuery.error instanceof Error ? directoryQuery.error.message : "模型没有加载出来。"}
           onRetry={() => void directoryQuery.refetch()}
         />
       ) : (
@@ -320,106 +352,101 @@ export default function AdminModelsPage() {
             />
           )}
 
-          <div className="admin-cc-workspace">
-            <aside className="admin-cc-sidebar" aria-label="服务商列表">
-              <div className="admin-cc-sidebar-head">
-                <span>服务商 ({providers.length})</span>
-                <small>{models.filter(m => m.enabled).length}/{models.length} 开放</small>
-              </div>
-              {providers.length === 0 ? (
-                <div className="admin-cc-sidebar-empty">
-                  <p>还没有服务商</p>
-                  <button type="button" className="admin-primary-button" onClick={openNewProvider}>
-                    <Plus size={15} />
-                    添加首个服务商
-                  </button>
-                </div>
-              ) : (
-                <div className="admin-cc-provider-list">
-                  {providers.map(provider => {
-                    const list = modelsByProvider.get(provider.id) ?? [];
-                    const openCount = list.filter(m => m.enabled).length;
-                    const selected = !creatingProvider && activeProvider?.id === provider.id;
-                    const dotClass = !provider.enabled
-                      ? "is-off"
-                      : openCount > 0
-                        ? "is-live"
-                        : "is-idle";
-                    return (
-                      <button
-                        type="button"
-                        key={provider.id}
-                        className={`admin-cc-provider-item ${selected ? "is-active" : ""}`}
-                        onClick={() => selectProvider(provider.id)}
-                      >
-                        <div className="admin-cc-provider-top">
-                          <span className={`admin-cc-dot ${dotClass}`} aria-hidden="true" />
-                          <strong>{provider.name}</strong>
-                          <span className="admin-cc-proto-tag">{protocolDisplayName(provider.default_protocol)}</span>
-                        </div>
-                        {provider.notes ? <p className="admin-cc-provider-note">{provider.notes}</p> : null}
-                        <div className="admin-cc-provider-meta">
-                          <span>{provider.base_url}</span>
-                          <b>{list.length === 0 ? "暂无模型" : `${openCount}/${list.length} 开放`}</b>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </aside>
+          <nav className="admin-cc-tabs" aria-label="服务商">
+            {providers.map(provider => {
+              const list = modelsByProvider.get(provider.id) ?? [];
+              const openCount = list.filter(m => m.enabled).length;
+              const selected = activeProvider?.id === provider.id;
+              const dotClass = !provider.enabled ? "is-off" : openCount > 0 ? "is-live" : "is-idle";
+              return (
+                <button
+                  type="button"
+                  key={provider.id}
+                  className={`admin-cc-tab ${selected ? "is-active" : ""}`}
+                  aria-current={selected ? "true" : undefined}
+                  onClick={() => selectProvider(provider.id)}
+                >
+                  <span className={`admin-cc-dot ${dotClass}`} aria-hidden="true" />
+                  <strong>{provider.name}</strong>
+                  <small>{list.length === 0 ? "无模型" : `${openCount}/${list.length}`}</small>
+                </button>
+              );
+            })}
+            <span className="admin-cc-tabs-total">{models.filter(m => m.enabled).length}/{models.length} 个模型已启用</span>
+          </nav>
 
-            <section className="admin-cc-main">
-              {creatingProvider || !activeProvider ? (
-                <ProviderConnectionCard
-                  key="new-provider-card"
-                  api={api}
-                  localHostsAllowed={localHostsAllowed}
-                  onSaved={async saved => {
-                    setCreatingProvider(false);
-                    setSelectedProviderId(saved.id);
-                    setPageBanner({ tone: "ok", text: `已添加服务商「${saved.name}」，现在可以拉取模型或手动添加模型。` });
-                    await refreshDirectory();
-                  }}
-                  onCancel={providers.length > 0 ? () => setCreatingProvider(false) : undefined}
-                />
-              ) : (
-                <div className="admin-cc-detail-stack">
-                  <ProviderConnectionCard
-                    key={`edit-${activeProvider.id}-${activeProvider.revision}`}
-                    api={api}
-                    provider={activeProvider}
-                    localHostsAllowed={localHostsAllowed}
-                    onSaved={async saved => {
-                      setPageBanner({ tone: "ok", text: `已保存服务商「${saved.name}」的连接设置。` });
-                      await refreshDirectory();
-                    }}
-                    onOpenDiscover={() => setDiscoverTarget(activeProvider)}
-                    onRequestArchive={() =>
-                      setArchiveTarget({ kind: "provider", id: activeProvider.id, label: activeProvider.name })
-                    }
-                  />
-
-                  <ProviderModelsSection
-                    api={api}
-                    provider={activeProvider}
-                    models={activeModels}
-                    onAddModel={() => openAddModel(activeProvider.id)}
-                    onEditModel={model =>
-                      setModelModal({ mode: "edit", providerId: activeProvider.id, model })
-                    }
-                    onRequestArchive={model =>
-                      setArchiveTarget({ kind: "model", id: model.profile_id, label: model.label })
-                    }
-                    onDirectoryChanged={refreshDirectory}
-                    onBanner={setPageBanner}
-                  />
-                </div>
-              )}
-            </section>
-          </div>
+          {activeProvider ? (
+            <ProviderModelsSection
+              key={activeProvider.id}
+              api={api}
+              provider={activeProvider}
+              models={activeModels}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenDiscover={() => setDiscoverTarget(activeProvider)}
+              onAddModel={() => openAddModel(activeProvider.id)}
+              onEditModel={model => setModelModal({ mode: "edit", providerId: activeProvider.id, model })}
+              onRequestArchive={model => setArchiveTarget({ kind: "model", id: model.profile_id, label: model.label })}
+              onDirectoryChanged={refreshDirectory}
+              onBanner={setPageBanner}
+            />
+          ) : (
+            <div className="admin-empty-state">
+              <p>还没有服务商，先添加一个。</p>
+              <button type="button" className="admin-primary-button" onClick={openNewProvider}>
+                <Plus size={15} />
+                添加服务商
+              </button>
+            </div>
+          )}
         </>
       )}
+
+      <Sheet
+        open={creatingProvider || (settingsOpen && Boolean(activeProvider))}
+        onOpenChange={open => {
+          if (!open) {
+            setCreatingProvider(false);
+            setSettingsOpen(false);
+          }
+        }}
+      >
+        <SheetContent side="right" className="admin-dialog admin-drawer admin-provider-sheet">
+          <SheetTitle className="sr-only">{creatingProvider ? "添加服务商" : "连接设置"}</SheetTitle>
+          <SheetDescription className="sr-only">服务商的接口格式、地址和 API Key。</SheetDescription>
+          <div className="admin-drawer-body">
+            {creatingProvider || !activeProvider ? (
+              <ProviderConnectionCard
+                key="new-provider-card"
+                api={api}
+                localHostsAllowed={localHostsAllowed}
+                onSaved={async saved => {
+                  setCreatingProvider(false);
+                  setSelectedProviderId(saved.id);
+                  setPageBanner({ tone: "ok", text: `已添加「${saved.name}」，接着添加模型。` });
+                  await refreshDirectory();
+                }}
+                onCancel={() => setCreatingProvider(false)}
+              />
+            ) : (
+              <ProviderConnectionCard
+                key={`edit-${activeProvider.id}-${activeProvider.revision}`}
+                api={api}
+                provider={activeProvider}
+                localHostsAllowed={localHostsAllowed}
+                onSaved={async saved => {
+                  setSettingsOpen(false);
+                  setPageBanner({ tone: "ok", text: `已保存「${saved.name}」。` });
+                  await refreshDirectory();
+                }}
+                onRequestArchive={() => {
+                  setSettingsOpen(false);
+                  setArchiveTarget({ kind: "provider", id: activeProvider.id, label: activeProvider.name });
+                }}
+              />
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {modelModal && (
         <UnifiedModelDialog
@@ -446,7 +473,7 @@ export default function AdminModelsPage() {
           onPick={discovered => {
             const pid = discoverTarget.id;
             setDiscoverTarget(null);
-            openAddModel(pid, discovered.id, discovered.label || discovered.id);
+            openAddModel(pid, discovered);
           }}
         />
       )}
@@ -459,8 +486,8 @@ export default function AdminModelsPage() {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {archiveTarget?.kind === "provider"
-                ? "归档后将停用该服务商及旗下全部模型，不影响老对话历史查看。"
-                : "归档后工作台不再可选用该模型，历史对话记录与运行快照仍完整保留。"}
+                ? "它和下面的模型都会停用，历史对话不受影响。"
+                : "用户不能再选这个模型，历史对话不受影响。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -488,7 +515,6 @@ function ProviderConnectionCard({
   localHostsAllowed,
   onSaved,
   onCancel,
-  onOpenDiscover,
   onRequestArchive,
 }: {
   api: ReturnType<typeof createAdminApi>;
@@ -496,7 +522,6 @@ function ProviderConnectionCard({
   localHostsAllowed: boolean;
   onSaved: (provider: AdminModelProvider) => Promise<void>;
   onCancel?: () => void;
-  onOpenDiscover?: () => void;
   onRequestArchive?: () => void;
 }) {
   const creating = !provider;
@@ -555,7 +580,7 @@ function ProviderConnectionCard({
         ok: false,
         connectivity_status: "failed",
         latency_ms: null,
-        error_code: cause instanceof Error ? cause.message : "连接失败",
+        error_code: cause instanceof AdminApiError ? cause.code : "unavailable",
       });
     } finally {
       setProbing(false);
@@ -566,7 +591,7 @@ function ProviderConnectionCard({
     event.preventDefault();
     setError(null);
     if (creating && !noKeyLocal && !apiKey.trim()) {
-      setError("请填写 API Key（若是本地免密服务，请勾选“本地服务无需 API Key”）。");
+      setError("请填写 API Key；本地服务可以勾选“不用 Key”。");
       return;
     }
     setSaving(true);
@@ -602,21 +627,22 @@ function ProviderConnectionCard({
         await onSaved(updated);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存服务商失败。");
+      setError(cause instanceof Error ? cause.message : "没有保存成功。");
     } finally {
       setSaving(false);
     }
   }
 
   const keyPlaceholder = creating
-    ? "填入服务商或中转站提供的 API Key"
+    ? "sk-…"
     : provider.api_key_hint
-      ? `当前已保存 ${provider.api_key_hint}，留空保持不变`
+      ? `已保存 ${provider.api_key_hint}，留空不改`
       : provider.credential_mode === "env_ref" && provider.credential_ref
-        ? `当前使用环境变量 ${provider.credential_ref}，填入新 Key 可覆盖保存`
+        ? `正在用环境变量 ${provider.credential_ref}，填写后改用新 Key`
         : provider.credential_mode === "file_ref"
-          ? "当前由系统内置配置托管，填入新 Key 可直接接管"
-          : "填入新 API Key";
+          ? "正在用系统内置 Key，填写后改用新 Key"
+          : "填写新的 API Key";
+  const activeFormat = ecosystem === "openai" ? `openai-${openAiMode === "openai_responses" ? "responses" : "chat"}` : ecosystem;
 
   return (
     <form className="admin-cc-card" onSubmit={e => void submit(e)}>
@@ -624,23 +650,19 @@ function ProviderConnectionCard({
         <div>
           <div className="admin-cc-title-line">
             <Server size={17} />
-            <h2>{creating ? "添加模型服务商" : provider.name}</h2>
+            <h2>{creating ? "添加服务商" : provider.name}</h2>
             {!creating && (
               <span className={`admin-cc-pill ${provider.credential_configured ? "is-ok" : "is-warn"}`}>
-                {provider.credential_configured ? "凭据已配置" : "缺少密钥"}
+                {provider.credential_configured ? "Key 已配置" : "缺少 Key"}
               </span>
             )}
           </div>
-          <p className="admin-cc-subline">
-            {creating
-              ? "按 CC Switch 方式只需填名称、接口格式、API Key 与 Base URL 即可接入任意官方或中转渠道。"
-              : (
-                <>
-                  供应商标识：<code>{provider.id}</code>
-                  {provider.api_key_hint ? ` · 密钥尾号 ${provider.api_key_hint}` : ""}
-                </>
-              )}
-          </p>
+          {!creating && (
+            <p className="admin-cc-subline">
+              标识 <code>{provider.id}</code>
+              {provider.api_key_hint ? ` · Key 尾号 ${provider.api_key_hint}` : ""}
+            </p>
+          )}
         </div>
 
         {!creating && (
@@ -649,12 +671,6 @@ function ProviderConnectionCard({
               {probing ? <LoaderCircle className="admin-spin" size={14} /> : <FlaskConical size={14} />}
               测试连接
             </button>
-            {onOpenDiscover && (
-              <button type="button" className="admin-cc-btn" onClick={onOpenDiscover}>
-                <Download size={14} />
-                拉取模型
-              </button>
-            )}
             {onRequestArchive && (
               <button type="button" className="admin-cc-btn is-danger" onClick={onRequestArchive}>
                 <Trash2 size={14} />
@@ -666,7 +682,7 @@ function ProviderConnectionCard({
       </div>
 
       {creating && (
-        <div className="admin-cc-templates" aria-label="常用服务商模板">
+        <div className="admin-cc-templates" role="group" aria-label="常用服务商">
           {PROVIDER_TEMPLATES.map(tpl => (
             <button
               type="button"
@@ -685,139 +701,108 @@ function ProviderConnectionCard({
           {probeResult.ok ? <CheckCircle2 size={15} /> : <CircleAlert size={15} />}
           <span>
             {probeResult.ok
-              ? `连接正常${probeResult.latency_ms != null ? ` · 延迟 ${probeResult.latency_ms} ms` : ""}`
+              ? `连接正常${probeResult.latency_ms != null ? ` · ${probeResult.latency_ms} ms` : ""}`
               : `连接失败：${probeErrorText(probeResult.error_code)}`}
           </span>
         </div>
       )}
 
-      <div className="admin-cc-grid-2">
+      {/* 所有字段共用一套两列栅格：左右两列的输入框上下对齐。 */}
+      <div className="admin-cc-form-grid">
         <label className="admin-cc-field">
-          <span>名称 *</span>
-          <input
-            name="name"
-            required
-            placeholder="例如 硅基流动 / Skye Clark"
-            value={name}
-            onChange={e => setName(e.target.value)}
-          />
+          <span>名称</span>
+          <input name="name" required placeholder="例如 硅基流动" value={name} onChange={e => setName(e.target.value)} />
         </label>
         <label className="admin-cc-field">
-          <span>备注（可选）</span>
-          <input
-            name="notes"
-            placeholder="例如 公司主用中转 / 仅研究测试"
-            value={notes}
-            onChange={e => setNotes(e.target.value)}
-          />
+          <span>备注<i>选填</i></span>
+          <input name="notes" placeholder="例如 公司主用" value={notes} onChange={e => setNotes(e.target.value)} />
         </label>
-      </div>
 
-      {creating && (
-        <div className="admin-cc-slug-row">
-          <span>
-            供应商标识：<code>{effectiveSlug}</code>
-          </span>
-          <button type="button" className="admin-cc-inline-link" onClick={() => setShowSlugEdit(v => !v)}>
-            {showSlugEdit ? "收起标识" : "自定义标识"}
-          </button>
-          {showSlugEdit && (
-            <input
-              name="id"
-              pattern="[A-Za-z0-9][A-Za-z0-9._:\-]*"
-              placeholder="小写字母、数字和连字符"
-              value={customSlug}
-              onChange={e => setCustomSlug(e.target.value)}
-            />
-          )}
-        </div>
-      )}
-
-      <div className="admin-cc-field">
-        <span>接口格式</span>
-        <div className="admin-cc-eco-grid" role="radiogroup" aria-label="接口格式">
-          {ECOSYSTEMS.map(item => (
-            <button
-              type="button"
-              key={item.value}
-              className={`admin-cc-eco-card ${ecosystem === item.value ? "is-active" : ""}`}
-              onClick={() => setEcosystem(item.value)}
-            >
-              <strong>{item.label}</strong>
-              <small>{item.hint}</small>
-            </button>
-          ))}
-        </div>
-        {ecosystem === "openai" && (
-          <div className="admin-cc-submode">
-            <span>OpenAI 接口版本：</span>
-            <button
-              type="button"
-              className={openAiMode === "openai_chat_completions" ? "is-active" : ""}
-              onClick={() => setOpenAiMode("openai_chat_completions")}
-            >
-              Chat 兼容（/chat/completions，多数厂商）
-            </button>
-            <button
-              type="button"
-              className={openAiMode === "openai_responses" ? "is-active" : ""}
-              onClick={() => setOpenAiMode("openai_responses")}
-            >
-              Responses（GPT-5 / 新版中转）
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="admin-cc-grid-1">
-        <div className="admin-cc-field">
-          <div className="admin-cc-label-row">
-            <span>API Key</span>
-            <label className="admin-cc-check">
-              <input
-                type="checkbox"
-                checked={noKeyLocal}
-                onChange={e => setNoKeyLocal(e.target.checked)}
-              />
-              <span>本地免密服务（无需 Key）</span>
-            </label>
-          </div>
-          {!noKeyLocal && (
-            <div className="admin-cc-secret-wrap">
-              <input
-                name="api_key"
-                type={showKey ? "text" : "password"}
-                autoComplete="new-password"
-                placeholder={keyPlaceholder}
-                value={apiKey}
-                onChange={e => setApiKey(e.target.value)}
-              />
+        <div className="admin-cc-field is-wide">
+          <span id="admin-provider-format">接口格式</span>
+          <div className="admin-segment" role="radiogroup" aria-labelledby="admin-provider-format">
+            {API_FORMATS.map(item => (
               <button
                 type="button"
-                aria-label={showKey ? "隐藏密钥" : "显示密钥"}
-                onClick={() => setShowKey(v => !v)}
+                key={item.key}
+                role="radio"
+                aria-checked={activeFormat === item.key}
+                className={activeFormat === item.key ? "is-active" : ""}
+                onClick={() => {
+                  setEcosystem(item.ecosystem);
+                  if (item.openAiMode) setOpenAiMode(item.openAiMode);
+                }}
               >
-                {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                {item.label}
               </button>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
 
         <label className="admin-cc-field">
-          <span>Base URL（支持自定义端口与前缀，如 /v1、/api/v3）*</span>
+          <span>Base URL</span>
           <input
             name="base_url"
             type="url"
             required
-            placeholder="https://47.116.200.213:8086/v1"
+            placeholder="https://api.example.com/v1"
             value={baseUrl}
             onChange={e => setBaseUrl(e.target.value)}
           />
         </label>
+        <div className="admin-cc-field">
+          <div className="admin-cc-label-row">
+            <label htmlFor="admin-provider-key">API Key</label>
+            <label className="admin-cc-check">
+              <input type="checkbox" checked={noKeyLocal} onChange={e => setNoKeyLocal(e.target.checked)} />
+              <span>本地服务，不用 Key</span>
+            </label>
+          </div>
+          <div className="admin-cc-secret-wrap">
+            <input
+              id="admin-provider-key"
+              name="api_key"
+              type={showKey ? "text" : "password"}
+              autoComplete="new-password"
+              disabled={noKeyLocal}
+              placeholder={noKeyLocal ? "不用填写" : keyPlaceholder}
+              value={noKeyLocal ? "" : apiKey}
+              onChange={e => setApiKey(e.target.value)}
+            />
+            <button
+              type="button"
+              disabled={noKeyLocal}
+              aria-label={showKey ? "隐藏 Key" : "显示 Key"}
+              onClick={() => setShowKey(v => !v)}
+            >
+              {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </div>
+        </div>
+
         {localUrlWarn && (
-          <p className="admin-cc-hint is-warn">
-            提示：当前服务端未启用本机内网地址放行（需设置环境变量 <code>ZHOUXU_ALLOW_LOCAL_MODEL_HOSTS=1</code>）。
+          <p className="admin-cc-hint is-warn is-wide">
+            服务端没有放行本机地址，需要先设置 <code>ZHOUXU_ALLOW_LOCAL_MODEL_HOSTS=1</code>。
           </p>
+        )}
+
+        {creating && (
+          <div className="admin-cc-slug-row is-wide">
+            <span>标识 <code>{effectiveSlug}</code></span>
+            <button type="button" className="admin-cc-inline-link" onClick={() => setShowSlugEdit(v => !v)}>
+              {showSlugEdit ? "收起" : "修改"}
+            </button>
+            {showSlugEdit && (
+              <input
+                name="id"
+                aria-label="自定义标识"
+                pattern="[A-Za-z0-9][A-Za-z0-9._:\-]*"
+                placeholder="字母、数字和连字符"
+                value={customSlug}
+                onChange={e => setCustomSlug(e.target.value)}
+              />
+            )}
+          </div>
         )}
       </div>
 
@@ -825,7 +810,7 @@ function ProviderConnectionCard({
         <label className="admin-model-toggle">
           <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
           <span />
-          <b>启用此服务商</b>
+          <b>启用</b>
         </label>
 
         <div className="admin-cc-foot-right">
@@ -837,7 +822,7 @@ function ProviderConnectionCard({
           )}
           <button type="submit" className="admin-primary-button" disabled={saving}>
             {saving ? <LoaderCircle className="admin-spin" size={15} /> : <Save size={15} />}
-            {creating ? "保存服务商" : "保存连接设置"}
+            保存
           </button>
         </div>
       </div>
@@ -845,10 +830,20 @@ function ProviderConnectionCard({
   );
 }
 
+type ModelFilter = "all" | "enabled" | "disabled" | "unverified";
+const MODEL_FILTERS: Array<{ key: ModelFilter; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "enabled", label: "已启用" },
+  { key: "disabled", label: "已停用" },
+  { key: "unverified", label: "未测通" },
+];
+
 function ProviderModelsSection({
   api,
   provider,
   models,
+  onOpenSettings,
+  onOpenDiscover,
   onAddModel,
   onEditModel,
   onRequestArchive,
@@ -858,6 +853,8 @@ function ProviderModelsSection({
   api: ReturnType<typeof createAdminApi>;
   provider: AdminModelProvider;
   models: AdminModelProfile[];
+  onOpenSettings: () => void;
+  onOpenDiscover: () => void;
   onAddModel: () => void;
   onEditModel: (model: AdminModelProfile) => void;
   onRequestArchive: (model: AdminModelProfile) => void;
@@ -865,6 +862,63 @@ function ProviderModelsSection({
   onBanner: (banner: { tone: "ok" | "fail"; text: string } | null) => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ModelFilter>("all");
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [balance, setBalance] = useState<AdminProviderBalance | null>(null);
+
+  async function runBalanceCheck() {
+    setBalanceLoading(true);
+    try {
+      const res = await api.providerBalance(provider.id);
+      setBalance(res);
+    } catch (cause) {
+      setBalance({
+        status: "unreachable",
+        supported: false,
+        display: null,
+        currency: null,
+        total_balance: null,
+        granted_balance: null,
+        topped_up_balance: null,
+        used_amount: null,
+        source: null,
+        notice: cause instanceof Error ? cause.message : "余额查询未完成。",
+      });
+    } finally {
+      setBalanceLoading(false);
+    }
+  }
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return models
+      .filter(model => {
+        if (filter === "enabled") return model.enabled;
+        if (filter === "disabled") return !model.enabled;
+        if (filter === "unverified") return model.connectivity_status !== "verified";
+        return true;
+      })
+      .filter(model => !needle || model.label.toLowerCase().includes(needle) || model.upstream_model_id.toLowerCase().includes(needle))
+      .sort((a, b) => Number(b.is_default) - Number(a.is_default));
+  }, [models, query, filter]);
+  const chosen = visible.filter(model => selected.has(model.profile_id));
+  const allChosen = visible.length > 0 && chosen.length === visible.length;
+
+  function toggleChosen(id: string) {
+    setSelected(previous => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(allChosen ? new Set() : new Set(visible.map(model => model.profile_id)));
+  }
 
   async function runModelTest(model: AdminModelProfile) {
     setBusyId(model.profile_id);
@@ -874,11 +928,11 @@ function ProviderModelsSection({
       await onDirectoryChanged();
       onBanner(
         res.ok
-          ? { tone: "ok", text: `「${model.label}」连通测试通过${res.latency_ms != null ? `（耗时 ${res.latency_ms} ms）` : ""}，现在可以打开启用开关。` }
-          : { tone: "fail", text: `「${model.label}」测试失败：${probeErrorText(res.error_code)}` },
+          ? { tone: "ok", text: `「${model.label}」测试通过${res.latency_ms != null ? `（${res.latency_ms} ms）` : ""}，可以启用了。` }
+          : { tone: "fail", text: `「${model.label}」没测通：${probeErrorText(res.error_code)}` },
       );
     } catch (cause) {
-      onBanner({ tone: "fail", text: cause instanceof Error ? cause.message : "测试连通失败。" });
+      onBanner({ tone: "fail", text: cause instanceof Error ? cause.message : "测试没有完成。" });
     } finally {
       setBusyId(null);
     }
@@ -892,10 +946,10 @@ function ProviderModelsSection({
       await onDirectoryChanged();
       onBanner({
         tone: "ok",
-        text: !model.enabled ? `已启用「${model.label}」，聊天与工作模式现已可选。` : `已停用「${model.label}」。`,
+        text: !model.enabled ? `已启用「${model.label}」。` : `已停用「${model.label}」。`,
       });
     } catch (cause) {
-      onBanner({ tone: "fail", text: cause instanceof Error ? cause.message : "状态更新失败。" });
+      onBanner({ tone: "fail", text: cause instanceof Error ? cause.message : "没有改成功。" });
     } finally {
       setBusyId(null);
     }
@@ -907,132 +961,258 @@ function ProviderModelsSection({
     try {
       await api.updateModel(model.profile_id, { is_default: true, enabled: true });
       await onDirectoryChanged();
-      onBanner({ tone: "ok", text: `已将「${model.label}」设为新对话默认模型。` });
+      onBanner({ tone: "ok", text: `「${model.label}」已设为默认模型。` });
     } catch (cause) {
-      onBanner({ tone: "fail", text: cause instanceof Error ? cause.message : "设置默认模型失败。" });
+      onBanner({ tone: "fail", text: cause instanceof Error ? cause.message : "没有改成功。" });
     } finally {
       setBusyId(null);
     }
   }
 
+  /* 批量操作逐个执行：某一个失败不影响其余，最后一次说清楚结果。 */
+  async function runBatch(kind: "enable" | "disable" | "test") {
+    const targets = chosen.filter(model => {
+      if (kind === "enable") return !model.enabled && model.connectivity_status === "verified";
+      if (kind === "disable") return model.enabled && !model.is_default;
+      return true;
+    });
+    const skipped = chosen.length - targets.length;
+    if (targets.length === 0) {
+      onBanner({
+        tone: "fail",
+        text: kind === "enable" ? "所选模型要么已启用，要么还没测通。" : "所选模型没有可停用的（默认模型不能批量停用）。",
+      });
+      return;
+    }
+    setBatchBusy(true);
+    onBanner(null);
+    let done = 0;
+    let failed = 0;
+    for (const model of targets) {
+      try {
+        if (kind === "test") {
+          const res = await api.testModel(model.profile_id);
+          if (res.ok) done += 1;
+          else failed += 1;
+        } else {
+          await api.updateModel(model.profile_id, { enabled: kind === "enable" });
+          done += 1;
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+    await onDirectoryChanged();
+    setBatchBusy(false);
+    const verb = kind === "enable" ? "启用" : kind === "disable" ? "停用" : "测通";
+    onBanner({
+      tone: failed === 0 ? "ok" : "fail",
+      text: `${verb} ${done} 个${failed ? `，${failed} 个没成功` : ""}${skipped ? `，跳过 ${skipped} 个不适用的` : ""}。`,
+    });
+    if (kind !== "test") setSelected(new Set());
+  }
+
   return (
-    <section className="admin-cc-card" aria-label="服务商旗下模型">
-      <div className="admin-cc-card-head">
+    <section className="admin-cc-card admin-cc-models-card" aria-label={`${provider.name} 的模型`}>
+      <header className="admin-cc-models-head">
         <div>
           <div className="admin-cc-title-line">
-            <Cpu size={17} />
-            <h2>旗下模型 ({models.length})</h2>
+            <h2>{provider.name}</h2>
+            <span className={`admin-cc-pill ${provider.credential_configured ? "is-ok" : "is-warn"}`}>
+              {provider.credential_configured ? "Key 已配置" : "缺少 Key"}
+            </span>
+            {balance && (
+              <span
+                className={`admin-cc-pill ${balance.status === "ok" ? "is-ok" : balance.status === "unsupported" ? "" : "is-warn"}`}
+                title={balanceTooltip(balance)}
+              >
+                {balance.status === "ok"
+                  ? `余额 ${balance.display}`
+                  : balance.status === "unsupported"
+                    ? "未开放余额查询"
+                    : "余额查询失败"}
+              </span>
+            )}
+            {!provider.enabled && <span className="admin-cc-pill">已停用</span>}
+            <span className="admin-cc-count">{models.length}</span>
           </div>
-          <p className="admin-cc-subline">
-            以下模型全部走「{provider.name}」的接口地址与密钥；如果同一中转地址混跑多种模型，可对单个模型单独指定接口格式。
-          </p>
+          {balance && balance.status !== "ok" && balance.notice && (
+            <p className="admin-cc-balance-note">{balance.notice}</p>
+          )}
         </div>
-        <button type="button" className="admin-primary-button" onClick={onAddModel}>
-          <Plus size={15} />
-          在此服务商下添加模型
-        </button>
-      </div>
-
-      {models.length === 0 ? (
-        <div className="admin-cc-models-empty">
-          <p>「{provider.name}」下还没有配置模型。</p>
+        <div className="admin-cc-head-actions">
+          <button
+            type="button"
+            className="admin-cc-btn"
+            disabled={balanceLoading || !provider.credential_configured}
+            title={provider.credential_configured ? "向服务商查询当前账户余额" : "请先配置 API Key"}
+            onClick={() => void runBalanceCheck()}
+          >
+            {balanceLoading ? <LoaderCircle className="admin-spin" size={14} /> : <Wallet size={14} />}
+            {balance?.status === "ok" ? "刷新余额" : "查余额"}
+          </button>
+          <button type="button" className="admin-cc-btn" onClick={onOpenSettings}>
+            <Settings2 size={14} />
+            连接设置
+          </button>
+          <button type="button" className="admin-cc-btn" onClick={onOpenDiscover}>
+            <Download size={14} />
+            拉取模型
+          </button>
           <button type="button" className="admin-cc-btn" onClick={onAddModel}>
             <Plus size={14} />
-            立即添加模型
+            添加模型
           </button>
         </div>
-      ) : (
-        <div className="admin-cc-model-list">
-          {models.map(model => {
-            const busy = busyId === model.profile_id;
-            const verified = model.connectivity_status === "verified";
-            const scopeText =
-              model.access_scope === "admin_only" ? "仅管理员" : model.access_scope === "allowlist" ? "指定白名单" : "全员可用";
-            return (
-              <article key={model.profile_id} className={`admin-cc-model-row ${model.enabled ? "is-enabled" : ""}`}>
-                <div className="admin-cc-model-info">
-                  <div className="admin-cc-model-title">
-                    <strong>{model.label}</strong>
-                    {model.is_default && (
-                      <span className="admin-cc-badge is-default">
-                        <Star size={11} />
-                        默认
-                      </span>
-                    )}
-                    <span className={`admin-cc-badge is-${model.connectivity_status}`}>
-                      {verified
-                        ? `已连通${model.connectivity_latency_ms != null ? ` ${model.connectivity_latency_ms}ms` : ""}`
-                        : model.connectivity_status === "failed"
-                          ? "未测通"
-                          : "待测试"}
-                    </span>
-                    <span className="admin-cc-badge">{scopeText}</span>
-                  </div>
-                  <div className="admin-cc-model-meta">
-                    <code>{model.upstream_model_id}</code>
-                    <span>·</span>
-                    <span>{model.protocol_override ? `单独协议：${protocolDisplayName(model.protocol)}` : `跟随服务商 (${protocolDisplayName(model.protocol)})`}</span>
-                    <span>·</span>
-                    <span>上下文 {formatTokenBudget(model.context_tokens)} / 输出 {formatTokenBudget(model.max_output_tokens)}</span>
-                    <span>·</span>
-                    <span>思考 {model.thinking_modes.map(m => THINKING_LABELS[m] ?? m).join("、")}</span>
-                  </div>
-                  {model.connectivity_status === "failed" && model.connectivity_error && (
-                    <p className="admin-cc-model-fail">{probeErrorText(model.connectivity_error)}</p>
-                  )}
-                </div>
+      </header>
 
-                <div className="admin-cc-model-actions">
-                  <button
-                    type="button"
-                    className="admin-cc-btn"
-                    disabled={busy}
-                    onClick={() => void runModelTest(model)}
-                  >
-                    {busy ? <LoaderCircle className="admin-spin" size={14} /> : <FlaskConical size={14} />}
-                    测试连通性
-                  </button>
-                  <label
-                    className="admin-model-toggle"
-                    title={verified ? "开启后用户可在工作台选择此模型" : "请先测试连通性并通过后开启"}
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`开放模型 ${model.label}`}
-                      checked={model.enabled}
-                      disabled={busy || (!model.enabled && !verified)}
-                      onChange={() => void toggleEnabled(model)}
-                    />
-                    <span />
-                    <b>{model.enabled ? "已开放" : "已停用"}</b>
-                  </label>
-                  {verified && model.enabled && !model.is_default && (
-                    <button
-                      type="button"
-                      className="admin-cc-btn"
-                      disabled={busy}
-                      onClick={() => void setDefault(model)}
-                    >
-                      设为默认
-                    </button>
-                  )}
-                  <button type="button" className="admin-cc-btn" disabled={busy} onClick={() => onEditModel(model)}>
-                    编辑
-                  </button>
-                  <button
-                    type="button"
-                    className="admin-cc-btn is-danger"
-                    disabled={busy}
-                    aria-label={`归档模型 ${model.label}`}
-                    onClick={() => onRequestArchive(model)}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+      {models.length === 0 ? (
+        <p className="admin-empty">还没有模型，可以拉取或手动添加。</p>
+      ) : (
+        <>
+          <div className="admin-cc-toolbar">
+            <label className="admin-cc-search">
+              <Search size={14} aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="搜索模型"
+                placeholder="搜索模型名称"
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+              />
+            </label>
+            <div className="admin-segment" role="radiogroup" aria-label="筛选模型">
+              {MODEL_FILTERS.map(item => (
+                <button
+                  type="button"
+                  key={item.key}
+                  role="radio"
+                  aria-checked={filter === item.key}
+                  className={filter === item.key ? "is-active" : ""}
+                  onClick={() => setFilter(item.key)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {chosen.length > 0 && (
+            <div className="admin-cc-batchbar" role="status">
+              <span>已选 {chosen.length} 个</span>
+              <button type="button" className="admin-cc-btn" disabled={batchBusy} onClick={() => void runBatch("enable")}>启用</button>
+              <button type="button" className="admin-cc-btn" disabled={batchBusy} onClick={() => void runBatch("disable")}>停用</button>
+              <button type="button" className="admin-cc-btn" disabled={batchBusy} onClick={() => void runBatch("test")}>
+                {batchBusy ? <LoaderCircle className="admin-spin" size={14} /> : <FlaskConical size={14} />}
+                测试
+              </button>
+              <button type="button" className="admin-cc-inline-link" disabled={batchBusy} onClick={() => setSelected(new Set())}>取消选择</button>
+            </div>
+          )}
+
+          {visible.length === 0 ? (
+            <p className="admin-empty">没有符合条件的模型。</p>
+          ) : (
+            <div className="admin-cc-table-wrap">
+              <table className="admin-cc-table">
+                <thead>
+                  <tr>
+                    <th className="admin-cc-col-check">
+                      <input type="checkbox" aria-label="全选" checked={allChosen} onChange={toggleAll} />
+                    </th>
+                    <th>模型</th>
+                    <th>接口</th>
+                    <th className="admin-cc-col-wide">上下文 / 输出</th>
+                    <th className="admin-cc-col-wide">思考档位</th>
+                    <th>状态</th>
+                    <th>启用</th>
+                    <th className="admin-cc-col-actions"><span className="sr-only">操作</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map(model => {
+                    const busy = busyId === model.profile_id || batchBusy;
+                    const verified = model.connectivity_status === "verified";
+                    const scopeText = model.access_scope === "admin_only" ? "仅管理员" : model.access_scope === "allowlist" ? "指定账户" : "";
+                    return (
+                      <tr key={model.profile_id} className={model.enabled ? "is-enabled" : ""}>
+                        <td className="admin-cc-col-check">
+                          <input
+                            type="checkbox"
+                            aria-label={`选择 ${model.label}`}
+                            checked={selected.has(model.profile_id)}
+                            onChange={() => toggleChosen(model.profile_id)}
+                          />
+                        </td>
+                        <td>
+                          <div className="admin-cc-cell-title">
+                            <strong>{model.label}</strong>
+                            {model.is_default && (
+                              <span className="admin-cc-badge is-default">
+                                <Star size={11} />
+                                默认
+                              </span>
+                            )}
+                            {scopeText && <span className="admin-cc-badge">{scopeText}</span>}
+                          </div>
+                          {model.connectivity_status === "failed" && model.connectivity_error && (
+                            <p className="admin-cc-model-fail">{probeErrorText(model.connectivity_error)}</p>
+                          )}
+                        </td>
+                        <td className="admin-cc-cell-muted">{protocolDisplayName(model.protocol)}</td>
+                        <td className="admin-cc-cell-muted admin-cc-col-wide">
+                          {formatTokenBudget(model.context_tokens)} / {formatTokenBudget(model.max_output_tokens)}
+                        </td>
+                        <td className="admin-cc-cell-muted admin-cc-col-wide">
+                          {model.thinking_modes.map(m => THINKING_LABELS[m] ?? m).join("、")}
+                        </td>
+                        <td>
+                          <span className={`admin-cc-badge is-${model.connectivity_status}`}>
+                            {verified
+                              ? `已测通${model.connectivity_latency_ms != null ? ` ${model.connectivity_latency_ms}ms` : ""}`
+                              : model.connectivity_status === "failed"
+                                ? "没测通"
+                                : "未测试"}
+                          </span>
+                        </td>
+                        <td>
+                          <label className="admin-model-toggle" title={verified || model.enabled ? undefined : "测通后才能启用"}>
+                            <input
+                              type="checkbox"
+                              aria-label={`启用模型 ${model.label}`}
+                              checked={model.enabled}
+                              disabled={busy || (!model.enabled && !verified)}
+                              onChange={() => void toggleEnabled(model)}
+                            />
+                            <span />
+                          </label>
+                        </td>
+                        <td className="admin-cc-col-actions">
+                          <div className="admin-cc-row-actions">
+                            <button type="button" className="admin-cc-icon-btn" title="测试连接" aria-label={`测试 ${model.label}`} disabled={busy} onClick={() => void runModelTest(model)}>
+                              {busyId === model.profile_id ? <LoaderCircle className="admin-spin" size={14} /> : <FlaskConical size={14} />}
+                            </button>
+                            {verified && model.enabled && !model.is_default && (
+                              <button type="button" className="admin-cc-icon-btn" title="设为默认" aria-label={`设 ${model.label} 为默认`} disabled={busy} onClick={() => void setDefault(model)}>
+                                <Star size={14} />
+                              </button>
+                            )}
+                            <button type="button" className="admin-cc-icon-btn" title="编辑" aria-label={`编辑 ${model.label}`} disabled={busy} onClick={() => onEditModel(model)}>
+                              <Pencil size={14} />
+                            </button>
+                            <button type="button" className="admin-cc-icon-btn is-danger" title="归档" aria-label={`归档模型 ${model.label}`} disabled={busy} onClick={() => onRequestArchive(model)}>
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -1072,15 +1252,23 @@ function UnifiedModelDialog({
   const [newProvKey, setNewProvKey] = useState("");
   const [newProvNoKey, setNewProvNoKey] = useState(false);
 
-  // Core model fields ONLY (no legacy family / sort_order clutter!)
+  const initialSpec: InferredModelSpec | null = !editing
+    ? (modal.prefillSpec ?? inferModelSpecLocal(modal.prefillUpstreamId ?? ""))
+    : null;
+
+  // Core model fields ONLY (auto-inferred context/output/thinking tucked into collapsible Advanced panel)
   const [upstreamId, setUpstreamId] = useState(editing?.upstream_model_id ?? modal.prefillUpstreamId ?? "");
   const [label, setLabel] = useState(editing?.label ?? modal.prefillLabel ?? "");
   const [labelTouched, setLabelTouched] = useState(Boolean(editing || modal.prefillLabel));
   const [protocolChoice, setProtocolChoice] = useState<string>(editing?.protocol_override ?? "");
-  const [contextTokens, setContextTokens] = useState(editing?.context_tokens ?? 131072);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(editing?.max_output_tokens ?? 16384);
-  const [modes, setModes] = useState<ThinkingMode[]>(editing?.thinking_modes ?? ["none"]);
-  const [defaultThinking, setDefaultThinking] = useState<ThinkingMode>(editing?.default_thinking ?? "none");
+  const [contextTokens, setContextTokens] = useState(editing?.context_tokens ?? initialSpec?.context_tokens ?? 131072);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(editing?.max_output_tokens ?? initialSpec?.max_output_tokens ?? 16384);
+  const [modes, setModes] = useState<ThinkingMode[]>(editing?.thinking_modes ?? initialSpec?.thinking_modes ?? ["none"]);
+  const [defaultThinking, setDefaultThinking] = useState<ThinkingMode>(editing?.default_thinking ?? initialSpec?.default_thinking ?? "none");
+  const [inferredHint, setInferredHint] = useState(initialSpec?.source_hint ?? "通用默认值");
+  const [inferredMatched, setInferredMatched] = useState(Boolean(initialSpec?.matched));
+  const [advancedTouched, setAdvancedTouched] = useState(Boolean(editing));
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [accessScope, setAccessScope] = useState(editing?.access_scope ?? "all");
   const [testImmediately, setTestImmediately] = useState(!editing);
 
@@ -1093,16 +1281,63 @@ function UnifiedModelDialog({
       ? resolveProtocol(newProvEco, newProvOpenAiMode)
       : selectedProvider?.default_protocol ?? "openai_chat_completions";
 
+  function applySpec(spec: InferredModelSpec) {
+    setContextTokens(spec.context_tokens);
+    setMaxOutputTokens(spec.max_output_tokens);
+    setModes(spec.thinking_modes);
+    setDefaultThinking(spec.default_thinking);
+    setInferredHint(spec.source_hint);
+    setInferredMatched(spec.matched);
+  }
+
+  useEffect(() => {
+    if (editing || advancedTouched) return;
+    const trimmed = upstreamId.trim();
+    if (!trimmed) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void api
+        .inferModel(trimmed, controller.signal)
+        .then(res => {
+          applySpec({
+            context_tokens: res.context_tokens,
+            max_output_tokens: res.max_output_tokens,
+            thinking_modes: res.thinking_modes.length ? res.thinking_modes : ["none"],
+            default_thinking: res.default_thinking,
+            matched: res.matched,
+            source_hint: res.source_hint,
+          });
+        })
+        .catch(() => {
+          // Local inference already populated safe values; ignore transient errors.
+        });
+    }, 220);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [api, editing, advancedTouched, upstreamId]);
+
   function handleUpstreamChange(next: string) {
     setUpstreamId(next);
     if (!labelTouched) {
       setLabel(next.split("/").pop() ?? next);
     }
+    if (!editing && !advancedTouched) {
+      applySpec(inferModelSpecLocal(next));
+    }
+  }
+
+  function resetAutoConfig() {
+    setAdvancedTouched(false);
+    setProtocolChoice("");
+    applySpec(inferModelSpecLocal(upstreamId));
   }
 
   function toggleThinking(mode: ThinkingMode, checked: boolean) {
     const next = checked ? THINKING_MODES.filter(m => m === mode || modes.includes(m)) : modes.filter(m => m !== mode);
     if (!next.length) return;
+    setAdvancedTouched(true);
     setModes(next);
     if (!next.includes(defaultThinking)) setDefaultThinking(next[0]);
   }
@@ -1115,7 +1350,7 @@ function UnifiedModelDialog({
       let targetProviderId = providerId;
       if (!editing && providerMode === "new") {
         if (!newProvNoKey && !newProvKey.trim()) {
-          setError("请填写新服务商的 API Key（本地免密服务请勾选无需 Key）。");
+          setError("请填写 API Key；本地服务可以勾选“不用 Key”。");
           setSaving(false);
           return;
         }
@@ -1168,20 +1403,20 @@ function UnifiedModelDialog({
           await api.updateModel(savedModel.profile_id, { enabled: true });
           await onSaved(
             targetProviderId,
-            `「${savedModel.label}」已测通${probe.latency_ms != null ? `（${probe.latency_ms} ms）` : ""}并开放使用。`,
+            `「${savedModel.label}」已测通${probe.latency_ms != null ? `（${probe.latency_ms} ms）` : ""}并启用。`,
           );
           return;
         }
         await onSaved(
           targetProviderId,
-          `已保存模型「${savedModel.label}」，但连通测试未通过（${probeErrorText(probe.error_code)}），暂保持停用。`,
+          `「${savedModel.label}」已保存，但没测通（${probeErrorText(probe.error_code)}），先保持停用。`,
         );
         return;
       }
 
-      await onSaved(targetProviderId, editing ? `已更新模型「${savedModel.label}」。` : `已保存模型「${savedModel.label}」，请测试连通后开放使用。`);
+      await onSaved(targetProviderId, editing ? `已保存「${savedModel.label}」。` : `已保存「${savedModel.label}」，测通后再启用。`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存模型失败。");
+      setError(cause instanceof Error ? cause.message : "没有保存成功。");
     } finally {
       setSaving(false);
     }
@@ -1191,11 +1426,9 @@ function UnifiedModelDialog({
     <Dialog open onOpenChange={open => { if (!open && !saving) onClose(); }}>
       <DialogContent className="admin-dialog admin-cc-modal">
         <DialogHeader>
-          <DialogTitle>{editing ? `编辑模型 · ${editing.label}` : "添加模型（关联服务商）"}</DialogTitle>
+          <DialogTitle>{editing ? `编辑 ${editing.label}` : "添加模型"}</DialogTitle>
           <DialogDescription>
-            {editing
-              ? "修改上游模型 ID 或接口协议后，需重新测通才可启用；修改仅对新任务生效。"
-              : "先确定由哪家服务商提供接口，再设置模型上下文预算并测试连通性。"}
+            {editing ? "改了模型 ID 或接口格式，要重新测通才能启用。" : "选好服务商，填模型 ID。"}
           </DialogDescription>
         </DialogHeader>
 
@@ -1203,22 +1436,26 @@ function UnifiedModelDialog({
           {!editing ? (
             <div className="admin-cc-provider-box">
               <div className="admin-cc-provider-box-head">
-                <span><Link2 size={14} />服务商来源</span>
+                <span><Link2 size={14} />服务商</span>
                 {hasExistingProviders && (
-                  <div className="admin-cc-mini-switch">
+                  <div className="admin-segment" role="radiogroup" aria-label="服务商来源">
                     <button
                       type="button"
+                      role="radio"
+                      aria-checked={providerMode === "existing"}
                       className={providerMode === "existing" ? "is-active" : ""}
                       onClick={() => setProviderMode("existing")}
                     >
-                      选已有服务商
+                      已有
                     </button>
                     <button
                       type="button"
+                      role="radio"
+                      aria-checked={providerMode === "new"}
                       className={providerMode === "new" ? "is-active" : ""}
                       onClick={() => setProviderMode("new")}
                     >
-                      + 新建并关联服务商
+                      新建
                     </button>
                   </div>
                 )}
@@ -1236,68 +1473,58 @@ function UnifiedModelDialog({
                   <div className="admin-cc-provider-summary">
                     <span>接口：<strong>{protocolDisplayName(selectedProvider.default_protocol)}</strong></span>
                     <span>地址：<code>{selectedProvider.base_url}</code></span>
-                    <span>密钥：{selectedProvider.api_key_hint || (selectedProvider.credential_configured ? "已配置" : "未配置")}</span>
+                    <span>Key：{selectedProvider.api_key_hint || (selectedProvider.credential_configured ? "已配置" : "未配置")}</span>
                   </div>
                 </>
               ) : (
-                <div className="admin-cc-inline-new-prov">
-                  <div className="admin-cc-grid-2">
-                    <label className="admin-cc-field">
-                      <span>服务商名称 *</span>
-                      <input required placeholder="例如 Skye Clark / 硅基流动" value={newProvName} onChange={e => setNewProvName(e.target.value)} />
-                    </label>
-                    <label className="admin-cc-field">
-                      <span>备注（可选）</span>
-                      <input placeholder="例如 公司主用" value={newProvNotes} onChange={e => setNewProvNotes(e.target.value)} />
-                    </label>
-                  </div>
-                  <div className="admin-cc-grid-2">
-                    <label className="admin-cc-field">
-                      <span>接口格式</span>
-                      <select
-                        value={newProvEco}
-                        onChange={e => setNewProvEco(e.target.value as ApiEcosystem)}
-                      >
-                        <option value="openai">OpenAI（通用与 Responses）</option>
-                        <option value="anthropic">Anthropic (Claude)</option>
-                        <option value="gemini">Google (Gemini)</option>
-                      </select>
-                    </label>
-                    {newProvEco === "openai" && (
-                      <label className="admin-cc-field">
-                        <span>OpenAI 版本</span>
-                        <select value={newProvOpenAiMode} onChange={e => setNewProvOpenAiMode(e.target.value as OpenAISubMode)}>
-                          <option value="openai_chat_completions">Chat 兼容（推荐）</option>
-                          <option value="openai_responses">Responses API</option>
-                        </select>
-                      </label>
-                    )}
-                  </div>
+                <div className="admin-cc-form-grid">
                   <label className="admin-cc-field">
-                    <span>Base URL（含端口与路径前缀）*</span>
-                    <input type="url" required placeholder="https://47.116.200.213:8086/v1" value={newProvUrl} onChange={e => setNewProvUrl(e.target.value)} />
+                    <span>名称</span>
+                    <input required placeholder="例如 硅基流动" value={newProvName} onChange={e => setNewProvName(e.target.value)} />
+                  </label>
+                  <label className="admin-cc-field">
+                    <span>备注<i>选填</i></span>
+                    <input placeholder="例如 公司主用" value={newProvNotes} onChange={e => setNewProvNotes(e.target.value)} />
+                  </label>
+                  <label className="admin-cc-field is-wide">
+                    <span>接口格式</span>
+                    <select
+                      value={newProvEco === "openai" ? `openai-${newProvOpenAiMode === "openai_responses" ? "responses" : "chat"}` : newProvEco}
+                      onChange={e => {
+                        const picked = API_FORMATS.find(item => item.key === e.target.value);
+                        if (!picked) return;
+                        setNewProvEco(picked.ecosystem);
+                        if (picked.openAiMode) setNewProvOpenAiMode(picked.openAiMode);
+                      }}
+                    >
+                      {API_FORMATS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="admin-cc-field">
+                    <span>Base URL</span>
+                    <input type="url" required placeholder="https://api.example.com/v1" value={newProvUrl} onChange={e => setNewProvUrl(e.target.value)} />
                   </label>
                   <div className="admin-cc-field">
                     <div className="admin-cc-label-row">
-                      <span>API Key</span>
+                      <label htmlFor="admin-new-provider-key">API Key</label>
                       <label className="admin-cc-check">
                         <input type="checkbox" checked={newProvNoKey} onChange={e => setNewProvNoKey(e.target.checked)} />
-                        <span>本地免密服务</span>
+                        <span>本地服务，不用 Key</span>
                       </label>
                     </div>
-                    {!newProvNoKey && (
-                      <input
-                        type="password"
-                        autoComplete="new-password"
-                        placeholder="填入该服务商的 API Key"
-                        value={newProvKey}
-                        onChange={e => setNewProvKey(e.target.value)}
-                      />
-                    )}
-                    {!localHostsAllowed && /^http:\/\/(?:127\.|localhost)/i.test(newProvUrl.trim()) && (
-                      <small className="admin-cc-hint is-warn">提示：服务端未启用本地地址放行。</small>
-                    )}
+                    <input
+                      id="admin-new-provider-key"
+                      type="password"
+                      autoComplete="new-password"
+                      disabled={newProvNoKey}
+                      placeholder={newProvNoKey ? "不用填写" : "sk-…"}
+                      value={newProvNoKey ? "" : newProvKey}
+                      onChange={e => setNewProvKey(e.target.value)}
+                    />
                   </div>
+                  {!localHostsAllowed && /^http:\/\/(?:127\.|localhost)/i.test(newProvUrl.trim()) && (
+                    <p className="admin-cc-hint is-warn is-wide">服务端没有放行本机地址。</p>
+                  )}
                 </div>
               )}
             </div>
@@ -1310,21 +1537,21 @@ function UnifiedModelDialog({
 
           <div className="admin-cc-grid-2">
             <label className="admin-cc-field">
-              <span>上游模型 ID *</span>
+              <span>模型 ID</span>
               <input
                 name="upstream_model_id"
                 required
-                placeholder="例如 claude-opus-4-6 / Qwen/Qwen2.5-72B-Instruct"
+                placeholder="例如 deepseek-chat"
                 value={upstreamId}
                 onChange={e => handleUpstreamChange(e.target.value)}
               />
             </label>
             <label className="admin-cc-field">
-              <span>显示名称 *</span>
+              <span>显示名称</span>
               <input
                 name="label"
                 required
-                placeholder="给工作台展示的名称"
+                placeholder="用户看到的名字"
                 value={label}
                 onChange={e => {
                   setLabelTouched(true);
@@ -1334,109 +1561,176 @@ function UnifiedModelDialog({
             </label>
           </div>
 
-          <div className="admin-cc-grid-2">
-            <label className="admin-cc-field">
-              <span>接口通信格式</span>
-              <select name="protocol_override" value={protocolChoice} onChange={e => setProtocolChoice(e.target.value)}>
-                <option value="">跟随服务商（{protocolDisplayName(inheritedProtocol)}）</option>
-                <option value="openai_chat_completions">OpenAI（Chat 兼容）</option>
-                <option value="openai_responses">OpenAI（Responses）</option>
-                <option value="anthropic_messages">Anthropic</option>
-                <option value="google_generative_language">Gemini</option>
-              </select>
-            </label>
-            <label className="admin-cc-field">
-              <span>开放范围</span>
-              <select name="access_scope" value={accessScope} onChange={e => setAccessScope(e.target.value)}>
-                <option value="all">全员可用</option>
-                <option value="admin_only">仅管理员测试</option>
-                <option value="allowlist">仅授权白名单</option>
-              </select>
-            </label>
-          </div>
+          <label className="admin-cc-field">
+            <span>谁能用</span>
+            <select name="access_scope" value={accessScope} onChange={e => setAccessScope(e.target.value)}>
+              <option value="all">所有人</option>
+              <option value="admin_only">仅管理员</option>
+              <option value="allowlist">指定账户</option>
+            </select>
+          </label>
 
-          <div className="admin-cc-grid-2">
-            <div className="admin-cc-field">
-              <span>上下文窗口（Tokens）</span>
-              <input
-                name="context_tokens"
-                type="number"
-                min={1024}
-                required
-                value={contextTokens}
-                onChange={e => setContextTokens(Number(e.target.value))}
-              />
-              <div className="admin-cc-presets">
-                {CONTEXT_PRESETS.map(p => (
-                  <button
-                    type="button"
-                    key={p.value}
-                    className={contextTokens === p.value ? "is-active" : ""}
-                    onClick={() => setContextTokens(p.value)}
-                  >
-                    {p.label}
-                  </button>
-                ))}
+          <div className="admin-cc-auto-card">
+            <div className="admin-cc-auto-head">
+              <div className="admin-cc-auto-summary">
+                <Sparkles size={14} className="admin-cc-auto-icon" aria-hidden="true" />
+                <div>
+                  <strong>
+                    {editing
+                      ? "当前参数配置"
+                      : advancedTouched
+                        ? "已手动调整参数"
+                        : inferredMatched
+                          ? `已按「${inferredHint}」自动配置`
+                          : "已套用通用默认参数"}
+                  </strong>
+                  <p>
+                    {formatTokenBudget(contextTokens)} 上下文 · {formatTokenBudget(maxOutputTokens)} 输出 · {formatThinkingSummary(modes, defaultThinking)}
+                    {protocolChoice ? ` · ${protocolDisplayName(protocolChoice as ModelProtocol)}` : ""}
+                  </p>
+                </div>
               </div>
-            </div>
-            <div className="admin-cc-field">
-              <span>最大输出（Tokens）</span>
-              <input
-                name="max_output_tokens"
-                type="number"
-                min={256}
-                required
-                value={maxOutputTokens}
-                onChange={e => setMaxOutputTokens(Number(e.target.value))}
-              />
-              <div className="admin-cc-presets">
-                {OUTPUT_PRESETS.map(p => (
-                  <button
-                    type="button"
-                    key={p.value}
-                    className={maxOutputTokens === p.value ? "is-active" : ""}
-                    onClick={() => setMaxOutputTokens(p.value)}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="admin-cc-grid-2">
-            <fieldset className="admin-thinking-field">
-              <legend>支持思考档位</legend>
-              <div>
-                {THINKING_MODES.map(mode => (
-                  <label key={mode}>
-                    <input
-                      type="checkbox"
-                      checked={modes.includes(mode)}
-                      onChange={e => toggleThinking(mode, e.target.checked)}
-                    />
-                    <span>{THINKING_LABELS[mode]}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <label className="admin-cc-field">
-              <span>默认思考档位</span>
-              <select
-                name="default_thinking"
-                value={defaultThinking}
-                onChange={e => setDefaultThinking(e.target.value as ThinkingMode)}
+              <button
+                type="button"
+                className="admin-cc-btn admin-cc-auto-toggle"
+                aria-expanded={showAdvanced}
+                onClick={() => setShowAdvanced(v => !v)}
               >
-                {modes.map(mode => (
-                  <option key={mode} value={mode}>{THINKING_LABELS[mode]}</option>
-                ))}
-              </select>
-            </label>
+                {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                {showAdvanced ? "收起高级参数" : "高级参数"}
+              </button>
+            </div>
+
+            {showAdvanced && (
+              <div className="admin-cc-auto-body">
+                <div className="admin-cc-auto-bar">
+                  <span className="admin-cc-hint">普通接入保持自动配置即可；系统会按上下文长度自动压缩长对话。</span>
+                  {!editing && advancedTouched && (
+                    <button type="button" className="admin-cc-inline-link" onClick={resetAutoConfig}>
+                      恢复自动配置
+                    </button>
+                  )}
+                </div>
+
+                <label className="admin-cc-field">
+                  <span>接口格式覆盖</span>
+                  <select
+                    name="protocol_override"
+                    value={protocolChoice}
+                    onChange={e => {
+                      setAdvancedTouched(true);
+                      setProtocolChoice(e.target.value);
+                    }}
+                  >
+                    <option value="">跟随服务商（{protocolDisplayName(inheritedProtocol)}）</option>
+                    <option value="openai_chat_completions">OpenAI 兼容</option>
+                    <option value="openai_responses">OpenAI Responses</option>
+                    <option value="anthropic_messages">Anthropic</option>
+                    <option value="google_generative_language">Gemini</option>
+                  </select>
+                </label>
+
+                <div className="admin-cc-grid-2">
+                  <div className="admin-cc-field">
+                    <span>上下文长度<i>tokens</i></span>
+                    <input
+                      name="context_tokens"
+                      type="number"
+                      min={1024}
+                      required
+                      value={contextTokens}
+                      onChange={e => {
+                        setAdvancedTouched(true);
+                        setContextTokens(Number(e.target.value));
+                      }}
+                    />
+                    <div className="admin-cc-presets">
+                      {CONTEXT_PRESETS.map(p => (
+                        <button
+                          type="button"
+                          key={p.value}
+                          className={contextTokens === p.value ? "is-active" : ""}
+                          onClick={() => {
+                            setAdvancedTouched(true);
+                            setContextTokens(p.value);
+                          }}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="admin-cc-field">
+                    <span>最大输出<i>tokens</i></span>
+                    <input
+                      name="max_output_tokens"
+                      type="number"
+                      min={256}
+                      required
+                      value={maxOutputTokens}
+                      onChange={e => {
+                        setAdvancedTouched(true);
+                        setMaxOutputTokens(Number(e.target.value));
+                      }}
+                    />
+                    <div className="admin-cc-presets">
+                      {OUTPUT_PRESETS.map(p => (
+                        <button
+                          type="button"
+                          key={p.value}
+                          className={maxOutputTokens === p.value ? "is-active" : ""}
+                          onClick={() => {
+                            setAdvancedTouched(true);
+                            setMaxOutputTokens(p.value);
+                          }}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="admin-cc-grid-2">
+                  <fieldset className="admin-thinking-field">
+                    <legend>思考档位</legend>
+                    <div>
+                      {THINKING_MODES.map(mode => (
+                        <label key={mode}>
+                          <input
+                            type="checkbox"
+                            checked={modes.includes(mode)}
+                            onChange={e => toggleThinking(mode, e.target.checked)}
+                          />
+                          <span>{THINKING_LABELS[mode]}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <label className="admin-cc-field">
+                    <span>默认档位</span>
+                    <select
+                      name="default_thinking"
+                      value={defaultThinking}
+                      onChange={e => {
+                        setAdvancedTouched(true);
+                        setDefaultThinking(e.target.value as ThinkingMode);
+                      }}
+                    >
+                      {modes.map(mode => (
+                        <option key={mode} value={mode}>{THINKING_LABELS[mode]}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <p className="admin-cc-hint">不确定时不用改：普通模型保持“关闭”，支持推理的模型按需勾选档位即可。</p>
+              </div>
+            )}
           </div>
 
           <label className="admin-cc-check">
             <input type="checkbox" checked={testImmediately} onChange={e => setTestImmediately(e.target.checked)} />
-            <span>保存后立即测试连通性（通过后自动启用开放）</span>
+            <span>保存后马上测试，通过就启用</span>
           </label>
 
           {error && <p className="admin-cc-error" role="alert">{error}</p>}
@@ -1447,7 +1741,7 @@ function UnifiedModelDialog({
             </button>
             <button type="submit" className="admin-primary-button" disabled={saving}>
               {saving ? <LoaderCircle className="admin-spin" size={15} /> : <Save size={15} />}
-              {testImmediately ? "保存并测试连通" : "保存模型"}
+              {testImmediately ? "保存并测试" : "保存"}
             </button>
           </DialogFooter>
         </form>
@@ -1484,8 +1778,8 @@ function DiscoverModelsDialog({
     <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
       <DialogContent className="admin-dialog admin-discover-dialog">
         <DialogHeader>
-          <DialogTitle>从「{provider.name}」拉取可用模型</DialogTitle>
-          <DialogDescription>点击任一上游模型直接带入配置表单，设置上下文窗口并测通即可上线。</DialogDescription>
+          <DialogTitle>从「{provider.name}」拉取模型</DialogTitle>
+          <DialogDescription>选一个，带入添加表单。</DialogDescription>
         </DialogHeader>
         <input
           type="search"
@@ -1496,25 +1790,36 @@ function DiscoverModelsDialog({
         />
         <div className="admin-discover-list">
           {query.isPending ? (
-            <p className="admin-empty">正在向 {provider.base_url} 请求模型列表…</p>
+            <p className="admin-empty">正在拉取…</p>
           ) : query.isError ? (
-            <p className="admin-empty">{query.error instanceof Error ? query.error.message : "拉取模型失败。"}</p>
+            <p className="admin-empty">{query.error instanceof Error ? query.error.message : "没有拉取成功。"}</p>
           ) : !query.data?.supported ? (
-            <p className="admin-empty">{query.data?.notice || "该上游暂不支持自动枚举 /models，请直接在服务商下点“添加模型”。"}</p>
+            <p className="admin-empty">{query.data?.notice || "这个服务商不支持拉取，请手动添加模型。"}</p>
           ) : filtered.length === 0 ? (
             <p className="admin-empty">没有找到匹配的模型。</p>
           ) : (
-            filtered.map(item => (
-              <div key={item.id} className="admin-discover-item">
-                <div>
-                  <strong>{item.id}</strong>
-                  {item.already_added && <small>已在该服务商下配置</small>}
+            filtered.map(item => {
+              const ctx = item.context_tokens ? formatTokenBudget(item.context_tokens) : "128K";
+              const out = item.max_output_tokens ? formatTokenBudget(item.max_output_tokens) : "16K";
+              const thinkSummary = formatThinkingSummary(
+                item.thinking_modes?.length ? item.thinking_modes : ["none"],
+                item.default_thinking ?? "none",
+              );
+              return (
+                <div key={item.id} className="admin-discover-item">
+                  <div>
+                    <strong>{item.id}</strong>
+                    <small>
+                      {ctx} 上下文 · {out} 输出 · {thinkSummary}
+                      {item.already_added ? " · 已添加" : ""}
+                    </small>
+                  </div>
+                  <button type="button" className="admin-cc-btn" onClick={() => onPick(item)}>
+                    {item.already_added ? "再加一个" : "选用"}
+                  </button>
                 </div>
-                <button type="button" className="admin-cc-btn" onClick={() => onPick(item)}>
-                  {item.already_added ? "再添一项" : "选用"}
-                </button>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </DialogContent>

@@ -113,19 +113,16 @@ export default function AdminAccountConversationsPage() {
   );
   const statusCounts = data?.status_counts;
   const accountInfo: AdminConversationAccount | null | undefined = data?.account;
-  const pageTitle = accountInfo ? accountInfo.display_name || accountInfo.email : "这个账户的会话";
-  const pageDescription = accountInfo
-    ? `账户邮箱：${accountInfo.email} · 只显示用户可见内容和运行状态`
-    : "只显示用户可见内容和运行状态。";
+  const pageTitle = accountInfo ? accountInfo.display_name || accountInfo.email : "会话";
+  const pageDescription = accountInfo?.display_name ? accountInfo.email : undefined;
 
   return (
     <div className="admin-route-page">
       <Link className="admin-back-link" to="/admin/accounts">
         <ArrowLeft size={15} />
-        返回人员
+        返回账户
       </Link>
       <PageHeader
-        eyebrow="会话日志"
         title={pageTitle}
         description={pageDescription}
         action={<RefreshButton loading={conversationsQuery.isFetching} onClick={() => void conversationsQuery.refetch()} />}
@@ -145,9 +142,9 @@ export default function AdminAccountConversationsPage() {
               onRetry={() => void conversationsQuery.refetch()}
             />
           )}
-          <div className="admin-accounts-toolbar admin-conv-toolbar">
-            <label className="admin-account-search">
-              <Search size={16} aria-hidden="true" />
+          <div className="admin-toolbar">
+            <label className="admin-search">
+              <Search size={15} aria-hidden="true" />
               <input
                 type="search"
                 aria-label="搜索会话"
@@ -156,7 +153,25 @@ export default function AdminAccountConversationsPage() {
                 onChange={event => updateFilterParam("q", event.target.value)}
               />
             </label>
-            <div className="admin-conv-filters">
+            <div className="admin-chips" role="group" aria-label="按运行状态筛选">
+              {STATUS_OPTIONS.map(option => {
+                const count = statusCounts ? statusCounts[option.value] : undefined;
+                const isSelected = status === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={isSelected}
+                    className={isSelected ? "is-active" : ""}
+                    onClick={() => updateFilterParam("status", option.value)}
+                  >
+                    {option.label}
+                    {count !== undefined ? <small>{count}</small> : null}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="admin-toolbar-filters">
               <select aria-label="会话模式" value={mode} onChange={e => updateFilterParam("mode", e.target.value)}>
                 <option value="all">全部模式</option>
                 <option value="chat">聊天</option>
@@ -168,24 +183,6 @@ export default function AdminAccountConversationsPage() {
                 <option value="all">全部会话</option>
               </select>
             </div>
-          </div>
-          <div className="admin-source-filter-bar admin-conv-status-bar" role="group" aria-label="按运行状态筛选">
-            {STATUS_OPTIONS.map(option => {
-              const count = statusCounts ? statusCounts[option.value] : undefined;
-              const isSelected = status === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={isSelected}
-                  className={isSelected ? "is-active" : ""}
-                  onClick={() => updateFilterParam("status", option.value)}
-                >
-                  <span>{option.label}</span>
-                  {count !== undefined ? <small className="admin-conv-count">{count}</small> : null}
-                </button>
-              );
-            })}
           </div>
           {loadMoreError && <InlineError message={loadMoreError} onRetry={() => void loadMore()} />}
           {allItems.length === 0 ? (

@@ -380,12 +380,12 @@ class Step1RecoveryTests(unittest.IsolatedAsyncioTestCase):
                                   "answer": "这不是授权"},
                         )
                         self.assertEqual(invalid_alias.status_code, 422)
-                        invalid_legacy = await client.post(
+                        removed_legacy = await client.post(
                             f"/harness/runs/{run_id}/resume", headers=headers,
                             json={"session_id": conv_id, "request_id": req_id,
                                   "answer": "这不是授权"},
                         )
-                        self.assertEqual(invalid_legacy.status_code, 409)
+                        self.assertEqual(removed_legacy.status_code, 404)
 
                         resume_resp = await client.post(
                             f"/workspace/runs/{run_id}/resume",

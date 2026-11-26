@@ -170,6 +170,23 @@ class SQLiteRunStore:
             ids = [row[0] for row in db.execute("SELECT id FROM run_sessions")]
         return ids
 
+    def delete_session(self, session_id: str) -> list[str]:
+        """Permanently remove a session's checkpoints and every Run's events."""
+
+        with self._event_lock, self._connection() as db:
+            row = db.execute("SELECT body FROM run_sessions WHERE id=?", (session_id,)).fetchone()
+            if row is None:
+                return []
+            run_ids = [
+                item["run_id"]
+                for item in json.loads(row[0]).get("snapshot", {}).get("runs", [])
+                if isinstance(item, dict) and item.get("run_id")
+            ]
+            db.executemany("DELETE FROM run_events WHERE run_id=?", [(run_id,) for run_id in run_ids])
+            db.executemany("DELETE FROM run_visible WHERE run_id=?", [(run_id,) for run_id in run_ids])
+            db.execute("DELETE FROM run_sessions WHERE id=?", (session_id,))
+        return run_ids
+
     def append_event(self, event: StreamEvent) -> StreamEvent:
         with self._event_lock:
             if self._event_db is None:

@@ -1,8 +1,36 @@
 import { AlertCircle, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 
-export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description?: string; action?: ReactNode }) {
-  return <header className="admin-page-heading"><div><p>{eyebrow}</p><h1>{title}</h1>{description && <span>{description}</span>}</div>{action}</header>;
+export function PageHeader({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
+  return <header className="admin-page-heading"><div><h1>{title}</h1>{description && <span>{description}</span>}</div>{action}</header>;
+}
+
+export type StatusTone = "ok" | "warn" | "bad" | "muted";
+
+export function StatusPill({ tone, children }: { tone: StatusTone; children: ReactNode }) {
+  return <span className={`admin-pill is-${tone}`}>{children}</span>;
+}
+
+export function taskTone(value: string | null | undefined): StatusTone {
+  const bucket = statusBucket(value);
+  if (bucket === "succeeded") return "ok";
+  if (bucket === "failed") return "bad";
+  if (bucket === "active") return "warn";
+  return "muted";
+}
+
+export function healthTone(value: string | null | undefined): StatusTone {
+  if (value === "ready") return "ok";
+  if (value === "degraded") return "warn";
+  if (value === "not_configured") return "muted";
+  return "bad";
+}
+
+export function healthLabel(value: string | null | undefined): string {
+  if (value === "ready") return "正常";
+  if (value === "degraded") return "部分可用";
+  if (value === "not_configured") return "未启用";
+  return "不可用";
 }
 
 export function RefreshButton({ loading, onClick }: { loading: boolean; onClick: () => void }) {
@@ -17,13 +45,20 @@ export function LoadError({ message, onRetry }: { message: string; onRetry: () =
   return <section className="admin-state"><AlertCircle size={27} /><h2>暂时无法加载</h2><p role="alert">{message}</p><button className="admin-primary-button" type="button" onClick={onRetry}>重新加载</button></section>;
 }
 
-export function InlineError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return <div className="admin-alert" role="alert"><AlertCircle size={17} /><span>{message}</span><button type="button" onClick={onRetry}>重试</button></div>;
+export function InlineError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return <div className="admin-alert" role="alert"><AlertCircle size={17} /><span>{message}</span>{onRetry && <button type="button" onClick={onRetry}>重试</button>}</div>;
+}
+
+export function parseAdminDate(value: string): Date {
+  const trimmed = value.trim();
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
+  const normalized = hasZone ? trimmed : `${trimmed.replace(" ", "T")}Z`;
+  return new Date(normalized);
 }
 
 export function formatAdminDate(value: string | null | undefined): string {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(parseAdminDate(value));
 }
 
 export function formatAdminDuration(value: number | null | undefined): string {

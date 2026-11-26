@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -27,13 +28,28 @@ from backend.application.accounts.service import (
 from backend.application.admin import AdminService, AdminServiceError
 from backend.application.admin_conversations import AdminConversationService
 from backend.application.admin_operations import AdminOperationsService
+from backend.application.maintenance import RuntimeMaintenanceService
+from backend.application.maritime.service import MaritimeError
 from backend.application.model_directory import ModelDirectoryAdminService
+from backend.application.ops_settings import OpsSettingsService
+from backend.application.system_metrics import (
+    HttpLatencyTracker,
+    SystemMetricsService,
+    elastic_storage_status,
+    resolve_elastic_storage_policy,
+)
 from backend.application.workspace.conversations import WorkspaceError, WorkspaceService
 from backend.application.workspace.materials import (
     MaterialService,
     MaterialServiceError,
 )
+from backend.application.captcha import GLOBAL_CAPTCHA
 from backend.application.workspace.run_projection import RunProjection
+from backend.infrastructure.execution.purge import (
+    purge_account_files,
+    purge_conversation_files,
+    purge_material_files,
+)
 from backend.bootstrap import open_harnesses
 from backend.config.settings import load_settings
 from backend.contracts.account_settings import (
@@ -56,10 +72,16 @@ from backend.contracts.admin import (
     AdminConversationDetailResponse,
     AdminConversationListResponse,
     AdminConnectivityTestResponse,
+    AdminEmailTestRequest,
+    AdminEmailTestResponse,
     AdminModelCreateRequest,
     AdminModelDirectoryResponse,
+    AdminModelInferResponse,
     AdminModelUpdateRequest,
     AdminModelView,
+    AdminOpsSettingsUpdateRequest,
+    AdminOpsSettingsView,
+    AdminProviderBalanceResponse,
     AdminProviderCreateRequest,
     AdminProviderDiscoverResponse,
     AdminProviderTestRequest,
@@ -73,7 +95,7 @@ from backend.contracts.admin import (
     AdminResourceHealthResponse,
     AdminRuntimeHealthResponse,
     AdminSkillsResponse,
-    AdminTasksResponse,
+    AdminSystemMetricsResponse,
 )
 from backend.contracts.events.runtime import RunEvent
 from backend.contracts.events.streaming import StreamEvent, visible_text
@@ -90,6 +112,7 @@ from backend.harness.lifecycle.recovery import (
     recovery_for_state,
 )
 from backend.infrastructure.database.connection import Database
+from backend.infrastructure.email.resend import send_verification_email
 from backend.infrastructure.observability.memory import MemoryEventSink
 from backend.infrastructure.parsing.read_view import read_view
 from backend.infrastructure.parsing.registry import MaterialParserRegistry
@@ -97,19 +120,18 @@ from backend.infrastructure.persistence.run_store import SQLiteRunStore
 from backend.infrastructure.sources import CorpusSourceRepository
 from backend.interfaces.api.contracts import (
     AccountView,
+    AuthConfigResponse,
     AuthCredentialsRequest,
     AuthSessionView,
+    CaptchaChallengeResponse,
+    CaptchaVerifyRequest,
+    CaptchaVerifyResponse,
     CreateConversationRequest,
     CreateProjectRequest,
-    InputRequestResponse,
     MaterialUploadResponse,
     MoveConversationRequest,
-    ResumeRunRequest,
-    RunCommandResponse,
-    RunControlRequest,
-    SessionResponse,
-    SteerRunRequest,
-    SubmitRunRequest,
+    ResetPasswordRequest,
+    SendVerificationCodeRequest,
     UpdateConversationRequest,
     UpdateProjectRequest,
     WorkbenchErrorView,
@@ -141,6 +163,58 @@ from backend.interfaces.api.control_plane import (
     SchedulerCommandError,
     UnavailableRunExecutor,
 )
+
+
+def _client_ip(request: Request) -> str:
+    """Resolve client IP from reverse-proxy X-Real-IP without trusting spoofable left-most XFF."""
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip[:64]
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1][:64]
+    return (request.client.host if request.client else "")[:64]
+
+
+class _AuthFailureGuard:
+    """Sliding-window brute-force throttle for login, register, and password reset."""
+
+    def __init__(self, *, max_failures: int = 12, window_seconds: int = 600):
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self._failures: dict[str, list[float]] = {}
+
+    def _prune(self, key: str, now: float) -> list[float]:
+        cutoff = now - self.window_seconds
+        recent = [ts for ts in self._failures.get(key, ()) if ts >= cutoff]
+        if recent:
+            self._failures[key] = recent
+        else:
+            self._failures.pop(key, None)
+        return recent
+
+    def check(self, key: str) -> None:
+        if not key:
+            return
+        if len(self._prune(key, monotonic())) >= self.max_failures:
+            raise HTTPException(status_code=429, detail="auth_rate_limited")
+
+    def record_failure(self, key: str) -> None:
+        if not key:
+            return
+        now = monotonic()
+        recent = self._prune(key, now)
+        recent.append(now)
+        self._failures[key] = recent
+        if len(self._failures) > 4096:
+            oldest = next(iter(self._failures))
+            self._failures.pop(oldest, None)
+
+    def reset(self, key: str) -> None:
+        if key:
+            self._failures.pop(key, None)
 
 
 def public_error_message(error: Error | None) -> str:
@@ -194,6 +268,38 @@ class EventHub(MemoryEventSink):
                 if event.type in {"progress", "delta"}]
 
 
+class _HttpLatencyAsgiMiddleware:
+    """Pure ASGI latency tracker (never buffers SSE/NDJSON streaming responses)."""
+
+    def __init__(self, app, tracker: HttpLatencyTracker):
+        self.app = app
+        self.tracker = tracker
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path.endswith("/events") or path == "/healthz":
+            await self.app(scope, receive, send)
+            return
+        started = monotonic()
+        status_code = 500
+        self.tracker.enter()
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message.get("type") == "http.response.start":
+                status_code = int(message.get("status", 200))
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            self.tracker.leave()
+            self.tracker.record((monotonic() - started) * 1000.0, status_code)
+
+
 def _command_error(exc: SchedulerCommandError) -> HTTPException:
     message = str(exc)
     status = (
@@ -208,6 +314,24 @@ def _json_line(value: dict) -> bytes:
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
         "utf-8"
     )
+
+
+def ensure_bootstrap_admin(service: AccountService, email: str, password: str) -> None:
+    """Create the deployment administrator, tolerating a deliberate demotion.
+
+    An administrator may demote or disable the deployment account.  Starting is
+    fine while another live administrator exists; with none, nobody could
+    manage the service, so refuse to start.
+    """
+
+    try:
+        service.ensure_admin(email=email, password=password)
+    except AccountError as exc:
+        if exc.code not in {"admin_email_conflict", "admin_account_inactive"}:
+            raise
+        if not service.has_active_admin():
+            raise
+        logging.getLogger(__name__).warning("bootstrap_admin_not_active code=%s", exc.code)
 
 
 def create_app(
@@ -238,10 +362,7 @@ def create_app(
             if bool(admin_email) != bool(admin_password):
                 raise RuntimeError("admin_credentials_incomplete")
             if admin_email:
-                active_account_service.ensure_admin(
-                    email=admin_email,
-                    password=admin_password,
-                )
+                ensure_bootstrap_admin(active_account_service, admin_email, admin_password)
             active_material_service = MaterialService(database, settings)
             active_workspace_service = WorkspaceService(database)
         if active_workspace_service is None and active_account_service is not None:
@@ -265,6 +386,11 @@ def create_app(
         )
         app.state.account_preference_service = (
             AccountPreferenceService(active_account_service.database)
+            if active_account_service is not None
+            else None
+        )
+        app.state.ops_settings_service = (
+            OpsSettingsService(active_account_service.database)
             if active_account_service is not None
             else None
         )
@@ -299,6 +425,36 @@ def create_app(
         run_store_path = Path(settings.application.get("run_store_path", "backend/.runtime/runs.sqlite3"))
         run_store = SQLiteRunStore(run_store_path)
         app.state.run_store = run_store
+        from backend.infrastructure.telemetry import metrics as telemetry
+
+        from backend.config.settings import BACKEND_ROOT
+
+        metrics_dir = run_store_path.parent if run_store_path.is_absolute() else BACKEND_ROOT.parent / run_store_path.parent
+        app.state.metrics = telemetry.configure(metrics_dir / "telemetry.sqlite3")
+
+        from backend.application.admin_catalog import AdminCatalogService
+
+        app.state.admin_catalog_service = AdminCatalogService.from_settings(settings)
+        app.state.admin_catalog_service.warm()
+        app.state.maintenance_service = (
+            RuntimeMaintenanceService(
+                database=active_account_service.database,
+                settings=settings,
+                database_path=app.state.admin_catalog_service.database_path,
+                runtime_dir=app.state.admin_catalog_service.runtime_dir,
+            )
+            if active_account_service is not None
+            else None
+        )
+        maintenance_stop = asyncio.Event()
+        maintenance_task: asyncio.Task | None = None
+        if app.state.maintenance_service is not None and app.state.ops_settings_service is not None:
+            maintenance_task = asyncio.create_task(
+                app.state.maintenance_service.background_loop(
+                    maintenance_stop,
+                    app.state.ops_settings_service,
+                )
+            )
         events = EventHub(store=run_store)
         app.state.project_run = RunProjection(active_workspace_service, events)
         async with AsyncExitStack() as stack:
@@ -319,6 +475,7 @@ def create_app(
                     )
                 )
                 harness = harnesses[settings.model.thinking_mode]
+                app.state.harness = harness
                 if settings.research_cards.enabled:
                     app.state.information_card_retriever = harness.modules["action"].tools[
                         "information_card_search"
@@ -357,6 +514,13 @@ def create_app(
             app.state.control_service.scheduler.on_change = app.state.project_run
             await app.state.control_service.scheduler.recover()
             yield
+            maintenance_stop.set()
+            if maintenance_task is not None:
+                maintenance_task.cancel()
+                try:
+                    await maintenance_task
+                except asyncio.CancelledError:
+                    pass
             await app.state.control_service.scheduler.shutdown()
             if database is not None:
                 database.close()
@@ -367,6 +531,13 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
         lifespan=lifespan,
+    )
+    app.state.http_latency_tracker = HttpLatencyTracker()
+    app.state.active_sse_streams = 0
+    app.state.last_elastic_cleanup_ts = 0.0
+    app.add_middleware(
+        _HttpLatencyAsgiMiddleware,
+        tracker=app.state.http_latency_tracker,
     )
     # ASGI transports used by lightweight health probes do not necessarily
     # execute lifespan hooks. Keep the health route safe in that mode.
@@ -391,6 +562,12 @@ def create_app(
         if account_service is not None
         else None
     )
+    app.state.ops_settings_service = (
+        OpsSettingsService(account_service.database)
+        if account_service is not None
+        else None
+    )
+    app.state.maintenance_service = None
     app.state.model_directory = None
     app.state.model_directory_admin_service = None
     if account_service is not None:
@@ -414,7 +591,7 @@ def create_app(
     # router owns only its domain endpoints and resolves the authenticated
     # account through the same account service already used by the workbench;
     # it does not create a second application or harness.
-    from backend.interfaces.api.maritime import attach_maritime
+    from backend.interfaces.api.maritime import attach_maritime, office_for
 
     attach_maritime(app, settings)
 
@@ -530,27 +707,6 @@ def create_app(
             raise HTTPException(status_code=404, detail=exc.code) from None
         return principal
 
-    def require_session_owner(
-        request: Request, session_id: str, authorization: str | None
-    ) -> AccountPrincipal | None:
-        principal = current_account(request, authorization)
-        if principal is not None and principal.id != session_id:
-            service_instance = workspace(request)
-            if service_instance is None:
-                raise HTTPException(status_code=403, detail="session_access_denied")
-            try:
-                service_instance.get(
-                    account_id=principal.id, conversation_id=session_id
-                )
-            except WorkspaceError:
-                raise HTTPException(
-                    status_code=403, detail="session_access_denied"
-                ) from None
-        return principal
-
-    def account_scope(principal: AccountPrincipal | None, session_id: str) -> str:
-        return principal.id if principal is not None else session_id
-
     def sync_run(
         request: Request, principal: AccountPrincipal | None, run: RunEnvelope
     ) -> None:
@@ -581,6 +737,79 @@ def create_app(
         if service_instance is None:
             raise HTTPException(status_code=503, detail="admin_service_unavailable")
         return service_instance
+
+    def ops_settings_service(request: Request) -> OpsSettingsService:
+        service_instance = getattr(request.app.state, "ops_settings_service", None)
+        if service_instance is None:
+            account_svc = getattr(request.app.state, "account_service", None)
+            if account_svc is None:
+                raise HTTPException(status_code=503, detail="admin_service_unavailable")
+            service_instance = OpsSettingsService(account_svc.database)
+            request.app.state.ops_settings_service = service_instance
+        return service_instance
+
+    def maintenance_service(request: Request) -> RuntimeMaintenanceService:
+        service_instance = getattr(request.app.state, "maintenance_service", None)
+        if service_instance is None:
+            account_svc = getattr(request.app.state, "account_service", None)
+            if account_svc is None:
+                raise HTTPException(status_code=503, detail="admin_service_unavailable")
+            cat = catalog_service(request)
+            service_instance = RuntimeMaintenanceService(
+                database=account_svc.database,
+                settings=settings,
+                database_path=cat.database_path,
+                runtime_dir=cat.runtime_dir,
+            )
+            request.app.state.maintenance_service = service_instance
+        return service_instance
+
+    def system_metrics_service(request: Request) -> SystemMetricsService:
+        service_instance = getattr(request.app.state, "system_metrics_service", None)
+        account_svc = getattr(request.app.state, "account_service", None)
+        db = account_svc.database if account_svc is not None else None
+        if service_instance is None:
+            service_instance = SystemMetricsService(settings=settings, database=db)
+            request.app.state.system_metrics_service = service_instance
+        elif service_instance.database is None and db is not None:
+            service_instance.database = db
+        return service_instance
+
+    def _host_storage_snapshot(request: Request) -> dict | None:
+        maint = getattr(request.app.state, "maintenance_service", None)
+        if maint is None and getattr(request.app.state, "account_service", None) is not None:
+            try:
+                maint = maintenance_service(request)
+            except Exception:
+                maint = None
+        return maint.host_storage() if maint is not None else None
+
+    def _prepare_upload_quota(request: Request, principal: AccountPrincipal) -> int | None:
+        if getattr(request.app.state, "account_service", None) is None:
+            return None
+        base_quota_mb = ops_settings_service(request).load().material_quota_mb
+        account_quota_mb = admin_operations_service(request).account_grant(
+            principal.id
+        ).get("material_quota_mb")
+        host_storage = _host_storage_snapshot(request)
+        if host_storage is not None and host_storage.get("status") == "warn":
+            if monotonic() - getattr(request.app.state, "last_elastic_cleanup_ts", 0.0) >= 300.0:
+                request.app.state.last_elastic_cleanup_ts = monotonic()
+                try:
+                    maintenance_service(request).run_cleanup(reason="elastic_warn")
+                    host_storage = _host_storage_snapshot(request)
+                except Exception:
+                    pass
+        policy = resolve_elastic_storage_policy(
+            base_quota_mb=base_quota_mb,
+            host_storage=host_storage,
+            account_quota_mb=account_quota_mb,
+        )
+        if policy["uploads_paused"]:
+            raise HTTPException(status_code=507, detail="storage_space_low")
+        if principal.role == "admin" and account_quota_mb is None:
+            return None
+        return policy["quota_bytes"]
 
     def model_directory(request: Request):
         directory = getattr(request.app.state, "model_directory", None)
@@ -619,6 +848,8 @@ def create_app(
             "conversation_not_found",
             "provider_not_found",
             "profile_not_found",
+            "artifact_not_found",
+            "backup_not_found",
         }:
             return HTTPException(status_code=404, detail=exc.code)
         if exc.code in {
@@ -675,8 +906,14 @@ def create_app(
             "extra_headers_invalid",
             "model_extra_header_forbidden",
             "access_scope_invalid",
+            "capabilities_invalid",
+            "sort_order_invalid",
             "model_must_be_enabled_for_default",
             "provider_update_field_invalid",
+            "email_invalid",
+            "email_provider_unconfigured",
+            "material_quota_invalid",
+            "backup_keep_days_invalid",
         }:
             return HTTPException(status_code=422, detail=exc.code)
         if exc.code in {"provider_exists", "profile_exists", "model_connectivity_unverified"}:
@@ -720,7 +957,35 @@ def create_app(
         request: Request, authorization: str | None = Header(default=None)
     ):
         require_admin(request, authorization)
-        return AdminSkillsResponse(**admin_operations_service(request).list_skills())
+        ops = admin_operations_service(request)
+        uploaded = office_for(request.app, settings).uploaded_skills()
+        emails = ops.account_emails(item["owner_id"] for item in uploaded)
+        return AdminSkillsResponse(
+            **ops.list_skills(),
+            uploaded=[{**item, "owner_email": emails.get(item["owner_id"])} for item in uploaded],
+        )
+
+    @app.delete("/admin/skills/{skill_id}")
+    async def admin_remove_skill(
+        skill_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            removed = office_for(request.app, settings).admin_remove_skill(skill_id)
+        except MaritimeError as exc:
+            raise HTTPException(status_code=exc.status, detail="skill_not_found") from None
+        try:
+            admin_operations_service(request).record_skill_removed(
+                actor_id=principal.id,
+                owner_id=removed["owner_id"],
+                skill_id=skill_id,
+                name=removed["name"],
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return {"status": "removed"}
 
     @app.get("/admin/resources/health", response_model=AdminResourceHealthResponse)
     async def admin_resource_health(
@@ -730,23 +995,6 @@ def create_app(
         return AdminResourceHealthResponse(
             **admin_operations_service(request).resource_health()
         )
-
-    @app.get("/admin/tasks", response_model=AdminTasksResponse)
-    async def admin_tasks(
-        request: Request,
-        authorization: str | None = Header(default=None),
-        limit: int = Query(default=50, ge=1, le=100),
-        cursor: str | None = Query(default=None),
-        status: str | None = Query(default=None),
-    ):
-        require_admin(request, authorization)
-        try:
-            result = admin_operations_service(request).list_tasks(
-                limit=limit, cursor=cursor, status=status
-            )
-        except AdminServiceError as exc:
-            raise admin_error(exc) from None
-        return AdminTasksResponse(**result)
 
     @app.get("/admin/runtime/health", response_model=AdminRuntimeHealthResponse)
     async def admin_runtime_health(
@@ -761,13 +1009,204 @@ def create_app(
         )
         return AdminRuntimeHealthResponse(**result)
 
+    @app.get("/admin/system/metrics", response_model=AdminSystemMetricsResponse)
+    def admin_system_metrics(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        ctrl = getattr(request.app.state, "control_service", None)
+        scheduler_stats = (
+            ctrl.scheduler.runtime_stats()
+            if ctrl is not None and hasattr(ctrl.scheduler, "runtime_stats")
+            else None
+        )
+        tracker = getattr(request.app.state, "http_latency_tracker", None)
+        http_metrics = tracker.snapshot() if tracker is not None else None
+        host_storage = _host_storage_snapshot(request)
+        elastic_storage = None
+        if getattr(request.app.state, "account_service", None) is not None and host_storage is not None:
+            base_quota_mb = ops_settings_service(request).load().material_quota_mb
+            elastic_storage = elastic_storage_status(base_quota_mb, host_storage)
+        payload = system_metrics_service(request).collect(
+            scheduler_stats=scheduler_stats,
+            active_sse_streams=getattr(request.app.state, "active_sse_streams", 0),
+            http_metrics=http_metrics,
+            host_storage=host_storage,
+            elastic_storage=elastic_storage,
+        )
+        return AdminSystemMetricsResponse(**payload)
+
+    def catalog_service(request: Request):
+        service_instance = getattr(request.app.state, "admin_catalog_service", None)
+        if service_instance is None:
+            from backend.application.admin_catalog import AdminCatalogService
+
+            service_instance = AdminCatalogService.from_settings(settings)
+            request.app.state.admin_catalog_service = service_instance
+        return service_instance
+
+    @app.get("/admin/tools")
+    def admin_tools(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        harness = getattr(request.app.state, "harness", None)
+        if harness is None:
+            raise HTTPException(status_code=503, detail="admin_service_unavailable")
+        health = dict(admin_operations_service(request).resource_health()["sources"])
+        health["sandbox"] = (
+            {"status": "ready", "reason": f"{settings.execution.provider} 沙箱"}
+            if getattr(harness, "execution_tools", None) is not None
+            else {"status": "unavailable", "reason": "没有接入沙箱"}
+        )
+        return catalog_service(request).tools(harness, getattr(request.app.state, "metrics", None), health)
+
+    @app.get("/admin/tools/{tool_name}/calls")
+    def admin_tool_calls(
+        tool_name: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        require_admin(request, authorization)
+        metrics = getattr(request.app.state, "metrics", None)
+        calls = metrics.recent_calls(tool_name, limit=20) if metrics else []
+        emails = admin_operations_service(request).account_emails(item["account_id"] for item in calls)
+        return {
+            "calls": [{**item, "account_email": emails.get(item["account_id"])} for item in calls]
+        }
+
+    @app.get("/admin/data")
+    def admin_data(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        payload = catalog_service(request).data(
+            admin_operations_service(request).resource_health(),
+            getattr(request.app.state, "metrics", None),
+        )
+        maint = getattr(request.app.state, "maintenance_service", None)
+        if maint is None and getattr(request.app.state, "account_service", None) is not None:
+            maint = maintenance_service(request)
+        if maint is not None:
+            host_storage = maint.host_storage()
+            payload["host_storage"] = host_storage
+            if getattr(request.app.state, "account_service", None) is not None:
+                base_quota_mb = ops_settings_service(request).load().material_quota_mb
+                payload["elastic_storage"] = elastic_storage_status(base_quota_mb, host_storage)
+            payload["cleanup_preview"] = maint.cleanup_preview()
+            payload["backups"] = maint.list_backups()
+        return payload
+
+    @app.post("/admin/data/cleanup")
+    def admin_data_cleanup(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        principal = require_admin(request, authorization)
+        return maintenance_service(request).run_cleanup(
+            actor_id=principal.id, reason="manual"
+        )
+
+    @app.post("/admin/data/backups")
+    def admin_data_create_backup(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        principal = require_admin(request, authorization)
+        cfg = ops_settings_service(request).load()
+        return maintenance_service(request).create_backup(
+            actor_id=principal.id,
+            reason="manual",
+            keep_count=cfg.backup_keep_days,
+        )
+
+    @app.get("/admin/data/backups/{filename}/download")
+    def admin_data_download_backup(
+        filename: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        target = maintenance_service(request).resolve_backup_path(filename)
+        if target is None:
+            raise HTTPException(status_code=404, detail="backup_not_found")
+        account_svc = getattr(request.app.state, "account_service", None)
+        if account_svc is not None:
+            with account_svc.database.session() as session:
+                AdminService._add_audit(
+                    session,
+                    actor_id=principal.id,
+                    target_account_id=None,
+                    action="system.backup_downloaded",
+                    resource_type="system",
+                    resource_id=filename,
+                    details={"size_bytes": target.stat().st_size},
+                )
+                session.commit()
+        return FileResponse(
+            target,
+            media_type="application/zip",
+            filename=target.name,
+        )
+
+    @app.get("/admin/ops/settings", response_model=AdminOpsSettingsView)
+    def admin_get_ops_settings(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            return AdminOpsSettingsView(
+                **ops_settings_service(request).admin_view(actor_id=principal.id)
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+
+    @app.patch("/admin/ops/settings", response_model=AdminOpsSettingsView)
+    def admin_update_ops_settings(
+        body: AdminOpsSettingsUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            return AdminOpsSettingsView(
+                **ops_settings_service(request).update(
+                    actor_id=principal.id,
+                    data=body.model_dump(mode="json", exclude_unset=True),
+                )
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+
+    @app.post("/admin/ops/email-test", response_model=AdminEmailTestResponse)
+    async def admin_test_ops_email(
+        body: AdminEmailTestRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            res = await ops_settings_service(request).send_test_email(
+                actor_id=principal.id, to_email=body.to_email
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminEmailTestResponse(
+            ok=res.ok,
+            message_id=res.message_id,
+            error_code=res.error_code,
+            detail=res.detail,
+        )
+
     @app.get("/admin/overview", response_model=AdminOverviewResponse)
     async def admin_overview(
         request: Request, authorization: str | None = Header(default=None)
     ):
         require_admin(request, authorization)
+        try:
+            attention = admin_operations_service(request).attention_summary()
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
         return AdminOverviewResponse(
-            overview=AdminOverviewView(**admin_service(request).overview())
+            overview=AdminOverviewView(**admin_service(request).overview(), **attention)
         )
 
     @app.get("/admin/accounts", response_model=AdminAccountsResponse)
@@ -809,6 +1248,53 @@ def create_app(
         except AdminServiceError as exc:
             raise admin_error(exc) from None
         return AdminAccountView(**updated)
+
+    @app.delete("/admin/accounts/{account_id}")
+    async def admin_delete_account(
+        account_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            deleted = admin_service(request).delete_account(
+                actor_id=principal.id,
+                account_id=account_id,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        control = getattr(request.app.state, "control_service", None)
+        hub = getattr(request.app.state, "event_hub", None)
+        if control is not None:
+            for conversation_id in deleted["conversation_ids"]:
+                try:
+                    run_ids = await control.discard_session(session_id=conversation_id)
+                except SchedulerCommandError:
+                    run_ids = []
+                if hub is not None and run_ids:
+                    hub.discard_runs(run_ids)
+        purge_account_files(settings, account_id)
+        purge_material_files(settings, deleted["material_storage_keys"])
+        skills_deleted = 0
+        try:
+            skills_deleted = office_for(request.app, settings).admin_remove_account_skills(account_id)
+        except Exception:
+            skills_deleted = 0
+        return {
+            "deleted": True,
+            "account_id": deleted["account_id"],
+            "email": deleted["email"],
+            "conversations_deleted": len(deleted["conversation_ids"]),
+            "materials_deleted": len(deleted["material_storage_keys"]),
+            "skills_deleted": skills_deleted,
+        }
+
+    @app.get("/admin/audit/summary")
+    async def admin_audit_summary(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        return admin_service(request).audit_summary()
 
     @app.get("/admin/audit", response_model=AdminAuditResponse)
     async def admin_audit(
@@ -978,6 +1464,42 @@ def create_app(
             raise admin_error(exc) from None
         return AdminProviderDiscoverResponse(**result)
 
+    @app.get(
+        "/admin/model-providers/{provider_id}/balance",
+        response_model=AdminProviderBalanceResponse,
+    )
+    async def admin_provider_balance(
+        provider_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = await model_directory_admin(request).query_provider_balance(
+                actor_id=principal.id, provider_id=provider_id
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminProviderBalanceResponse(**result)
+
+    @app.get(
+        "/admin/models/infer",
+        response_model=AdminModelInferResponse,
+    )
+    async def admin_infer_model_defaults(
+        request: Request,
+        model_id: str = Query(..., min_length=1, max_length=200),
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = model_directory_admin(request).infer_model(
+                actor_id=principal.id, model_id=model_id
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminModelInferResponse(**result)
+
     @app.post(
         "/admin/model-providers/{provider_id}/test",
         response_model=AdminConnectivityTestResponse,
@@ -1094,6 +1616,150 @@ def create_app(
             raise HTTPException(status_code=404, detail="source_not_found")
         return WorkspaceSourceResponse.model_validate(document.model_dump(mode="json"))
 
+    @app.get(
+        "/admin/materials/{material_id}/passages",
+        response_model=WorkspacePassageListResponse,
+    )
+    async def admin_preview_material(
+        material_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+        cursor: str | None = Query(default=None, max_length=1024),
+    ):
+        principal = require_admin(request, authorization)
+        materials = request.app.state.material_service
+        if materials is None:
+            raise HTTPException(status_code=503, detail="material_service_unavailable")
+        try:
+            record, mat_input = materials.resolve_for_admin(material_id=material_id)
+            parsed = await asyncio.to_thread(
+                MaterialParserRegistry(settings.materials).parse, mat_input
+            )
+        except MaterialServiceError as exc:
+            raise HTTPException(status_code=404, detail=exc.code) from None
+        except PortError as exc:
+            raise HTTPException(status_code=422, detail=exc.error.code) from None
+        view = read_view(
+            parsed,
+            MaterialReadInput(material_id=material_id, cursor=cursor),
+            limit=settings.materials.read_chars,
+            overview_limit=settings.materials.overview_units,
+        )
+        if view.status == "invalid_cursor":
+            raise HTTPException(status_code=409, detail="material_cursor_expired_or_invalid")
+        if cursor is None:
+            with materials.database.session() as session:
+                AdminService._add_audit(
+                    session,
+                    actor_id=principal.id,
+                    target_account_id=record.account_id,
+                    action="material.viewed",
+                    resource_type="material",
+                    resource_id=record.id,
+                    details={"filename": record.filename},
+                )
+                session.commit()
+        return WorkspacePassageListResponse(
+            chunks=[
+                WorkspacePassageView(
+                    id=unit.unit_id,
+                    ordinal=unit.order + 1,
+                    locator=unit.locator.label or unit.locator.value,
+                    heading_path=unit.metadata.get("heading_path"),
+                    text=unit.text,
+                )
+                for unit in view.units
+            ],
+            next_cursor=view.next_cursor,
+            truncated=view.truncated,
+            parse_status=parsed.manifest.status,
+            complete=parsed.manifest.complete,
+            notices=view.notices,
+        )
+
+    @app.get("/admin/materials/{material_id}/download")
+    async def admin_download_material(
+        material_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        materials = request.app.state.material_service
+        if materials is None:
+            raise HTTPException(status_code=503, detail="material_service_unavailable")
+        try:
+            record, mat_input = materials.resolve_for_admin(material_id=material_id)
+        except MaterialServiceError as exc:
+            raise HTTPException(status_code=404, detail=exc.code) from None
+        with materials.database.session() as session:
+            AdminService._add_audit(
+                session,
+                actor_id=principal.id,
+                target_account_id=record.account_id,
+                action="material.downloaded",
+                resource_type="material",
+                resource_id=record.id,
+                details={"filename": record.filename, "size_bytes": record.size_bytes},
+            )
+            session.commit()
+        return FileResponse(
+            Path(mat_input.uri),
+            media_type=record.media_type or "application/octet-stream",
+            filename=record.filename,
+        )
+
+    @app.get("/admin/accounts/{account_id}/conversations/{conversation_id}/runs/{run_id}/artifacts/{artifact_id}")
+    async def admin_download_run_artifact(
+        account_id: str,
+        conversation_id: str,
+        run_id: str,
+        artifact_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            selected = admin_conversation_service(request).resolve_run_artifact(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
+                artifact_id=artifact_id,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        root = Path(settings.execution.workspace_root)
+        root = (Path(__file__).resolve().parents[3] / root).resolve() if not root.is_absolute() else root.resolve()
+        workspace_root = (root / account_id / conversation_id).resolve()
+        target = (workspace_root / selected["relative_path"]).resolve()
+        if workspace_root != target and workspace_root not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404, detail="artifact_not_found")
+        expected_sha = str(selected.get("sha256") or "")
+        if expected_sha:
+            digest = hashlib.sha256()
+            with target.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            if digest.hexdigest() != expected_sha:
+                raise HTTPException(status_code=404, detail="artifact_not_found")
+        account_svc = getattr(request.app.state, "account_service", None)
+        if account_svc is not None:
+            with account_svc.database.session() as session:
+                AdminService._add_audit(
+                    session,
+                    actor_id=principal.id,
+                    target_account_id=account_id,
+                    action="artifact.downloaded",
+                    resource_type="artifact",
+                    resource_id=artifact_id,
+                    details={"name": selected.get("name"), "run_id": run_id},
+                )
+                session.commit()
+        return FileResponse(
+            target,
+            media_type=selected.get("media_type") or "application/octet-stream",
+            filename=selected.get("name") or target.name,
+        )
+
     @app.get(settings.application["health_path"])
     async def health(request: Request):
         store = getattr(request.app.state, "run_store", None)
@@ -1136,20 +1802,151 @@ def create_app(
             session={"token": result.token},
         )
 
+    _AUTH_GUARD = _AuthFailureGuard()
+
+    @app.get("/auth/config", response_model=AuthConfigResponse)
+    async def auth_config(request: Request):
+        auth = getattr(request.app.state, "account_service", None)
+        if auth is None:
+            return AuthConfigResponse()
+        return AuthConfigResponse(**ops_settings_service(request).public_auth_config())
+
+    @app.post("/auth/captcha/challenge", response_model=CaptchaChallengeResponse)
+    async def auth_captcha_challenge(request: Request):
+        client_ip = _client_ip(request)
+        ch = GLOBAL_CAPTCHA.create_challenge(client_ip=client_ip)
+        return CaptchaChallengeResponse(
+            challenge_id=ch.challenge_id,
+            bg_image=ch.bg_image,
+            piece_image=ch.piece_image,
+            y=ch.y,
+            width=ch.width,
+            height=ch.height,
+            piece_width=ch.piece_width,
+            piece_height=ch.piece_height,
+        )
+
+    @app.post("/auth/captcha/verify", response_model=CaptchaVerifyResponse)
+    async def auth_captcha_verify(body: CaptchaVerifyRequest, request: Request):
+        client_ip = _client_ip(request)
+        ok, token, err = GLOBAL_CAPTCHA.verify_challenge(
+            challenge_id=body.challenge_id,
+            x=body.x,
+            duration_ms=body.duration_ms,
+            trail=body.trail,
+            client_ip=client_ip,
+        )
+        return CaptchaVerifyResponse(verified=ok, captcha_token=token, error=err)
+
+    @app.post("/auth/send-code")
+    async def send_auth_code(body: SendVerificationCodeRequest, request: Request):
+        auth = accounts(request)
+        if auth is None:
+            raise HTTPException(status_code=503, detail="unavailable")
+        cfg = ops_settings_service(request).load()
+        if not cfg.email_ready:
+            raise HTTPException(status_code=503, detail="email_provider_unconfigured")
+        if body.purpose == "register" and not cfg.email_verification_enabled:
+            raise HTTPException(status_code=400, detail="email_verification_disabled")
+        if body.purpose == "reset_password" and not cfg.allow_password_reset:
+            raise HTTPException(status_code=403, detail="password_reset_disabled")
+
+        client_ip = _client_ip(request)
+        if cfg.captcha_enabled and not GLOBAL_CAPTCHA.validate_token(body.captcha_token or "", client_ip=client_ip):
+            raise HTTPException(status_code=403, detail="captcha_required")
+
+        try:
+            code_id, code = auth.issue_verification_code(
+                email=body.email,
+                purpose=body.purpose,
+                request_ip=client_ip,
+            )
+        except AccountError as exc:
+            status = (
+                409
+                if exc.code == "account_email_exists"
+                else 429
+                if exc.code in {"verification_cooldown", "verification_rate_limited"}
+                else 403
+                if exc.code == "account_disabled"
+                else 404
+                if exc.code == "email_not_registered"
+                else 400
+            )
+            raise HTTPException(status_code=status, detail=exc.code) from None
+
+        res = await send_verification_email(
+            api_key=cfg.resend_api_key,
+            from_email=cfg.resend_from_email,
+            from_name=cfg.resend_from_name,
+            to_email=body.email.strip().lower(),
+            purpose=body.purpose,
+            code=code,
+            expires_minutes=5,
+        )
+        if not res.ok:
+            auth.cancel_verification_code(code_id)
+            raise HTTPException(status_code=502, detail=res.error_code or "email_send_failed")
+        return {"sent": True, "expires_in_seconds": 300, "cooldown_seconds": 60}
+
+    @app.post("/auth/reset-password", response_model=AuthSessionView)
+    async def reset_password(body: ResetPasswordRequest, request: Request):
+        auth = accounts(request)
+        if auth is None:
+            raise HTTPException(status_code=503, detail="unavailable")
+        cfg = ops_settings_service(request).load()
+        if not cfg.allow_password_reset or not cfg.email_ready:
+            raise HTTPException(status_code=403, detail="password_reset_disabled")
+        guard_key = f"reset:{_client_ip(request)}"
+        _AUTH_GUARD.check(guard_key)
+        try:
+            result = auth_view(
+                auth.reset_password(
+                    email=body.email,
+                    verification_code=body.verification_code,
+                    new_password=body.new_password,
+                )
+            )
+            _AUTH_GUARD.reset(guard_key)
+            return result
+        except AccountError as exc:
+            _AUTH_GUARD.record_failure(guard_key)
+            status = (
+                404
+                if exc.code == "email_not_registered"
+                else 403
+                if exc.code == "account_disabled"
+                else 400
+            )
+            raise HTTPException(status_code=status, detail=exc.code) from None
+
     @app.post("/auth/register", response_model=AuthSessionView, status_code=201)
     async def register(body: AuthCredentialsRequest, request: Request):
         auth = accounts(request)
         if auth is None:
             raise HTTPException(status_code=503, detail="unavailable")
+        cfg = ops_settings_service(request).load()
+        require_code = cfg.email_verification_enabled and cfg.email_ready
+        client_ip = _client_ip(request)
+        guard_key = f"register:{client_ip}"
+        _AUTH_GUARD.check(guard_key)
+        if not require_code and cfg.captcha_enabled and not GLOBAL_CAPTCHA.validate_token(body.captcha_token or "", client_ip=client_ip):
+            raise HTTPException(status_code=403, detail="captcha_required")
         try:
-            return auth_view(
+            result = auth_view(
                 auth.register(
                     email=body.email,
                     password=body.password,
                     display_name=body.display_name,
+                    verification_code=body.verification_code,
+                    require_verification=require_code,
+                    register_ip=client_ip,
                 )
             )
+            _AUTH_GUARD.reset(guard_key)
+            return result
         except AccountError as exc:
+            _AUTH_GUARD.record_failure(guard_key)
             status = 409 if exc.code == "account_email_exists" else 400
             raise HTTPException(status_code=status, detail=exc.code) from None
 
@@ -1158,10 +1955,15 @@ def create_app(
         auth = accounts(request)
         if auth is None:
             raise HTTPException(status_code=503, detail="unavailable")
+        guard_key = f"login:{_client_ip(request)}:{body.email.strip().lower()}"
+        _AUTH_GUARD.check(guard_key)
         try:
-            return auth_view(auth.login(email=body.email, password=body.password))
+            result = auth_view(auth.login(email=body.email, password=body.password))
+            _AUTH_GUARD.reset(guard_key)
+            return result
         except AccountError as exc:
-            status = 401 if exc.code == "authentication_failed" else 400
+            _AUTH_GUARD.record_failure(guard_key)
+            status = 401 if exc.code == "authentication_failed" else 403 if exc.code == "account_disabled" else 400
             raise HTTPException(status_code=status, detail=exc.code) from None
 
     @app.post("/auth/admin-login", response_model=AuthSessionView)
@@ -1169,10 +1971,15 @@ def create_app(
         auth = accounts(request)
         if auth is None:
             raise HTTPException(status_code=503, detail="unavailable")
+        guard_key = f"admin:{_client_ip(request)}:{body.email.strip().lower()}"
+        _AUTH_GUARD.check(guard_key)
         try:
-            return auth_view(auth.admin_login(email=body.email, password=body.password))
+            result = auth_view(auth.admin_login(email=body.email, password=body.password))
+            _AUTH_GUARD.reset(guard_key)
+            return result
         except AccountError as exc:
-            status = 401 if exc.code in {"authentication_failed", "admin_required"} else 400
+            _AUTH_GUARD.record_failure(guard_key)
+            status = 401 if exc.code in {"authentication_failed", "admin_required"} else 403 if exc.code == "account_disabled" else 400
             raise HTTPException(status_code=status, detail=exc.code) from None
 
     @app.get("/auth/me", response_model=AccountView)
@@ -1252,6 +2059,7 @@ def create_app(
                 account_id=principal.id,
                 current_password=body.current_password,
                 new_password=body.new_password,
+                keep_token=(authorization or "")[7:].strip() or None,
             )
         except AccountError as exc:
             status = 401 if exc.code in {"authentication_failed", "authentication_required"} else 422
@@ -1387,8 +2195,9 @@ def create_app(
             updated_at=project.updated_at,
         )
 
-    def material_view(material) -> WorkspaceMaterialView:
+    def material_view(material, conversation_count: int = 0) -> WorkspaceMaterialView:
         return WorkspaceMaterialView(
+            conversation_count=conversation_count,
             material_id=material.id,
             name=material.filename,
             media_type=material.media_type,
@@ -1650,6 +2459,18 @@ def create_app(
         except WorkspaceError as exc:
             status = 409 if exc.code == "conversation_has_active_runs" else 404
             raise HTTPException(status_code=status, detail=exc.code) from None
+        # The conversation is gone for good, so its Run history, events and
+        # files go with it; none of it is readable afterwards.
+        control = getattr(request.app.state, "control_service", None)
+        if control is not None:
+            try:
+                run_ids = await control.discard_session(session_id=conversation_id)
+            except SchedulerCommandError:
+                run_ids = []
+            hub = getattr(request.app.state, "event_hub", None)
+            if hub is not None and run_ids:
+                hub.discard_runs(run_ids)
+        purge_conversation_files(settings, principal.id, conversation_id)
         return None
 
     @app.post("/workspace/conversations/{conversation_id}/archive", status_code=204)
@@ -2049,8 +2870,6 @@ def create_app(
                 account_id=principal.id,
                 client_request_id=body.client_request_id,
                 retry_of_run_id=body.retry_of_run_id,
-                graph=body.graph,
-                runtime_policy=body.runtime_policy,
                 payload=RunInput(
                     text=body.text,
                     mode=conversation_mode,
@@ -2464,81 +3283,87 @@ def create_app(
             return True
 
         async def stream() -> AsyncIterator[bytes]:
-            started = monotonic()
-            cursor = after_sequence
-            last_status: str | None = None
-            while monotonic() - started < timeout_seconds:
-                if await request.is_disconnected():
-                    return
-                if not stream_authorized():
-                    return
-                try:
-                    run = await service(request).run(
-                        session_id=conversation_id, run_id=run_id
-                    )
-                except SchedulerCommandError:
-                    return
-                if run.account_id != principal.id:
-                    return
-                sync_run(request, principal, run)
-                hub = request.app.state.event_hub
-                if hub is not None:
-                    for event in hub.stream_events_since(
-                        run_id=run_id, after_sequence=cursor
-                    ):
-                        run.last_sequence = event.sequence
-                        run.first_event_at = run.first_event_at or event.emitted_at
-                        if event.type == "delta":
-                            run.first_delta_at = run.first_delta_at or event.emitted_at
-                        payload = {
-                            "run_id": event.run_id,
-                            "sequence": event.sequence,
-                            "type": event.type,
-                            "text": event.text,
-                            "stage": event.stage,
-                            "label": event.label,
-                            "emitted_at": event.emitted_at.isoformat(),
-                            "error": (
-                                {"message": public_error_message(event.error)}
-                                if event.error
-                                else None
-                            ),
-                            "run": workbench_run_view(event.run).model_dump(mode="json")
-                            if event.run
-                            else None,
-                        }
-                        if not stream_authorized():
-                            return
-                        yield _json_line(payload)
-                        cursor = event.sequence
-                # Lifecycle is a snapshot at the current stream cursor.  It
-                # is emitted after buffered deltas so a terminal snapshot can
-                # never make the UI regress from completed to receiving.
-                state_key = (run.status, run.revision, tuple(item.get("source_id") for item in run.execution_state.get("source_refs", [])))
-                if state_key != last_status:
-                    last_status = state_key
+            request.app.state.active_sse_streams = getattr(request.app.state, "active_sse_streams", 0) + 1
+            try:
+                started = monotonic()
+                cursor = after_sequence
+                last_status: str | None = None
+                while monotonic() - started < timeout_seconds:
+                    if await request.is_disconnected():
+                        return
                     if not stream_authorized():
                         return
-                    yield _json_line(
-                        {
-                            "type": "lifecycle",
-                            "run_id": run.run_id,
-                            "sequence": cursor,
-                            "run": workbench_run_view(run).model_dump(mode="json"),
-                        }
-                    )
+                    try:
+                        run = await service(request).run(
+                            session_id=conversation_id, run_id=run_id
+                        )
+                    except SchedulerCommandError:
+                        return
+                    if run.account_id != principal.id:
+                        return
                     sync_run(request, principal, run)
-                if hub is not None and hub.stream_events_since(run_id=run_id, after_sequence=cursor):
-                    continue
-                if run.status in {
-                    "succeeded",
-                    "failed",
-                    "cancelled",
-                    "paused",
-                    "waiting_user",
-                }:
-                    return
-                await asyncio.sleep(0.1)
+                    hub = request.app.state.event_hub
+                    if hub is not None:
+                        for event in hub.stream_events_since(
+                            run_id=run_id, after_sequence=cursor
+                        ):
+                            run.last_sequence = event.sequence
+                            run.first_event_at = run.first_event_at or event.emitted_at
+                            if event.type == "delta":
+                                run.first_delta_at = run.first_delta_at or event.emitted_at
+                            payload = {
+                                "run_id": event.run_id,
+                                "sequence": event.sequence,
+                                "type": event.type,
+                                "text": event.text,
+                                "stage": event.stage,
+                                "label": event.label,
+                                "emitted_at": event.emitted_at.isoformat(),
+                                "error": (
+                                    {"message": public_error_message(event.error)}
+                                    if event.error
+                                    else None
+                                ),
+                                "run": workbench_run_view(event.run).model_dump(mode="json")
+                                if event.run
+                                else None,
+                            }
+                            if not stream_authorized():
+                                return
+                            yield _json_line(payload)
+                            cursor = event.sequence
+                    # Lifecycle is a snapshot at the current stream cursor.  It
+                    # is emitted after buffered deltas so a terminal snapshot can
+                    # never make the UI regress from completed to receiving.
+                    state_key = (run.status, run.revision, tuple(item.get("source_id") for item in run.execution_state.get("source_refs", [])))
+                    if state_key != last_status:
+                        last_status = state_key
+                        if not stream_authorized():
+                            return
+                        yield _json_line(
+                            {
+                                "type": "lifecycle",
+                                "run_id": run.run_id,
+                                "sequence": cursor,
+                                "run": workbench_run_view(run).model_dump(mode="json"),
+                            }
+                        )
+                        sync_run(request, principal, run)
+                    if hub is not None and hub.stream_events_since(run_id=run_id, after_sequence=cursor):
+                        continue
+                    if run.status in {
+                        "succeeded",
+                        "failed",
+                        "cancelled",
+                        "paused",
+                        "waiting_user",
+                    }:
+                        return
+                    await asyncio.sleep(0.1)
+            finally:
+                request.app.state.active_sse_streams = max(
+                    0, getattr(request.app.state, "active_sse_streams", 1) - 1
+                )
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
 
@@ -2550,9 +3375,10 @@ def create_app(
         service_instance = workspace(request)
         if service_instance is None:
             raise HTTPException(status_code=503, detail="workspace_service_unavailable")
+        counts = service_instance.material_conversation_counts(account_id=principal.id)
         return WorkspaceMaterialListResponse(
             materials=[
-                material_view(item)
+                material_view(item, counts.get(item.id, 0))
                 for item in service_instance.list_materials(account_id=principal.id)
             ]
         )
@@ -2652,6 +3478,7 @@ def create_app(
         materials = request.app.state.material_service
         if materials is None:
             raise HTTPException(status_code=503, detail="material_service_unavailable")
+        quota = _prepare_upload_quota(request, principal)
         content = await file.read(settings.materials.max_file_bytes + 1)
         try:
             material = materials.upload(
@@ -2660,9 +3487,10 @@ def create_app(
                 filename=file.filename or "",
                 media_type=file.content_type,
                 content=content,
+                quota_bytes=quota,
             )
         except MaterialServiceError as exc:
-            status = 413 if exc.code == "material_too_large" else 400
+            status = 413 if exc.code in {"material_too_large", "material_quota_exceeded"} else 400
             raise HTTPException(status_code=status, detail=exc.code) from None
         finally:
             await file.close()
@@ -2702,6 +3530,7 @@ def create_app(
         service_instance = workspace(request)
         if materials is None or service_instance is None:
             raise HTTPException(status_code=503, detail="material_service_unavailable")
+        quota = _prepare_upload_quota(request, principal)
         content = await file.read(settings.materials.max_file_bytes + 1)
         try:
             material = materials.upload(
@@ -2712,6 +3541,7 @@ def create_app(
                 filename=file.filename or "",
                 media_type=file.content_type,
                 content=content,
+                quota_bytes=quota,
             )
             service_instance.bind_material(
                 account_id=principal.id,
@@ -2719,7 +3549,7 @@ def create_app(
                 material_id=material.material_id,
             )
         except MaterialServiceError as exc:
-            status = 413 if exc.code == "material_too_large" else 400
+            status = 413 if exc.code in {"material_too_large", "material_quota_exceeded"} else 400
             raise HTTPException(status_code=status, detail=exc.code) from None
         except WorkspaceError as exc:
             raise HTTPException(status_code=404, detail=exc.code) from None
@@ -2798,413 +3628,6 @@ def create_app(
             materials=[material_view(item) for item in materials]
         )
 
-    @app.post(
-        "/harness/sessions/{session_id}/materials",
-        response_model=MaterialUploadResponse,
-        status_code=201,
-    )
-    async def upload_material(
-        session_id: str,
-        request: Request,
-        file: UploadFile = File(...),
-        authorization: str | None = Header(default=None),
-    ):
-        principal = require_session_owner(request, session_id, authorization)
-        materials = request.app.state.material_service
-        if materials is None:
-            raise HTTPException(status_code=503, detail="material_service_unavailable")
-        content = await file.read(settings.materials.max_file_bytes + 1)
-        try:
-            material = materials.upload(
-                account_id=account_scope(principal, session_id),
-                session_id=session_id,
-                filename=file.filename or "",
-                media_type=file.content_type,
-                content=content,
-            )
-        except MaterialServiceError as exc:
-            status = 413 if exc.code == "material_too_large" else 400
-            raise HTTPException(status_code=status, detail=exc.code) from None
-        finally:
-            await file.close()
-        return MaterialUploadResponse(material=material)
-
-    @app.delete(
-        "/harness/sessions/{session_id}/materials/{material_id}", status_code=204
-    )
-    async def delete_material(
-        session_id: str,
-        material_id: str,
-        request: Request,
-        authorization: str | None = Header(default=None),
-    ):
-        principal = require_session_owner(request, session_id, authorization)
-        materials = request.app.state.material_service
-        if materials is None:
-            raise HTTPException(status_code=503, detail="material_service_unavailable")
-        try:
-            materials.delete(
-                account_id=account_scope(principal, session_id),
-                session_id=session_id,
-                material_id=material_id,
-            )
-            if principal is not None and workspace(request) is not None:
-                try:
-                    workspace(request).unbind_material(
-                        account_id=principal.id,
-                        conversation_id=session_id,
-                        material_id=material_id,
-                    )
-                except WorkspaceError:
-                    pass
-        except MaterialServiceError as exc:
-            raise HTTPException(status_code=404, detail=exc.code) from None
-        return None
-
-    @app.get("/harness/sessions/{session_id}", response_model=SessionResponse)
-    async def session_snapshot(session_id: str, request: Request):
-        require_session_owner(request, session_id, request.headers.get("authorization"))
-        try:
-            snapshot = await service(request).session(session_id=session_id)
-        except SchedulerCommandError as exc:
-            raise _command_error(exc) from exc
-        return SessionResponse(snapshot=snapshot)
-
-    @app.post(
-        "/harness/sessions/{session_id}/runs",
-        response_model=RunCommandResponse,
-        status_code=202,
-    )
-    async def submit_run(
-        session_id: str,
-        body: SubmitRunRequest,
-        request: Request,
-        authorization: str | None = Header(default=None),
-    ):
-        from backend.contracts.modules.loop import RunInput
-
-        try:
-            principal = require_session_owner(request, session_id, authorization)
-            materials = request.app.state.material_service
-            if body.material_ids:
-                if materials is None:
-                    raise HTTPException(
-                        status_code=503, detail="material_service_unavailable"
-                    )
-                try:
-                    materials.resolve(
-                        account_id=account_scope(principal, session_id),
-                        session_id=session_id,
-                        material_ids=body.material_ids,
-                    )
-                except MaterialServiceError as exc:
-                    raise HTTPException(status_code=404, detail=exc.code) from None
-            material_ids = list(body.material_ids)
-            # Legacy Harness callers may still send a RunInput-shaped body,
-            # but the request must not be able to widen permissions.  Only a
-            # persisted Workspace Conversation can opt into work mode; an
-            # unbound legacy session remains read-only chat.
-            conversation_mode = "chat"
-            workspace_service = workspace(request)
-            if workspace_service is not None:
-                try:
-                    conversation_mode = workspace_service.get(
-                        account_id=account_scope(principal, session_id),
-                        conversation_id=session_id,
-                    ).mode
-                except WorkspaceError:
-                    # Legacy Harness sessions may not have a persisted
-                    # Conversation.  Their request-level default remains chat.
-                    pass
-            if not material_ids and workspace(request) is not None:
-                try:
-                    material_ids = workspace(request).list_conversation_material_ids(
-                        account_id=account_scope(principal, session_id),
-                        conversation_id=session_id,
-                    )
-                except WorkspaceError:
-                    # Legacy control-plane callers may use account_id as their
-                    # scheduler key without a persisted Conversation.
-                    material_ids = []
-            if principal is not None:
-                ops = getattr(request.app.state, "admin_operations_service", None)
-                dir_opt = getattr(request.app.state, "model_directory", None)
-                if ops is not None and dir_opt is not None:
-                    permitted = ops.filter_model_revisions(
-                        account_id=principal.id,
-                        account_role=principal.role,
-                        revisions=dir_opt.list_current(),
-                    )
-                    if not permitted and ops.account_grant(principal.id)["model_policy"] != "default":
-                        raise HTTPException(status_code=403, detail="model_not_permitted")
-            dispatch, run = await service(request).submit(
-                session_id=session_id,
-                account_id=account_scope(principal, session_id),
-                payload=RunInput(
-                    text=body.text,
-                    mode=conversation_mode,
-                    facts=(
-                        resolve_run_facts(request, principal, body.facts, conversation_mode)
-                        if principal is not None
-                        else body.facts
-                    ),
-                    constraints=body.constraints,
-                    material_ids=material_ids,
-                ),
-                task_id=body.task_id,
-                graph=body.graph,
-                runtime_policy=body.runtime_policy,
-            )
-        except SchedulerCommandError as exc:
-            raise _command_error(exc) from exc
-        sync_run(request, principal, run)
-        return RunCommandResponse(dispatch=dispatch, run=run)
-
-    @app.get("/harness/runs/{run_id}", response_model=RunEnvelope)
-    async def run_snapshot(
-        run_id: str,
-        request: Request,
-        session_id: str = Query(min_length=1),
-        authorization: str | None = Header(default=None),
-    ):
-        try:
-            principal = require_session_owner(request, session_id, authorization)
-            run = await service(request).run(session_id=session_id, run_id=run_id)
-            sync_run(request, principal, run)
-            return run
-        except SchedulerCommandError as exc:
-            raise _command_error(exc) from exc
-
-    @app.get(
-        "/harness/runs/{run_id}/input-requests/{request_id}",
-        response_model=InputRequestResponse,
-    )
-    async def input_request(
-        run_id: str,
-        request_id: str,
-        request: Request,
-        session_id: str = Query(min_length=1),
-        authorization: str | None = Header(default=None),
-    ):
-        try:
-            require_session_owner(request, session_id, authorization)
-            item = await service(request).request(
-                session_id=session_id, request_id=request_id
-            )
-            if item.run_id != run_id:
-                raise SchedulerCommandError("input request not found")
-        except SchedulerCommandError as exc:
-            raise _command_error(exc) from exc
-        return InputRequestResponse(request=item)
-
-    @app.post("/harness/runs/{run_id}/resume", response_model=RunCommandResponse)
-    async def resume_run(
-        run_id: str,
-        body: ResumeRunRequest,
-        request: Request,
-        authorization: str | None = Header(default=None),
-    ):
-        try:
-            principal = require_session_owner(request, body.session_id, authorization)
-            dispatch, run = await service(request).resume(
-                session_id=body.session_id,
-                run_id=run_id,
-                request_id=body.request_id,
-                answer=body.answer,
-            )
-        except SchedulerCommandError as exc:
-            raise _command_error(exc) from exc
-        sync_run(request, principal, run)
-        return RunCommandResponse(dispatch=dispatch, run=run)
-
-    @app.post("/harness/runs/{run_id}/steer", response_model=RunCommandResponse)
-    async def steer_run(
-        run_id: str,
-        body: SteerRunRequest,
-        request: Request,
-        authorization: str | None = Header(default=None),
-    ):
-        from backend.contracts.modules.loop import RunInput
-
-        try:
-            principal = require_session_owner(request, body.session_id, authorization)
-            if body.material_ids:
-                materials = request.app.state.material_service
-                if materials is None:
-                    raise HTTPException(
-                        status_code=503, detail="material_service_unavailable"
-                    )
-                try:
-                    materials.resolve(
-                        account_id=account_scope(principal, body.session_id),
-                        session_id=body.session_id,
-                        material_ids=body.material_ids,
-                    )
-                except MaterialServiceError as exc:
-                    raise HTTPException(status_code=404, detail=exc.code) from None
-            dispatch, run = await service(request).steer(
-                session_id=body.session_id,
-                run_id=run_id,
-                payload=RunInput(
-                    text=body.text,
-                    facts=body.facts,
-                    constraints=body.constraints,
-                    material_ids=body.material_ids,
-                ),
-            )
-        except SchedulerCommandError as exc:
-            raise _command_error(exc) from exc
-        sync_run(request, principal, run)
-        return RunCommandResponse(dispatch=dispatch, run=run)
-
-    async def control_run(
-        run_id: str,
-        body: RunControlRequest,
-        request: Request,
-        *,
-        cancel: bool,
-        authorization: str | None = None,
-    ):
-        try:
-            principal = require_session_owner(request, body.session_id, authorization)
-            action = service(request).cancel if cancel else service(request).pause
-            dispatch, run = await action(session_id=body.session_id, run_id=run_id)
-            # A cooperative cancellation can happen after visible deltas have already
-            # reached the client. Preserve those deltas in durable workspace
-            # history even when the executor has no terminal answer.
-            if not run.partial_output:
-                hub = request.app.state.event_hub
-                if hub is not None:
-                    partial = visible_text(event for event in hub.stream_events if event.run_id == run_id)
-                    if partial:
-                        run = await service(request).set_partial(
-                            session_id=body.session_id,
-                            run_id=run_id,
-                            partial_output=partial,
-                        )
-        except SchedulerCommandError as exc:
-            raise _command_error(exc) from exc
-        sync_run(request, principal, run)
-        return RunCommandResponse(dispatch=dispatch, run=run)
-
-    @app.post("/harness/runs/{run_id}/pause", response_model=RunCommandResponse)
-    async def pause_run(
-        run_id: str,
-        body: RunControlRequest,
-        request: Request,
-        authorization: str | None = Header(default=None),
-    ):
-        return await control_run(
-            run_id, body, request, cancel=False, authorization=authorization
-        )
-
-    @app.post("/harness/runs/{run_id}/cancel", response_model=RunCommandResponse)
-    async def cancel_run(
-        run_id: str,
-        body: RunControlRequest,
-        request: Request,
-        authorization: str | None = Header(default=None),
-    ):
-        return await control_run(
-            run_id, body, request, cancel=True, authorization=authorization
-        )
-
-    @app.get("/harness/sessions/{session_id}/events")
-    async def events_stream(
-        session_id: str,
-        request: Request,
-        run_id: str | None = Query(default=None),
-        after_sequence: int = Query(default=0, ge=0),
-        timeout_seconds: float = Query(default=120.0, gt=0, le=600),
-        authorization: str | None = Header(default=None),
-    ):
-        principal = require_session_owner(request, session_id, authorization)
-
-        def stream_authorized() -> bool:
-            try:
-                current_account(request, authorization, update_last_seen=False)
-            except HTTPException as exc:
-                if exc.status_code != 401:
-                    raise
-                return False
-            return True
-
-        async def stream() -> AsyncIterator[bytes]:
-            started = monotonic()
-            sent_events = 0
-            last_status: dict[str, str] = {}
-            sent_lifecycle_runs: set[str] = set()
-            last_stream_sequences: dict[str, int] = {}
-            if run_id:
-                last_stream_sequences[run_id] = after_sequence
-            while monotonic() - started < timeout_seconds:
-                if await request.is_disconnected():
-                    return
-                if not stream_authorized():
-                    return
-                try:
-                    snapshot = await service(request).session(session_id=session_id)
-                except SchedulerCommandError:
-                    return
-                matching = [
-                    run
-                    for run in snapshot.runs
-                    if run_id is None or run.run_id == run_id
-                ]
-                if run_id and not matching:
-                    return
-                matching_run_ids = {run.run_id for run in matching}
-                for run in matching:
-                    sync_run(request, principal, run)
-                    if (
-                        run.status != last_status.get(run.run_id)
-                        or run.run_id not in sent_lifecycle_runs
-                    ):
-                        last_status[run.run_id] = run.status
-                        sent_lifecycle_runs.add(run.run_id)
-                        if not stream_authorized():
-                            return
-                        yield _json_line(
-                            {"type": "lifecycle", "run": run.model_dump(mode="json")}
-                        )
-                hub = request.app.state.event_hub
-                if hub is not None:
-                    for event in hub.events[sent_events:]:
-                        if event.run_id in matching_run_ids:
-                            if not stream_authorized():
-                                return
-                            yield _json_line(
-                                {
-                                    "type": "runtime",
-                                    "event": event.model_dump(
-                                        mode="json", exclude={"diagnostics"}
-                                    ),
-                                }
-                            )
-                    sent_events = len(hub.events)
-                    for event in hub.stream_events_since(run_id=run_id):
-                        if event.run_id not in matching_run_ids:
-                            continue
-                        cursor = last_stream_sequences.get(event.run_id, 0)
-                        if event.sequence > cursor:
-                            if not stream_authorized():
-                                return
-                            yield _json_line(
-                                {
-                                    "type": "stream",
-                                    "event": event.model_dump(mode="json"),
-                                }
-                            )
-                            last_stream_sequences[event.run_id] = event.sequence
-                if matching and all(
-                    run.status
-                    in {"succeeded", "failed", "cancelled", "paused", "waiting_user"}
-                    for run in matching
-                ):
-                    return
-                await asyncio.sleep(0.1)
-
-        return StreamingResponse(stream(), media_type="application/x-ndjson")
 
     return app
 

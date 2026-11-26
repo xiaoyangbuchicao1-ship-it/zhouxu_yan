@@ -1,5 +1,6 @@
 import { ThinkingModeSelect } from "./ThinkingModeSelect";
 import { ModelSelect } from "./ModelSelect";
+import { KeyCaps } from "./KeyCaps";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
@@ -39,7 +40,7 @@ import { IconButton, Menu, MenuItem, Loading, LoadError, Modal } from "./Primiti
 import { RunProgress } from "./RunProgress";
 import { ActivityIndicator } from "./ActivityIndicator";
 import { MaterialCards, MaterialDescription } from "./MaterialCards";
-import { WorkPackages } from "./WorkPackages";
+import { DeliveryFiles } from "./DeliveryFiles";
 import { useStreamingText } from "@/hooks/use-streaming-text";
 import { SourceSummary } from "./ResearchPanel";
 import { Markdown } from "./PublicMarkdown";
@@ -317,10 +318,7 @@ function Answer({
       {message.status === "paused" && message.content && <span className="ws-incomplete-label">未完成 · 已保留正文</span>}
       <StreamingAnswer text={message.content} live={card?.state === "receiving"} onSource={onOpenSources} />
       <SourceSummary sources={message.sources} onOpen={onOpenSources} />
-      {(!card || card.status === "succeeded") && <WorkPackages
-        runId={message.run_id || undefined}
-        renderText={(text) => <Markdown content={text} onSource={onOpenSources} />}
-      />}
+      {(!card || card.status === "succeeded") && <DeliveryFiles runId={message.run_id || undefined} />}
       {card?.state === "waiting" && card.inputRequest && (
         card.inputRequest.kind === "mode_upgrade" ? (
           <ModeUpgradeChoice uploading={uploading} onAnswer={onAnswerInputRequest} />
@@ -991,7 +989,7 @@ export default function Conversation({
                     ? `结合「${skillDisplayName(activeSkill)}」描述问题或粘贴材料…`
                     : ws.conversationMode === "work"
                       ? "描述要完成的工作和希望得到的文件，输入 / 调用指令。"
-                      : "让事实有序，让判断有据。输入 / 可调用快捷指令。"
+                      : "描述问题或粘贴材料，输入 / 调用指令。"
               }
               rows={2}
               maxLength={50000}
@@ -1114,7 +1112,7 @@ export default function Conversation({
             />
           </form>
           <p className="ws-disclaimer">
-            <span>输入 / 调用指令 · Ctrl/⌘+K 搜索会话 · Shift + Enter 换行</span>
+            <span>输入 <KeyCaps keys={["/"]} /> 调用指令 · <KeyCaps keys={["mod", "K"]} /> 搜索会话</span>
           </p>
         </motion.div>
       </div>

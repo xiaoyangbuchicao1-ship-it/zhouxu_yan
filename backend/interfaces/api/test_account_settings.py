@@ -221,12 +221,10 @@ class AccountSettingsHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(skills.status_code, 200, skills.text)
         builtin_rows = [row for row in skills.json()["skills"] if row["visibility"] == "builtin"]
         ready_ids = {row["id"] for row in builtin_rows if row.get("status") == "ready"}
-        coming_ids = {row["id"] for row in builtin_rows if row.get("status") == "coming_soon"}
+        not_ready = [row["id"] for row in builtin_rows if row.get("status") != "ready"]
         self.assertEqual(
             ready_ids,
             {
-                "law-research",
-                "case-research",
                 "maritime-case-research",
                 "maritime-legal-research",
                 "maritime-paper-research",
@@ -240,12 +238,10 @@ class AccountSettingsHttpTests(unittest.IsolatedAsyncioTestCase):
                 "maritime-legal-research": "chat",
                 "maritime-case-research": "chat",
                 "maritime-paper-research": "chat",
-                "law-research": "work",
-                "case-research": "work",
                 "csl-law-paper-generator": "work",
             },
         )
-        self.assertEqual(len(coming_ids), 6)
+        self.assertEqual(not_ready, [], "没有“即将上线”这类占位技能")
         self.assertTrue(all(not row.get("instructions") for row in builtin_rows))
 
 

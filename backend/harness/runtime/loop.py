@@ -6,6 +6,7 @@ import traceback
 from time import perf_counter
 from uuid import uuid4
 
+from backend.infrastructure.telemetry import metrics as telemetry
 from backend.config.settings import Settings
 from backend.contracts.events.runtime import RunEvent
 from backend.contracts.events.streaming import StreamEvent, visible_text
@@ -135,6 +136,43 @@ def _safe_filename(path: object) -> str:
     return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1][:48]
 
 
+def _delivery_tool_gaps(
+    selected_skill_id: object, active_skills: list[dict], results: list[dict]
+) -> list[str]:
+    """Tools a skill requires for delivery that have no successful receipt yet.
+
+    A skill may declare ``required_tools`` (for example write and
+    paper_compile for the paper skill).  A Run that answers "done" without a
+    successful call to each of them has not produced the deliverable.
+    """
+
+    from backend.skills.registry import SkillNotFound, default_skill_registry
+
+    ids: list[str] = []
+    if isinstance(selected_skill_id, str) and selected_skill_id.strip():
+        ids.append(selected_skill_id.strip())
+    ids.extend(
+        item["skill_id"]
+        for item in active_skills
+        if isinstance(item.get("skill_id"), str)
+    )
+    required: list[str] = []
+    for skill_id in dict.fromkeys(ids):
+        try:
+            metadata = default_skill_registry().descriptor(skill_id).metadata
+        except SkillNotFound:
+            continue
+        for tool in metadata.get("required_tools") or []:
+            if isinstance(tool, str) and tool not in required:
+                required.append(tool)
+    succeeded = {
+        item.get("tool_name")
+        for item in results
+        if isinstance(item, dict) and item.get("outcome") == "ok"
+    }
+    return [tool for tool in required if tool not in succeeded]
+
+
 def _skill_display_name(skill_id: object) -> str:
     from backend.application.maritime.catalog import READY_BUILTIN_METADATA
 
@@ -162,8 +200,6 @@ def _action_progress_stage(name: str) -> str:
         "information_card_read": "paper_reading",
         "web_search": "web_searching",
         "web_read": "source_reading",
-        "calculate_maritime_claim": "calculating",
-        "prepare_maritime_work": "work_package",
         "write_file": "file_writing",
         "write": "file_writing",
         "edit": "file_writing",
@@ -210,10 +246,6 @@ def _action_progress_label(name: str, arguments: dict) -> str:
     if name == "search_material":
         topic = _short_topic(args.get("query"))
         return f"检索上传材料 · {topic}" if topic else "检索上传材料"
-    if name == "calculate_maritime_claim":
-        return "测算海事索赔与限额"
-    if name == "prepare_maritime_work":
-        return "生成结构化工作包对照表"
     if name in {"write", "write_file"}:
         fname = _safe_filename(args.get("path"))
         verb = "续写文稿" if args.get("append") else "撰写文稿"
@@ -248,10 +280,6 @@ def _action_progress_done_label(name: str, arguments: dict, result: ActionResult
         return "已读取来源正文"
     if name == "read_material":
         return "已读取上传材料"
-    if name == "calculate_maritime_claim":
-        return "已完成索赔金额测算"
-    if name == "prepare_maritime_work":
-        return "已保存工作包对照表"
     if name in {"write", "write_file", "edit"}:
         fname = _safe_filename((arguments or {}).get("path"))
         if name == "edit":
@@ -539,16 +567,45 @@ class Harness:
                         )
                     )
                     module_timeout = self.settings.runtime.call_timeout_seconds
+                    tool_name = (
+                        getattr(payload, "tool_name", None)
+                        if name == "action"
+                        else None
+                    )
                     if name == "reasoning":
                         module_timeout = self.settings.runtime.model_call_timeout_seconds or module_timeout
                         module_timeout = min(module_timeout, self.settings.model.generation_mode.call_timeout_seconds)
                     elif name == "action":
-                        if getattr(payload, "tool_name", None) == "paper_compile":
+                        if tool_name == "paper_compile":
                             module_timeout = self.settings.runtime.compile_timeout_seconds
+                        elif tool_name == "bash":
+                            requested_timeout = (
+                                (payload.arguments or {}).get("timeout_seconds")
+                                if isinstance(getattr(payload, "arguments", None), dict)
+                                else None
+                            )
+                            if (
+                                isinstance(requested_timeout, (int, float))
+                                and not isinstance(requested_timeout, bool)
+                                and requested_timeout > 0
+                            ):
+                                bash_timeout = min(float(requested_timeout), 120.0)
+                            else:
+                                bash_timeout = min(
+                                    float(self.settings.execution.command_timeout_seconds),
+                                    120.0,
+                                )
+                            # Let the sandbox's own command timeout fire and clean
+                            # up first instead of aborting prematurely at 40s.
+                            module_timeout = bash_timeout + 10.0
                         else:
                             module_timeout = self.settings.runtime.action_timeout_seconds or module_timeout
+                    interruptible = name == "reasoning" or (
+                        name == "action"
+                        and (read_only or tool_name in {"bash", "paper_compile"})
+                    )
                     response = await asyncio.wait_for(
-                        control.read(operation) if name == "reasoning" else operation,
+                        control.read(operation) if interruptible else operation,
                         timeout=min(
                             module_timeout,
                             self.settings.runtime.call_timeout_seconds
@@ -1359,6 +1416,7 @@ class Harness:
                             )
                         else:
                             tool_counts[name] = tool_counts.get(name, 0) + 1
+                            tool_started = perf_counter()
                             result = await invoke(
                                 "action",
                                 action_request,
@@ -1383,6 +1441,18 @@ class Harness:
                                     ),
                                 },
                             )
+                            metrics = telemetry.get_store()
+                            if metrics is not None:
+                                metrics.record_tool(
+                                    tool=name,
+                                    outcome=result.outcome,
+                                    duration_ms=int((perf_counter() - tool_started) * 1000),
+                                    mode=value.mode,
+                                    account_id=account_id,
+                                    conversation_id=(conversation_id or session_id) if explicit_session else None,
+                                    run_id=run_id,
+                                    error_code=result.error.code if result.error else None,
+                                )
                             done_label = _action_progress_done_label(
                                 name, action_request.arguments, result
                             )
@@ -1522,6 +1592,29 @@ class Harness:
                 if review.decision == "complete":
                     if proposal.kind != "answer" or not (proposal.answer or "").strip():
                         raise Halt("failed", self.settings.error("invalid_completion"))
+                    gaps = (
+                        _delivery_tool_gaps(selected_skill_id, active_skills, retained_results)
+                        if value.mode == "work"
+                        else []
+                    )
+                    if gaps:
+                        if retries >= self.settings.runtime.max_retries:
+                            raise Halt(
+                                "failed",
+                                self.settings.error("deliverable_missing", retryable=True),
+                            )
+                        retries += 1
+                        await remember(
+                            "reflection",
+                            {"missing_delivery_tools": gaps},
+                            "交付文件还没有生成：以下必需工具没有成功的调用记录："
+                            + "、".join(gaps)
+                            + "。请先完成这些步骤并取得成功结果，再说明交付；不能在没有文件时宣布完成。",
+                        )
+                        self._emit(
+                            RunEvent(run_id=run_id, module="reflection", phase="retrying")
+                        )
+                        continue
                     remaining_work = []
                     return finish("succeeded", answer=delivered_prefix() + proposal.answer)
                 if review.decision == "needs_input":

@@ -59,3 +59,8 @@ handoff/
 # Machine-specific infrastructure notes and obsolete local launch scratchpad.
 docs/ecs-frp-公网转发配置步骤.txt
 start/hunma_start.txt
+
+# Local process & planning drafts (keep on disk, omit from GitHub tree).
+整体优化方案.md
+最后一公里方案-待审.md
+plan.md

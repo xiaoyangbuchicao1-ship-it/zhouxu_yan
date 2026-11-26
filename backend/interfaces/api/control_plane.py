@@ -152,6 +152,9 @@ class HarnessControlService:
     async def wait_for_idle(self, *, session_id: str) -> None:
         await self.scheduler.wait_for_idle(session_id=session_id)
 
+    async def discard_session(self, *, session_id: str) -> list[str]:
+        return await self.scheduler.discard_session(session_id)
+
 
 class UnavailableRunExecutor:
     """Safe startup fallback when model credentials are not configured."""

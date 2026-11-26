@@ -18,6 +18,7 @@ CHECKPOINT_CODES = frozenset(
         "model_output_incomplete",
         "model_generation_stopped",
         "invalid_decision",
+        "deliverable_missing",
         "model_unavailable",
         "module_failed",
         "missing_output",
@@ -35,6 +36,7 @@ CHECKPOINT_CODES = frozenset(
         "task_blocked",
         "mixed_input_incomplete",
         "required_context_budget",
+        "restart_interrupted",
     }
 )
 
@@ -89,6 +91,7 @@ PROTOCOL_RESET_CODES = frozenset(
         "model_generation_stopped",
         "model_unavailable",
         "timeout",
+        "restart_interrupted",
     }
 )
 

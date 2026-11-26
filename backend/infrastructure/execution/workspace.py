@@ -178,7 +178,7 @@ class WorkspaceExecutionProvider:
             ),
             "bash": ToolSpec(
                 name="bash",
-                description="在当前工作区的隔离执行环境内运行bash命令。命令只应操作本次会话工作区；首期文档生成可调用python-docx、lxml、LibreOffice和PDF检查工具。固定模板或复杂OOXML由部署运行时提供。",
+                description="在当前工作区的隔离执行环境内运行bash命令。命令只应操作本次会话工作区；默认超时 120 秒，可通过 timeout_seconds 在 1 至 120 秒之间调整；首期文档生成可调用python-docx、lxml、LibreOffice和PDF检查工具。固定模板或复杂OOXML由部署运行时提供。",
                 kind="execution",
                 parameters={
                     "type": "object",
@@ -324,6 +324,21 @@ class WorkspaceExecutionProvider:
             raise ValueError("path")
         return "/".join(path.parts)
 
+    async def _abort_workspace(self, run_id: str, workspace: _RunWorkspace) -> None:
+        async with self._lock:
+            if self._runs.get(run_id) is workspace:
+                self._runs.pop(run_id, None)
+        await asyncio.to_thread(workspace.runtime.close)
+
+    async def _run_cancellable(self, run_id: str, workspace: _RunWorkspace, fn, *args):
+        task = asyncio.create_task(asyncio.to_thread(fn, workspace, *args))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await self._abort_workspace(run_id, workspace)
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
     async def execute(
         self, name: str, request: ModuleRequest[ActionRequest]
     ) -> ActionResult:
@@ -332,13 +347,17 @@ class WorkspaceExecutionProvider:
             async with self._lock:
                 workspace = self._workspace_for(request.run_id, request.context)
             if name == "read":
-                result = await asyncio.to_thread(self._read, workspace, arguments)
+                result = await self._run_cancellable(
+                    request.run_id, workspace, self._read, arguments
+                )
             elif name == "write":
                 result = await asyncio.to_thread(self._write, workspace, arguments, request.input.action_id)
             elif name == "edit":
                 result = await asyncio.to_thread(self._edit, workspace, arguments)
             elif name == "bash":
-                result = await asyncio.to_thread(self._bash, workspace, arguments)
+                result = await self._run_cancellable(
+                    request.run_id, workspace, self._bash, arguments
+                )
             else:
                 raise ValueError("tool")
             failed = result.get("status") == "failed"
@@ -551,14 +570,16 @@ print(hashlib.sha256(value).hexdigest())
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip() or len(command) > 16000:
             raise ValueError("command")
-        timeout = min(
-            int(
-                arguments.get(
-                    "timeout_seconds", self.settings.execution.command_timeout_seconds
-                )
-            ),
-            120,
-        )
+        raw_timeout = arguments.get("timeout_seconds")
+        if raw_timeout is None:
+            raw_timeout = self.settings.execution.command_timeout_seconds
+        if (
+            not isinstance(raw_timeout, (int, float))
+            or isinstance(raw_timeout, bool)
+            or raw_timeout < 1
+        ):
+            raise _port_error(self.settings, "invalid_arguments")
+        timeout = max(1, min(int(raw_timeout), 120))
         began = monotonic()
         result = workspace.runtime.bash(command, timeout=timeout, check=False)
         return {

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   FileText,
@@ -29,12 +29,16 @@ export function ResourcePreview({
   ws: Workspace;
   close: () => void;
 }) {
-  const passages = useQuery({
+  const passages = useInfiniteQuery({
     queryKey: [...ws.scope, "passages", resource?.id],
-    queryFn: ({ signal }) => ws.api.passages(resource!.id, signal),
+    queryFn: ({ signal, pageParam }) => ws.api.passages(resource!.id, signal, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled: Boolean(resource),
     retry: false,
   });
+  const chunks = passages.data?.pages.flatMap((page) => page.chunks) ?? [];
+  const notices = [...new Set(passages.data?.pages.flatMap((page) => page.notices ?? []) ?? [])];
   return (
     <Modal
       open={Boolean(resource)}
@@ -56,12 +60,12 @@ export function ResourcePreview({
             <Loading label="正在载入正文…" />
           ) : passages.isError ? (
             <LoadError retry={() => void passages.refetch()} />
-          ) : !passages.data?.chunks.length ? (
+          ) : !chunks.length ? (
             <p className="ws-muted">
               尚未读到可展示的正文。可检查文件内容后重新上传。
             </p>
           ) : (
-            passages.data.chunks.map((passage) => (
+            chunks.map((passage) => (
               <section className="ws-passage" key={passage.id}>
                 {(passage.locator || passage.heading_path) && (
                   <h3>
@@ -81,6 +85,19 @@ export function ResourcePreview({
                 )}
               </section>
             ))
+          )}
+          {notices.map((notice) => (
+            <p className="ws-muted" key={notice}>{notice}</p>
+          ))}
+          {passages.hasNextPage && (
+            <button
+              type="button"
+              className="ws-secondary-button"
+              disabled={passages.isFetchingNextPage}
+              onClick={() => void passages.fetchNextPage()}
+            >
+              {passages.isFetchingNextPage ? "载入中…" : "加载更多"}
+            </button>
           )}
         </div>
       )}
@@ -129,7 +146,7 @@ export function LibraryPage({
       <header className="md-heading">
         <div>
           <h1>资料库</h1>
-          <p>把常用依据留在手边。需要时，再选入对话。</p>
+          <p>上传一次，之后在任何对话里都能选用。</p>
         </div>
         <button
           className="ws-primary-button"
@@ -194,21 +211,16 @@ export function LibraryPage({
       ) : !resources.length ? (
         <div className="ws-library-empty">
           <FolderOpen size={34} strokeWidth={1.2} />
-          <h2>有据，才有下一步。</h2>
-          <p>
-            上传常用法律、合同范本或研究材料，
-            <br />
-            在需要的对话中选择使用。
-          </p>
+          <h2>还没有资料</h2>
+          <p>支持法律文本、合同范本和研究材料，单份不超过 30 MB。</p>
           <button
             className="ws-text-button"
             onClick={() => fileInput.current?.click()}
             disabled={uploading}
           >
-            添加第一份资料
+            上传资料
             <ArrowUpRight size={16} />
           </button>
-          <span>单份文件不超过 30 MB；读取结果以上传后状态为准。</span>
         </div>
       ) : !filtered.length ? (
         <p className="ws-empty-text">
@@ -250,7 +262,6 @@ export function LibraryPage({
           ))}
         </ul>
       )}
-      <p className="ws-library-note">资料库属于当前账户。</p>
     </div>
   );
 }

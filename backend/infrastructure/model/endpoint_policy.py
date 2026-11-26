@@ -39,10 +39,22 @@ _METADATA_HOSTNAMES = frozenset({
     "metadata.google.internal",
     "metadata.goog",
 })
+# RFC 2544 benchmarking range used by Clash/Mihomo/sing-box TUN Fake-IP DNS proxies.
+_TUN_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 
 
 def local_model_hosts_enabled() -> bool:
     return os.environ.get("ZHOUXU_ALLOW_LOCAL_MODEL_HOSTS", "").strip() == "1"
+
+
+def fake_ip_proxy_enabled() -> bool:
+    return os.environ.get("ZHOUXU_ALLOW_FAKE_IP_PROXY", "1").strip() != "0"
+
+
+def _is_tun_fake_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return _is_tun_fake_ip(address.ipv4_mapped)
+    return isinstance(address, ipaddress.IPv4Address) and address in _TUN_FAKE_IP_NETWORK
 
 
 def _configured_local_hosts() -> set[str]:
@@ -98,6 +110,7 @@ def validate_resolved_addresses(
     *,
     allow_local: bool = False,
     host: str = "",
+    allow_fake_ip: bool = False,
 ) -> list[str]:
     """Validate resolved IPs and return the clean ordered IP strings."""
 
@@ -108,6 +121,9 @@ def validate_resolved_addresses(
         if _is_always_blocked_address(address):
             raise EndpointPolicyError("endpoint_resolved_address_blocked")
         if _is_private_or_loopback_address(address):
+            if allow_fake_ip and _is_tun_fake_ip(address):
+                cleaned.append(str(address))
+                continue
             if not (allow_local and (local_host or address.is_loopback)):
                 raise EndpointPolicyError("endpoint_resolved_address_blocked")
         cleaned.append(str(address))
@@ -212,7 +228,10 @@ class PinnedAsyncNetworkBackend(httpcore.AsyncNetworkBackend):
         except EndpointPolicyError:
             resolved = await self._resolve(normalized, port)
             validated = validate_resolved_addresses(
-                resolved, allow_local=self.allow_local, host=normalized
+                resolved,
+                allow_local=self.allow_local,
+                host=normalized,
+                allow_fake_ip=fake_ip_proxy_enabled(),
             )
             pinned_ip = validated[0]
         else:

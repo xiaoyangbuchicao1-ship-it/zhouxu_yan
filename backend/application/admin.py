@@ -5,14 +5,18 @@ from __future__ import annotations
 import base64
 import json
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from backend.infrastructure.database.connection import Database
 from backend.infrastructure.database.models import (
     AccountModel,
     BusinessAuditModel,
+    ConversationModel,
+    ConversationRunModel,
+    MaterialModel,
+    SessionModel,
 )
 
 
@@ -163,6 +167,14 @@ class AdminService:
             target.status = next_status
             target.role = next_role
             target.updated_at = self._now()
+            if next_status != "active":
+                # Re-enabling later must not bring old sign-ins back to life.
+                for live in session.scalars(
+                    select(SessionModel).where(
+                        SessionModel.account_id == target.id, SessionModel.revoked_at.is_(None)
+                    )
+                ):
+                    live.revoked_at = target.updated_at
             changes = {"status": {"from": old_status, "to": next_status},
                        "role": {"from": old_role, "to": next_role}}
             if old_status == next_status:
@@ -180,17 +192,144 @@ class AdminService:
             session.commit()
             return self._account_view(target)
 
+    _ACTIVE_RUN_STATUSES = ("queued", "preparing", "running", "pausing", "resuming", "retrying")
+
+    def delete_account(self, *, actor_id: str, account_id: str) -> dict:
+        """Permanently delete a non-self account and cascade its relational data.
+
+        Returns the conversation IDs and material storage keys so the HTTP
+        boundary can also purge runtime store sessions, generated workspace
+        files, original uploads, and account-owned uploaded skills.
+        """
+
+        with self.database.session() as session:
+            if self.database.engine.dialect.name == "sqlite":
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            actor = session.get(AccountModel, actor_id)
+            if actor is None or actor.role != "admin" or actor.status != "active":
+                raise AdminServiceError("admin_required")
+            target = session.get(AccountModel, account_id)
+            if target is None:
+                raise AdminServiceError("account_not_found")
+            if target.id == actor.id:
+                raise AdminServiceError("cannot_delete_self")
+            if target.role == "admin" and target.status == "active":
+                live_admins = session.scalar(
+                    select(func.count(AccountModel.id)).where(
+                        AccountModel.role == "admin",
+                        AccountModel.status == "active",
+                    )
+                ) or 0
+                if live_admins <= 1:
+                    raise AdminServiceError("last_admin_required")
+
+            active_runs = session.scalar(
+                select(func.count(ConversationRunModel.run_id))
+                .join(ConversationModel, ConversationModel.id == ConversationRunModel.conversation_id)
+                .where(
+                    ConversationModel.account_id == target.id,
+                    ConversationRunModel.status.in_(self._ACTIVE_RUN_STATUSES),
+                )
+            ) or 0
+            if active_runs > 0:
+                raise AdminServiceError("account_has_active_runs")
+
+            conversation_ids = list(
+                session.scalars(
+                    select(ConversationModel.id).where(ConversationModel.account_id == target.id)
+                ).all()
+            )
+            material_storage_keys = list(
+                session.scalars(
+                    select(MaterialModel.storage_key).where(MaterialModel.account_id == target.id)
+                ).all()
+            )
+            deleted_email = target.email
+            deleted_name = target.display_name
+            deleted_role = target.role
+            deleted_id = target.id
+
+            # business_audits.actor_id uses ON DELETE RESTRICT; remove rows
+            # authored by the deleted account and detach target references
+            # before deleting the account itself.
+            session.execute(
+                delete(BusinessAuditModel).where(BusinessAuditModel.actor_id == deleted_id)
+            )
+            session.execute(
+                update(BusinessAuditModel)
+                .where(BusinessAuditModel.target_account_id == deleted_id)
+                .values(target_account_id=None)
+            )
+            session.delete(target)
+            session.flush()
+            self._add_audit(
+                session,
+                actor_id=actor.id,
+                target_account_id=None,
+                action="account.deleted",
+                resource_type="account",
+                resource_id=deleted_id,
+                details={
+                    "email": deleted_email,
+                    "display_name": deleted_name,
+                    "role": deleted_role,
+                    "conversations_deleted": len(conversation_ids),
+                    "materials_deleted": len(material_storage_keys),
+                },
+            )
+            session.commit()
+            return {
+                "account_id": deleted_id,
+                "email": deleted_email,
+                "conversation_ids": conversation_ids,
+                "material_storage_keys": material_storage_keys,
+            }
+
     AUDIT_CATEGORY_RESOURCES: dict[str, tuple[str, ...]] = {
         "account": ("account",),
         "capability": ("account_capability",),
         "model": ("model_provider", "model_profile"),
-        "conversation": ("conversation",),
+        "conversation": ("conversation", "material", "artifact"),
+        "skill": ("skill",),
+        "auth": ("auth",),
+        "system": ("system",),
     }
+    # What administrators changed: everything except sign-ins and log views.
+    OPERATION_RESOURCES: tuple[str, ...] = (
+        "account", "account_capability", "model_provider", "model_profile", "skill", "system",
+    )
     _RESOURCE_TO_CATEGORY: dict[str, str] = {
         resource: cat
         for cat, resources in AUDIT_CATEGORY_RESOURCES.items()
         for resource in resources
     }
+
+    def audit_summary(self) -> dict:
+        """The last 24 hours at a glance, for the audit page header."""
+
+        since = self._now() - timedelta(hours=24)
+        with self.database.session() as session:
+            def count(*conditions) -> int:
+                return int(
+                    session.scalar(
+                        select(func.count(BusinessAuditModel.id)).where(BusinessAuditModel.created_at >= since, *conditions)
+                    )
+                    or 0
+                )
+
+            disabled = session.scalar(
+                select(func.count(AccountModel.id)).where(AccountModel.status == "disabled")
+            ) or 0
+            return {
+                "operations_24h": count(
+                    BusinessAuditModel.resource_type != "auth",
+                    BusinessAuditModel.action != "conversation.log_viewed",
+                ),
+                "logins_24h": count(BusinessAuditModel.action == "auth.login"),
+                "login_failures_24h": count(BusinessAuditModel.action == "auth.login_failed"),
+                "conversation_views_24h": count(BusinessAuditModel.action == "conversation.log_viewed"),
+                "disabled_accounts": int(disabled),
+            }
 
     def list_audit(self, *, limit: int = 50) -> list[dict]:
         if limit < 1 or limit > 200:
@@ -212,7 +351,11 @@ class AdminService:
         normalized_cat = category.strip().lower() if category else None
         if normalized_cat == "all":
             normalized_cat = None
-        if normalized_cat is not None and normalized_cat not in self.AUDIT_CATEGORY_RESOURCES:
+        if (
+            normalized_cat is not None
+            and normalized_cat != "operations"
+            and normalized_cat not in self.AUDIT_CATEGORY_RESOURCES
+        ):
             raise AdminServiceError("invalid_audit_category")
         normalized_out = outcome.strip().lower() if outcome else None
         if normalized_out == "all":
@@ -241,7 +384,7 @@ class AdminService:
                     )
                 )
 
-            counts = {"all": 0, "account": 0, "capability": 0, "model": 0, "conversation": 0}
+            counts = {"all": 0, "operations": 0, **{category: 0 for category in self.AUDIT_CATEGORY_RESOURCES}}
             count_stmt = (
                 select(BusinessAuditModel.resource_type)
                 .join(actor, actor.id == BusinessAuditModel.actor_id)
@@ -254,6 +397,8 @@ class AdminService:
                 cat = self._RESOURCE_TO_CATEGORY.get(resource_type or "account")
                 if cat is not None:
                     counts[cat] += 1
+                if resource_type in self.OPERATION_RESOURCES:
+                    counts["operations"] += 1
 
             statement = (
                 select(BusinessAuditModel, actor, target)
@@ -265,11 +410,12 @@ class AdminService:
             if base_filters:
                 statement = statement.where(*base_filters)
             if normalized_cat is not None:
-                statement = statement.where(
-                    BusinessAuditModel.resource_type.in_(
-                        self.AUDIT_CATEGORY_RESOURCES[normalized_cat]
-                    )
+                resources = (
+                    self.OPERATION_RESOURCES
+                    if normalized_cat == "operations"
+                    else self.AUDIT_CATEGORY_RESOURCES[normalized_cat]
                 )
+                statement = statement.where(BusinessAuditModel.resource_type.in_(resources))
             if cursor_time is not None:
                 statement = statement.where(
                     or_(
@@ -315,6 +461,10 @@ class AdminService:
         return timestamp, row_id
 
     @staticmethod
+    def _utc(value: datetime) -> datetime:
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    @staticmethod
     def _audit_view(event: BusinessAuditModel, actor_account: AccountModel, target_account: AccountModel | None) -> dict:
         return {
             "id": event.id,
@@ -327,7 +477,7 @@ class AdminService:
             "resource_id": getattr(event, "resource_id", None),
             "outcome": getattr(event, "outcome", "succeeded") or "succeeded",
             "details": json.loads(event.details_json) if event.details_json else {},
-            "created_at": event.created_at,
+            "created_at": AdminService._utc(event.created_at),
         }
 
     @staticmethod
@@ -338,8 +488,9 @@ class AdminService:
             "display_name": account.display_name,
             "status": account.status,
             "role": account.role,
-            "created_at": account.created_at,
-            "updated_at": account.updated_at,
+            "register_ip": getattr(account, "register_ip", None) or None,
+            "created_at": AdminService._utc(account.created_at),
+            "updated_at": AdminService._utc(account.updated_at),
         }
 
     def _list_audit_with_aliases(self, session, limit: int) -> list[dict]:

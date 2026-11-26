@@ -21,6 +21,16 @@ class MemoryEventSink:
         self._stream_sequences[event.run_id] = sequence
         self.stream_events.append(event.model_copy(update={"sequence": sequence}, deep=True))
 
+    def discard_runs(self, run_ids) -> None:
+        """Drop everything held in memory for the given Runs."""
+
+        gone = set(run_ids)
+        self.events[:] = [event for event in self.events if event.run_id not in gone]
+        self.stream_events[:] = [event for event in self.stream_events if event.run_id not in gone]
+        for run_id in gone:
+            self._stream_sequences.pop(run_id, None)
+            self._run_sequences.pop(run_id, None)
+
     def next_stream_sequence(self, run_id: str) -> int:
         return self._stream_sequences.get(run_id, 0) + 1
 

@@ -78,7 +78,8 @@ class AdminHttpContractTests(unittest.IsolatedAsyncioTestCase):
             "/auth/login",
             json={"email": "user@example.com", "password": "a-long-user-password"},
         )
-        self.assertEqual(user_login.status_code, 401)
+        self.assertEqual(user_login.status_code, 403)
+        self.assertEqual(user_login.json()["detail"], "account_disabled")
 
     async def test_accounts_support_server_filters_and_pagination(self):
         for index in range(24):
@@ -148,13 +149,23 @@ class AdminHttpContractTests(unittest.IsolatedAsyncioTestCase):
         body = overview.json()
         self.assertEqual(len(body['events']), 2)
         self.assertTrue(body['next_cursor'])
-        self.assertEqual(body['category_counts']['all'], 3)
-        self.assertEqual(body['category_counts']['model'], 1)
-        self.assertEqual(body['category_counts']['capability'], 1)
+        counts = body['category_counts']
+        self.assertEqual(counts['all'], sum(value for key, value in counts.items() if key not in {'all', 'operations'}))
+        self.assertEqual(counts['model'], 1)
+        self.assertEqual(counts['capability'], 1)
+        self.assertEqual(counts['conversation'], 1)
+        self.assertGreaterEqual(counts['auth'], 2)
+        self.assertEqual(counts['operations'], counts['capability'] + counts['model'] + counts['account'] + counts['skill'])
 
-        page2 = await self.client.get(f"/admin/audit?limit=2&cursor={body['next_cursor']}", headers=headers)
-        self.assertEqual(page2.status_code, 200)
-        self.assertEqual(len(page2.json()['events']), 1)
+        seen = [row['action'] for row in body['events']]
+        cursor = body['next_cursor']
+        while cursor:
+            page = await self.client.get(f"/admin/audit?limit=2&cursor={cursor}", headers=headers)
+            self.assertEqual(page.status_code, 200)
+            seen += [row['action'] for row in page.json()['events']]
+            cursor = page.json()['next_cursor']
+        for action in ('account.capability_changed', 'model.provider_tested', 'conversation.log_viewed', 'auth.login'):
+            self.assertIn(action, seen)
 
         failed = await self.client.get('/admin/audit?category=model&outcome=failed&q=relay-1', headers=headers)
         self.assertEqual(failed.status_code, 200)
@@ -162,6 +173,94 @@ class AdminHttpContractTests(unittest.IsolatedAsyncioTestCase):
 
         bad = await self.client.get('/admin/audit?category=unknown', headers=headers)
         self.assertEqual(bad.status_code, 422)
+
+    async def test_admin_can_delete_account_with_full_cleanup_and_guards(self):
+        from datetime import datetime, timezone
+        from backend.infrastructure.database.models import ConversationModel, ConversationRunModel
+
+        login = await self.client.post(
+            "/auth/admin-login",
+            json={"email": "admin@example.com", "password": "a-long-admin-password"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['session']['token']}"}
+
+        # Self-delete blocked
+        self_del = await self.client.delete(f"/admin/accounts/{self.admin.id}", headers=headers)
+        self.assertEqual(self_del.status_code, 409)
+        self.assertEqual(self_del.json()["detail"], "cannot_delete_self")
+
+        # Non-admin blocked
+        user_del = await self.client.delete(
+            f"/admin/accounts/{self.admin.id}",
+            headers={"Authorization": f"Bearer {self.user.token}"},
+        )
+        self.assertEqual(user_del.status_code, 403)
+
+        # Create a conversation with an active run -> delete must be blocked with 409
+        now = datetime.now(timezone.utc)
+        with self.database.session() as session:
+            session.add(
+                ConversationModel(
+                    id="conv-del-1",
+                    account_id=self.user.account.id,
+                    title="待删除会话",
+                    mode="work",
+                    pinned=False,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                ConversationRunModel(
+                    run_id="run-del-1",
+                    conversation_id="conv-del-1",
+                    question="运行中",
+                    status="running",
+                    created_at=now,
+                )
+            )
+            session.commit()
+
+        blocked = await self.client.delete(
+            f"/admin/accounts/{self.user.account.id}", headers=headers
+        )
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()["detail"], "account_has_active_runs")
+
+        # Mark run succeeded -> deletion now succeeds cleanly
+        with self.database.session() as session:
+            run = session.get(ConversationRunModel, "run-del-1")
+            run.status = "succeeded"
+            session.commit()
+
+        removed = await self.client.delete(
+            f"/admin/accounts/{self.user.account.id}", headers=headers
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        body = removed.json()
+        self.assertTrue(body["deleted"])
+        self.assertEqual(body["email"], "user@example.com")
+        self.assertEqual(body["conversations_deleted"], 1)
+
+        # Old user token & credentials are immediately dead
+        me = await self.client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {self.user.token}"}
+        )
+        self.assertEqual(me.status_code, 401)
+        retry_login = await self.client.post(
+            "/auth/login",
+            json={"email": "user@example.com", "password": "a-long-user-password"},
+        )
+        self.assertEqual(retry_login.status_code, 401)
+
+        # Account gone from list, audit records account.deleted, zero FK violations
+        listing = await self.client.get("/admin/accounts", headers=headers)
+        self.assertEqual([a["email"] for a in listing.json()["accounts"]], ["admin@example.com"])
+        audit = await self.client.get("/admin/audit?category=operations", headers=headers)
+        self.assertEqual(audit.status_code, 200)
+        self.assertEqual(audit.json()["events"][0]["action"], "account.deleted")
+        self.assertEqual(audit.json()["events"][0]["details"]["email"], "user@example.com")
+        self.assertEqual(self.database.foreign_key_violations(), [])
 
 
 if __name__ == "__main__":

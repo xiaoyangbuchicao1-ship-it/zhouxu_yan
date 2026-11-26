@@ -111,39 +111,6 @@ _CATALOG: dict[str, SkillDescriptor] = {
 }
 
 
-# The handoff package contributes method packages, but the current project
-# remains the owner of registration. An explicit list prevents an arbitrary
-# copied file from becoming model-visible.
-_READY_MARITIME_WORK_SKILLS = frozenset({"law-research", "case-research"})
-_MARITIME_SKILLS: tuple[tuple[str, str], ...] = (
-    ("case-assessment", "案件初步研判"),
-    ("case-management", "案件管理与协同"),
-    ("case-research", "案例检索与分析"),
-    ("claim-calculation", "索赔测算"),
-    ("contract-review", "合同与提单审查"),
-    ("document-drafting", "文书起草"),
-    ("evidence-review", "证据整理"),
-    ("law-research", "法律检索与问答"),
-)
-
-for _name, _fallback_description in _MARITIME_SKILLS:
-    _directory = _SKILL_ROOT / "maritime" / _name
-    _method_path = _directory / "method.json"
-    _skill_path = _directory / "SKILL.md"
-    _metadata = _load_method(_method_path)
-    _CATALOG[_name] = _descriptor(
-        _name,
-        str(_metadata.get("summary") or _fallback_description),
-        _skill_path,
-        method_path=_method_path,
-        # The handoff method packages are the current v2 business baseline.
-        # Keep the version at the registry boundary even when a method.json
-        # from the handoff snapshot has no explicit version field.
-        version="2",
-        mode_scope="work",
-        ready=_name in _READY_MARITIME_WORK_SKILLS,
-    )
-
 _CSL_SKILL_PATH = (
     _EXTERNAL_CSL_ROOT / "SKILL.md"
     if (_EXTERNAL_CSL_ROOT / "SKILL.md").is_file()
@@ -236,6 +203,10 @@ class SkillRegistry:
     def resources(self, name: str) -> tuple[str, ...]:
         if name == "csl-law-paper-generator":
             return ("references/clsci_citation_guide.md", "assets/csl_template.typ")
+        # Other built-in skills may ship reference notes their SKILL.md points to.
+        references = self.descriptor(name).path.parent / "references"
+        if references.is_dir():
+            return tuple(f"references/{item.name}" for item in sorted(references.glob("*.md")))
         return ()
 
     def read_resource(self, name: str, resource: str) -> str:

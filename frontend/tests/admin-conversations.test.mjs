@@ -30,17 +30,26 @@ test("会话列表只请求当前账户，并把筛选条件放进网址", async
   assert.equal(calls[0].options.cache, "no-store");
 });
 
-test("全局最近任务支持按状态筛选参数传给后端", async () => {
+test("总览一次请求带回未完成和卡住的任务，管理台不再有单独的任务接口", async () => {
   const calls = [];
+  const task = {
+    run_id: "r1", account_id: "a1", account_email: "u@example.com", conversation_id: "c1",
+    question: "问题", status: "failed", model: "m", provider: "p", created_at: "2026-11-24T08:00:00Z",
+    completed_at: null, elapsed_ms: null, answer_chars: 0, error_code: "timeout",
+  };
   globalThis.fetch = async (url, options) => {
     calls.push({ url, options });
-    return Response.json({ tasks: [], next_cursor: null });
+    return Response.json({ overview: {
+      total_accounts: 2, active_accounts: 2, disabled_accounts: 0, admin_accounts: 1, audit_events: 3,
+      tasks_24h: 4, failed_24h: 1, active_tasks: 0, recent_failed: [task], stuck_tasks: [],
+    } });
   };
   const { createAdminApi } = await import("../src/lib/admin-api.ts");
-  await createAdminApi("token").tasks(30, undefined, "failed");
-  assert.match(calls[0].url, /\/admin\/tasks\?/);
-  assert.match(calls[0].url, /limit=30/);
-  assert.match(calls[0].url, /status=failed/);
+  const api = createAdminApi("token");
+  const { overview } = await api.overview();
+  assert.equal(overview.recent_failed[0].conversation_id, "c1");
+  assert.match(calls[0].url, /\/admin\/overview$/);
+  assert.equal(api.tasks, undefined);
 });
 
 test("会话详情只接受公开正文和安全运行信息", async () => {

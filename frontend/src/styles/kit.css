@@ -1,0 +1,13 @@
+/* kit.css — shared dialog shell utilities */
+
+/* Size variants (apply alongside ws-dialog on DialogContent) */
+.ws-dialog-s { max-width: var(--zx-dlg-s, 440px); }
+.ws-dialog-m { max-width: var(--zx-dlg-m, 640px); }
+.ws-dialog-l { max-width: var(--zx-dlg-l, 920px); }
+
+/* Unified animation: 200ms open, 140ms close */
+.ws-dialog[data-state="open"]  { animation-duration: 200ms; }
+.ws-dialog[data-state="closed"] { animation-duration: 140ms; }
+
+/* Drawer variant */
+.ws-drawer { max-width: var(--zx-drawer, 420px); }

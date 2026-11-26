@@ -4,11 +4,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
   ChevronRight,
-  Compass,
-  FileArchive,
   FileText,
   LoaderCircle,
-  Sparkles,
   Trash2,
   Upload,
   X,
@@ -38,57 +35,18 @@ function packageSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function SkillCard({
-  skill,
-  onOpen,
-  onUse,
-  canInspect = false,
-}: {
-  skill: MaritimeSkill;
-  onOpen?: () => void;
-  onUse?: () => void;
-  canInspect?: boolean;
-}) {
-  const files = skill.package?.files.length ?? 0;
-  const title = skillDisplayName(skill);
-  const modeScope = skill.mode_scope || "work";
-  const tagText = skill.deliverable_tag || (skill.package ? "" : modeScope === "chat" ? "只读检索" : "工作模式");
-  const body = (
-    <>
-      <span className="md-skill-number" aria-hidden="true">
-        {skill.package ? <FileArchive size={21} strokeWidth={1.6} /> : <Sparkles size={20} strokeWidth={1.6} />}
-      </span>
+/* 整行是一个按钮：内置技能点了直接开始，自己上传的点了先看包内容。 */
+function SkillRow({ skill, onSelect }: { skill: MaritimeSkill; onSelect: () => void }) {
+  const isChat = (skill.mode_scope || "work") === "chat";
+  return (
+    <button type="button" className="md-skill" onClick={onSelect}>
       <span className="md-skill-copy">
-        <span className="md-row">
-          <strong>{title}</strong>
-          {skill.package && <span className="md-tag">ZIP · {files} 个文件</span>}
-          {!skill.package && tagText && <span className="md-tag">{tagText}</span>}
-        </span>
+        <strong>{skillDisplayName(skill)}</strong>
         <span className="md-skill-summary">{skill.summary}</span>
       </span>
+      <span className="md-skill-mode">{isChat ? "聊天模式" : "工作模式"}</span>
       <ChevronRight className="md-skill-chevron" size={17} aria-hidden="true" />
-    </>
-  );
-
-  return (
-    <article className="md-skill md-skill-package">
-      <button type="button" className="md-skill-content" onClick={canInspect && onOpen ? onOpen : onUse}>
-        {body}
-      </button>
-      <div className="md-skill-actions">
-        {onUse && (
-          <button type="button" className="ws-text-button" onClick={onUse}>
-            {modeScope === "chat" ? "在聊天模式使用" : "在工作模式使用"}
-            <ArrowUpRight size={15} />
-          </button>
-        )}
-        {canInspect && onOpen && (
-          <button type="button" className="ws-text-button" onClick={onOpen}>
-            查看包文件
-          </button>
-        )}
-      </div>
-    </article>
+    </button>
   );
 }
 
@@ -190,16 +148,20 @@ export default function Skills({ api, accountId, onError, error }: Props) {
               if (file) void upload(file);
             }}
           />
-          <button
-            type="button"
-            className="ws-primary-button"
-            disabled={uploadBusy}
-            onClick={() => fileInput.current?.click()}
-          >
-            {uploadBusy ? <LoaderCircle className="md-spin" size={16} /> : <Upload size={16} />}
-            {uploadBusy ? "导入中…" : "上传 ZIP"}
-          </button>
-          <span className="md-upload-limit">最大 20 MB</span>
+          {query.data?.can_upload_skill !== false && (
+            <>
+              <button
+                type="button"
+                className="ws-primary-button"
+                disabled={uploadBusy}
+                onClick={() => fileInput.current?.click()}
+              >
+                {uploadBusy ? <LoaderCircle className="md-spin" size={16} /> : <Upload size={16} />}
+                {uploadBusy ? "导入中…" : "上传 ZIP"}
+              </button>
+              <span className="md-upload-limit">最大 20 MB</span>
+            </>
+          )}
         </div>
       </div>
       {error && !detailOpen && (
@@ -231,15 +193,11 @@ export default function Skills({ api, accountId, onError, error }: Props) {
             {ready.length ? (
               <div className="md-skill-list">
                 {ready.map((skill) => (
-                  <SkillCard
-                    key={skill.id}
-                    skill={skill}
-                    onUse={() => startSkill(skill)}
-                  />
+                  <SkillRow key={skill.id} skill={skill} onSelect={() => startSkill(skill)} />
                 ))}
               </div>
             ) : (
-              <p className="md-group-empty">暂时没有已开放的内置技能。</p>
+              <p className="md-group-empty">暂时没有可用的技能。</p>
             )}
           </section>
 
@@ -253,23 +211,11 @@ export default function Skills({ api, accountId, onError, error }: Props) {
             {mine.length ? (
               <div className="md-skill-list">
                 {mine.map((skill) => (
-                  <SkillCard
-                    key={skill.id}
-                    skill={skill}
-                    canInspect
-                    onOpen={() => openDetails(skill)}
-                    onUse={() => startSkill(skill)}
-                  />
+                  <SkillRow key={skill.id} skill={skill} onSelect={() => openDetails(skill)} />
                 ))}
               </div>
             ) : (
-              <div className="md-skill-empty">
-                <span className="md-empty-mark" aria-hidden="true"><Compass size={22} /></span>
-                <p>上传一个 ZIP 技能包，它会出现在这里。</p>
-                <button type="button" className="ws-secondary-button" onClick={() => fileInput.current?.click()}>
-                  <Upload size={15} /> 上传 ZIP
-                </button>
-              </div>
+              <p className="md-group-empty">还没有上传技能包。</p>
             )}
           </section>
         </div>

@@ -12,26 +12,14 @@ from pydantic import Field
 
 from backend.contracts.harness.artifacts import ArtifactReference
 from backend.contracts.harness.lifecycle import (
-    DispatchResult,
-    InputRequest,
-    RunEnvelope,
     RunRecovery,
-    SessionSnapshot,
 )
 from backend.contracts.model_profiles import ModelRunSnapshot
-from backend.contracts.modules.loop import ConversationMode, RunInput, ThinkingMode
+from backend.contracts.modules.loop import ConversationMode, ThinkingMode
 from backend.contracts.modules.materials import StoredMaterialRef
 from backend.contracts.modules.sources import SourceDocument, SourceReference
 from backend.contracts.runtime import NodeState, RunGraph, RunPolicy
 from backend.contracts.schemas.core import Contract
-
-
-class SubmitRunRequest(RunInput):
-    """A user message plus optional task correlation."""
-
-    task_id: str | None = None
-    graph: RunGraph | None = None
-    runtime_policy: RunPolicy | None = None
 
 
 class WorkbenchRunPayload(Contract):
@@ -65,8 +53,6 @@ class WorkbenchSubmitRunRequest(Contract):
     target_run_id: str | None = Field(default=None, min_length=1)
     request_id: str | None = Field(default=None, min_length=1)
     answer: Any | None = None
-    graph: RunGraph | None = None
-    runtime_policy: RunPolicy | None = None
 
 
 class WorkbenchErrorView(Contract):
@@ -163,41 +149,54 @@ class MaterialUploadResponse(Contract):
     material: StoredMaterialRef
 
 
-class ResumeRunRequest(Contract):
-    session_id: str = Field(min_length=1)
-    request_id: str = Field(min_length=1)
-    answer: Any
+class CaptchaChallengeResponse(Contract):
+    challenge_id: str
+    bg_image: str
+    piece_image: str
+    y: int
+    width: int
+    height: int
+    piece_width: int
+    piece_height: int
 
 
-class RunControlRequest(Contract):
-    session_id: str = Field(min_length=1)
+class CaptchaVerifyRequest(Contract):
+    challenge_id: str = Field(min_length=1)
+    x: int = Field(ge=0, le=500)
+    duration_ms: int = Field(default=0, ge=0)
+    trail: list[Any] = Field(default_factory=list)
 
 
-class SteerRunRequest(Contract):
-    session_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    facts: dict[str, Any] = Field(default_factory=dict)
-    constraints: list[str] = Field(default_factory=list)
-    material_ids: list[str] = Field(default_factory=list)
-
-
-class RunCommandResponse(Contract):
-    dispatch: DispatchResult
-    run: RunEnvelope
-
-
-class SessionResponse(Contract):
-    snapshot: SessionSnapshot
-
-
-class InputRequestResponse(Contract):
-    request: InputRequest
+class CaptchaVerifyResponse(Contract):
+    verified: bool
+    captcha_token: str | None = None
+    error: str | None = None
 
 
 class AuthCredentialsRequest(Contract):
     email: str = Field(min_length=1, max_length=320)
     password: str = Field(min_length=1)
     display_name: str = Field(default="", max_length=80)
+    verification_code: str = Field(default="", max_length=16)
+    captcha_token: str | None = Field(default=None, max_length=128)
+
+
+class AuthConfigResponse(Contract):
+    email_verification_enabled: bool = False
+    allow_password_reset: bool = False
+    captcha_enabled: bool = True
+
+
+class SendVerificationCodeRequest(Contract):
+    email: str = Field(min_length=1, max_length=320)
+    purpose: Literal["register", "reset_password"] = "register"
+    captcha_token: str | None = Field(default=None, max_length=128)
+
+
+class ResetPasswordRequest(Contract):
+    email: str = Field(min_length=1, max_length=320)
+    verification_code: str = Field(min_length=4, max_length=16)
+    new_password: str = Field(min_length=1)
 
 
 class AccountView(Contract):
@@ -276,6 +275,8 @@ class WorkspaceMaterialView(Contract):
     status: str
     checksum: str
     created_at: datetime
+    # Only the library list fills this in: how many conversations use the file.
+    conversation_count: int = Field(default=0, ge=0)
 
 
 class WorkspaceMaterialListResponse(Contract):

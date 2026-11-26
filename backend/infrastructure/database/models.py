@@ -21,6 +21,7 @@ class AccountModel(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="active")
     role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
+    register_ip: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -102,6 +103,7 @@ class AccountCapabilityGrantModel(Base):
     allowed_models_json: Mapped[str | None] = mapped_column(Text)
     skill_policy: Mapped[str] = mapped_column(String(24), default="default")
     can_upload_skill: Mapped[bool] = mapped_column(Boolean, default=True)
+    material_quota_mb: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -417,6 +419,32 @@ class UserPromptCommandModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class SystemSettingModel(Base):
+    """Deployment-wide runtime settings managed cleanly from the admin console."""
+
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value_json: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EmailVerificationCodeModel(Base):
+    """Short-lived, hashed 6-digit email codes for signup and password reset."""
+
+    __tablename__ = "email_verification_codes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    request_ip: Mapped[str] = mapped_column(String(64), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 Index("ix_sessions_account_active", SessionModel.account_id, SessionModel.revoked_at)
 Index(
     "ix_harness_sessions_account_status",
@@ -435,3 +463,10 @@ Index(
     unique=True,
 )
 Index("ix_projects_account_order", ProjectModel.account_id, ProjectModel.updated_at)
+Index(
+    "ix_email_codes_lookup",
+    EmailVerificationCodeModel.email,
+    EmailVerificationCodeModel.purpose,
+    EmailVerificationCodeModel.created_at,
+)
+Index("ix_email_codes_ip_recent", EmailVerificationCodeModel.request_ip, EmailVerificationCodeModel.created_at)
