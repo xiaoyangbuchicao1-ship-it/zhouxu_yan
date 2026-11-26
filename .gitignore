@@ -64,3 +64,7 @@ start/hunma_start.txt
 整体优化方案.md
 最后一公里方案-待审.md
 plan.md
+
+# Local migration exports and offline image archives.
+/backups/
+*.tar

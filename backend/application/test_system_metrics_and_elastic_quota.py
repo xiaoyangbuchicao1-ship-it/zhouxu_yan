@@ -23,7 +23,7 @@ from backend.infrastructure.database.models import (
     AccountModel,
     ModelCallMetricModel,
 )
-from backend.interfaces.api.app import create_app
+from backend.interfaces.api.app import _client_ip, create_app
 
 
 class _ConcurrencyTrackingExecutor:
@@ -201,6 +201,43 @@ class SystemMetricsAndElasticQuotaTests(unittest.TestCase):
             self.assertEqual(r2.status_code, 404)
             snap2 = app.state.http_latency_tracker.snapshot()
             self.assertEqual(snap2["request_count"], 1)
+
+    def test_client_ip_supports_cloudflare_tunnel_and_blocks_public_spoofing(self) -> None:
+        from types import SimpleNamespace
+
+        def make_req(peer: str, headers: dict[str, str]):
+            return SimpleNamespace(
+                client=SimpleNamespace(host=peer),
+                headers={k.lower(): v for k, v in headers.items()},
+            )
+
+        # Behind Docker bridge + cloudflared: prefer valid CF-Connecting-IP over container X-Real-IP
+        req_cf = make_req(
+            "172.18.0.2",
+            {"cf-connecting-ip": "114.80.123.45", "x-real-ip": "172.18.0.1"},
+        )
+        self.assertEqual(_client_ip(req_cf), "114.80.123.45")
+
+        # IPv6 Cloudflare visitor IP
+        req_v6 = make_req(
+            "127.0.0.1",
+            {"cf-connecting-ip": "2409:8a1e:1234::8", "x-real-ip": "127.0.0.1"},
+        )
+        self.assertEqual(_client_ip(req_v6), "2409:8a1e:1234::8")
+
+        # Invalid CF-Connecting-IP falls back to X-Real-IP
+        req_bad_cf = make_req(
+            "172.18.0.2",
+            {"cf-connecting-ip": "not-an-ip", "x-real-ip": "198.51.100.7"},
+        )
+        self.assertEqual(_client_ip(req_bad_cf), "198.51.100.7")
+
+        # Untrusted direct public peer cannot spoof CF-Connecting-IP or X-Real-IP
+        req_spoof = make_req(
+            "203.0.113.9",
+            {"cf-connecting-ip": "1.1.1.1", "x-real-ip": "8.8.8.8"},
+        )
+        self.assertEqual(_client_ip(req_spoof), "203.0.113.9")
 
 
 if __name__ == "__main__":

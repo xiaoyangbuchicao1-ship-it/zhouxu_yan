@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -165,17 +166,53 @@ from backend.interfaces.api.control_plane import (
 )
 
 
+_TRUSTED_PROXY_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+)
+
+
+def _is_trusted_proxy_peer(host: str) -> bool:
+    if not host or host in {"testclient", "localhost"}:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(addr in net for net in _TRUSTED_PROXY_NETWORKS)
+
+
+def _valid_ip_header(raw: str) -> str:
+    candidate = raw.strip()
+    if not candidate:
+        return ""
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return ""
+    return candidate[:64]
+
+
 def _client_ip(request: Request) -> str:
-    """Resolve client IP from reverse-proxy X-Real-IP without trusting spoofable left-most XFF."""
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip[:64]
-    forwarded = request.headers.get("x-forwarded-for", "").strip()
-    if forwarded:
-        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-        if parts:
-            return parts[-1][:64]
-    return (request.client.host if request.client else "")[:64]
+    """Resolve visitor IP across Cloudflare Tunnel, ECS Nginx, and local setups."""
+    peer = (request.client.host if request.client else "").strip()
+    if _is_trusted_proxy_peer(peer):
+        cf_ip = _valid_ip_header(request.headers.get("cf-connecting-ip", ""))
+        if cf_ip:
+            return cf_ip
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip[:64]
+        forwarded = request.headers.get("x-forwarded-for", "").strip()
+        if forwarded:
+            parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+            if parts:
+                return parts[-1][:64]
+    return peer[:64]
 
 
 class _AuthFailureGuard:
@@ -3286,6 +3323,13 @@ def create_app(
             request.app.state.active_sse_streams = getattr(request.app.state, "active_sse_streams", 0) + 1
             try:
                 started = monotonic()
+                last_emit = started
+                try:
+                    heartbeat_seconds = float(
+                        os.environ.get("ZHOUXU_STREAM_HEARTBEAT_SECONDS", "25")
+                    )
+                except ValueError:
+                    heartbeat_seconds = 25.0
                 cursor = after_sequence
                 last_status: str | None = None
                 while monotonic() - started < timeout_seconds:
@@ -3331,6 +3375,7 @@ def create_app(
                             if not stream_authorized():
                                 return
                             yield _json_line(payload)
+                            last_emit = monotonic()
                             cursor = event.sequence
                     # Lifecycle is a snapshot at the current stream cursor.  It
                     # is emitted after buffered deltas so a terminal snapshot can
@@ -3348,6 +3393,7 @@ def create_app(
                                 "run": workbench_run_view(run).model_dump(mode="json"),
                             }
                         )
+                        last_emit = monotonic()
                         sync_run(request, principal, run)
                     if hub is not None and hub.stream_events_since(run_id=run_id, after_sequence=cursor):
                         continue
@@ -3359,6 +3405,12 @@ def create_app(
                         "waiting_user",
                     }:
                         return
+                    if heartbeat_seconds > 0 and monotonic() - last_emit >= heartbeat_seconds:
+                        if not stream_authorized():
+                            return
+                        # Blank newline resets Cloudflare's 100s idle proxy timeout and is skipped by NDJSON readers.
+                        yield b"\n"
+                        last_emit = monotonic()
                     await asyncio.sleep(0.1)
             finally:
                 request.app.state.active_sse_streams = max(

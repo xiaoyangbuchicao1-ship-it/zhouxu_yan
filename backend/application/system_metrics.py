@@ -23,7 +23,10 @@ from sqlalchemy import select
 
 from backend.config.settings import BACKEND_ROOT
 from backend.infrastructure.database.connection import Database
-from backend.infrastructure.database.models import ModelCallMetricModel
+from backend.infrastructure.database.models import (
+    ConversationRunModel,
+    ModelCallMetricModel,
+)
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float | None:
@@ -356,6 +359,31 @@ class SystemMetricsService:
                 .order_by(ModelCallMetricModel.created_at.desc())
                 .limit(2000)
             ).all()
+            if not rows:
+                run_rows = session.execute(
+                    select(
+                        ConversationRunModel.status,
+                        ConversationRunModel.created_at,
+                        ConversationRunModel.completed_at,
+                        ConversationRunModel.last_event_at,
+                    )
+                    .where(
+                        ConversationRunModel.created_at >= cutoff_24h,
+                        ConversationRunModel.status.in_(("succeeded", "failed")),
+                    )
+                    .order_by(ConversationRunModel.created_at.desc())
+                    .limit(2000)
+                ).all()
+                synthesized = []
+                for status, created_at, completed_at, last_event_at in run_rows:
+                    finished = completed_at or last_event_at
+                    latency_ms = None
+                    if created_at is not None and finished is not None:
+                        c_utc = created_at.replace(tzinfo=timezone.utc) if created_at.tzinfo is None else created_at
+                        f_utc = finished.replace(tzinfo=timezone.utc) if finished.tzinfo is None else finished
+                        latency_ms = max(0, int((f_utc - c_utc).total_seconds() * 1000))
+                    synthesized.append((status, latency_ms, created_at))
+                rows = synthesized
 
         lat_24h: list[float] = []
         lat_15m: list[float] = []
