@@ -16,6 +16,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure Docker single-stream push for Aliyun Personal ACR
+        run: |
+          echo '{"max-concurrent-uploads": 1}' | sudo tee /etc/docker/daemon.json > /dev/null
+          sudo systemctl restart docker
+
       - name: Log in to Aliyun ACR
         uses: docker/login-action@v3
         with:
@@ -23,24 +28,26 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Build and push zhouxu-api
-        run: |
-          docker build \
-            --target api \
-            -f deploy/app/Dockerfile \
-            -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:latest \
-            -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:${{ github.sha }} \
-            .
-          docker push ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:latest
-          docker push ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:${{ github.sha }}
-
       - name: Build and push zhouxu-web
         run: |
           docker build \
             --target web \
+            --build-arg NPM_REGISTRY=https://registry.npmjs.org \
             -f deploy/app/Dockerfile \
             -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-web:latest \
             -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-web:${{ github.sha }} \
             .
           docker push ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-web:latest
           docker push ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-web:${{ github.sha }}
+
+      - name: Build and push zhouxu-api
+        run: |
+          docker build \
+            --target api \
+            --build-arg PYPI_INDEX=https://pypi.org/simple \
+            -f deploy/app/Dockerfile \
+            -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:latest \
+            -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:${{ github.sha }} \
+            .
+          docker push ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:latest
+          docker push ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/zhouxu-api:${{ github.sha }}
