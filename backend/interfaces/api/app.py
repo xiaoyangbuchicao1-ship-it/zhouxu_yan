@@ -65,6 +65,7 @@ from backend.contracts.account_settings import (
     UserPromptCommandView,
 )
 from backend.contracts.admin import (
+    AdminAccountAliasUpdateRequest,
     AdminAccountsResponse,
     AdminAccountUpdateRequest,
     AdminAccountView,
@@ -73,10 +74,16 @@ from backend.contracts.admin import (
     AdminConversationDetailResponse,
     AdminConversationListResponse,
     AdminConnectivityTestResponse,
+    AdminDomesticDefaultRequest,
+    AdminDomesticDefaultResponse,
     AdminEmailTestRequest,
     AdminEmailTestResponse,
     AdminModelCreateRequest,
     AdminModelDirectoryResponse,
+    AdminModelGroupCreateRequest,
+    AdminModelGroupListResponse,
+    AdminModelGroupUpdateRequest,
+    AdminModelGroupView,
     AdminModelInferResponse,
     AdminModelUpdateRequest,
     AdminModelView,
@@ -118,7 +125,7 @@ from backend.infrastructure.observability.memory import MemoryEventSink
 from backend.infrastructure.parsing.read_view import read_view
 from backend.infrastructure.parsing.registry import MaterialParserRegistry
 from backend.infrastructure.persistence.run_store import SQLiteRunStore
-from backend.infrastructure.sources import CorpusSourceRepository
+from backend.infrastructure.sources import CorpusSourceRepository, annotate_used_sources
 from backend.interfaces.api.contracts import (
     AccountView,
     AuthConfigResponse,
@@ -753,6 +760,17 @@ def create_app(
                 projection = RunProjection(workspace(request), request.app.state.event_hub)
             projection(run)
 
+    def _material_parser_registry(request: Request) -> MaterialParserRegistry:
+        from backend.infrastructure.model.registry import ModelRegistry
+        from backend.infrastructure.parsing.vision_assist import create_vision_describer
+
+        directory = getattr(request.app.state, "model_directory", None)
+        model_registry = ModelRegistry(settings, directory=directory)
+        return MaterialParserRegistry(
+            settings.materials,
+            vision_describer=create_vision_describer(settings, model_registry),
+        )
+
     def admin_service(request: Request) -> AdminService:
         service_instance = getattr(request.app.state, "admin_service", None)
         if service_instance is None:
@@ -887,6 +905,7 @@ def create_app(
             "profile_not_found",
             "artifact_not_found",
             "backup_not_found",
+            "model_group_not_found",
         }:
             return HTTPException(status_code=404, detail=exc.code)
         if exc.code in {
@@ -951,6 +970,8 @@ def create_app(
             "email_provider_unconfigured",
             "material_quota_invalid",
             "backup_keep_days_invalid",
+            "model_group_name_required",
+            "model_group_name_invalid",
         }:
             return HTTPException(status_code=422, detail=exc.code)
         if exc.code in {"provider_exists", "profile_exists", "model_connectivity_unverified"}:
@@ -988,6 +1009,76 @@ def create_app(
         except AdminServiceError as exc:
             raise admin_error(exc) from None
         return AdminCapabilityView(**item)
+
+    @app.get("/admin/model-groups", response_model=AdminModelGroupListResponse)
+    async def admin_model_groups(
+        request: Request, authorization: str | None = Header(default=None)
+    ):
+        require_admin(request, authorization)
+        return AdminModelGroupListResponse(
+            groups=[
+                AdminModelGroupView(**item)
+                for item in admin_operations_service(request).list_model_groups()
+            ]
+        )
+
+    @app.post(
+        "/admin/model-groups",
+        response_model=AdminModelGroupView,
+        status_code=201,
+    )
+    async def admin_create_model_group(
+        body: AdminModelGroupCreateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            item = admin_operations_service(request).create_model_group(
+                actor_id=principal.id,
+                name=body.name,
+                description=body.description,
+                allowed_models=body.allowed_models,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminModelGroupView(**item)
+
+    @app.patch(
+        "/admin/model-groups/{group_id}",
+        response_model=AdminModelGroupView,
+    )
+    async def admin_update_model_group(
+        group_id: str,
+        body: AdminModelGroupUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            item = admin_operations_service(request).update_model_group(
+                actor_id=principal.id,
+                group_id=group_id,
+                **body.model_dump(exclude_unset=True),
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminModelGroupView(**item)
+
+    @app.delete("/admin/model-groups/{group_id}")
+    async def admin_delete_model_group(
+        group_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            return admin_operations_service(request).delete_model_group(
+                actor_id=principal.id,
+                group_id=group_id,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
 
     @app.get("/admin/skills", response_model=AdminSkillsResponse)
     async def admin_skills(
@@ -1256,14 +1347,38 @@ def create_app(
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=20, ge=1, le=100),
     ):
-        require_admin(request, authorization)
+        principal = require_admin(request, authorization)
         try:
             result = admin_service(request).list_accounts_page(
-                query=q, status=status, role=role, page=page, page_size=page_size
+                query=q,
+                status=status,
+                role=role,
+                page=page,
+                page_size=page_size,
+                actor_id=principal.id,
             )
         except AdminServiceError as exc:
             raise admin_error(exc) from None
         return AdminAccountsResponse(**result)
+
+    @app.put("/admin/accounts/{account_id}/alias", response_model=AdminAccountView)
+    async def admin_set_account_alias(
+        account_id: str,
+        body: AdminAccountAliasUpdateRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            updated = admin_service(request).set_account_alias(
+                actor_id=principal.id,
+                account_id=account_id,
+                alias=body.alias,
+                note=body.note,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminAccountView(**updated)
 
     @app.patch(
         "/admin/accounts/{account_id}", response_model=AdminAccountView
@@ -1343,7 +1458,7 @@ def create_app(
         cursor: str | None = Query(default=None),
         limit: int = Query(default=50, ge=1, le=200),
     ):
-        require_admin(request, authorization)
+        principal = require_admin(request, authorization)
         try:
             page = admin_service(request).query_audit(
                 category=category,
@@ -1351,6 +1466,7 @@ def create_app(
                 query=q,
                 cursor=cursor,
                 limit=limit,
+                actor_id=principal.id,
             )
         except AdminServiceError as exc:
             raise admin_error(exc) from None
@@ -1433,6 +1549,25 @@ def create_app(
         except AdminServiceError as exc:
             raise admin_error(exc) from None
         return AdminModelView(**result)
+
+    @app.post(
+        "/admin/models/apply-domestic-default",
+        response_model=AdminDomesticDefaultResponse,
+    )
+    async def admin_apply_domestic_default(
+        request: Request,
+        body: AdminDomesticDefaultRequest | None = None,
+        authorization: str | None = Header(default=None),
+    ):
+        principal = require_admin(request, authorization)
+        try:
+            result = model_directory_admin(request).apply_domestic_default_scopes(
+                actor_id=principal.id,
+                dry_run=bool(body.dry_run) if body is not None else False,
+            )
+        except AdminServiceError as exc:
+            raise admin_error(exc) from None
+        return AdminDomesticDefaultResponse(**result)
 
     @app.patch(
         "/admin/models/{profile_id}",
@@ -1591,10 +1726,11 @@ def create_app(
         cursor: str | None = Query(default=None),
         limit: int = Query(default=20, ge=1, le=100),
     ):
-        require_admin(request, authorization)
+        principal = require_admin(request, authorization)
         try:
             result = admin_conversation_service(request).list_conversations(
                 account_id=account_id,
+                actor_id=principal.id,
                 query=query,
                 mode=mode,
                 archived=archived,
@@ -1670,7 +1806,7 @@ def create_app(
         try:
             record, mat_input = materials.resolve_for_admin(material_id=material_id)
             parsed = await asyncio.to_thread(
-                MaterialParserRegistry(settings.materials).parse, mat_input
+                _material_parser_registry(request).parse, mat_input
             )
         except MaterialServiceError as exc:
             raise HTTPException(status_code=404, detail=exc.code) from None
@@ -1719,6 +1855,7 @@ def create_app(
         material_id: str,
         request: Request,
         authorization: str | None = Header(default=None),
+        inline: bool = Query(default=False),
     ):
         principal = require_admin(request, authorization)
         materials = request.app.state.material_service
@@ -1733,12 +1870,17 @@ def create_app(
                 session,
                 actor_id=principal.id,
                 target_account_id=record.account_id,
-                action="material.downloaded",
+                action="material.viewed" if inline else "material.downloaded",
                 resource_type="material",
                 resource_id=record.id,
-                details={"filename": record.filename, "size_bytes": record.size_bytes},
+                details={"filename": record.filename, "size_bytes": record.size_bytes, "inline": inline},
             )
             session.commit()
+        if inline:
+            return FileResponse(
+                Path(mat_input.uri),
+                media_type=record.media_type or "application/octet-stream",
+            )
         return FileResponse(
             Path(mat_input.uri),
             media_type=record.media_type or "application/octet-stream",
@@ -2204,8 +2346,9 @@ def create_app(
         return AccountSummaryResponse(**summary)
 
     def conversation_view(
-        conversation, run_count: int = 0
+        conversation, run_count: int = 0, activity: dict | None = None
     ) -> WorkspaceConversationView:
+        info = activity or {}
         return WorkspaceConversationView(
             conversation_id=conversation.id,
             project_id=getattr(conversation, "project_id", None),
@@ -2215,7 +2358,11 @@ def create_app(
             archived_at=conversation.archived_at,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            run_count=run_count,
+            run_count=info.get("run_count", run_count),
+            active_run_count=info.get("active_run_count", 0),
+            latest_run_id=info.get("latest_run_id"),
+            latest_run_status=info.get("latest_run_status"),
+            latest_run_updated_at=info.get("latest_run_updated_at"),
         )
 
     def project_view(project) -> WorkspaceProjectView:
@@ -2251,8 +2398,10 @@ def create_app(
         # authenticated Workbench exposes those runs as the safe default.
         payload["mode"] = payload.get("mode") or "chat"
         raw_sources = run.execution_state.get("source_refs", []) if isinstance(run.execution_state, dict) else []
+        answer_text = run.output if run.output is not None else run.partial_output
+        annotated_sources = annotate_used_sources(raw_sources, answer_text) if isinstance(raw_sources, list) else []
         sources = []
-        for item in raw_sources if isinstance(raw_sources, list) else []:
+        for item in annotated_sources:
             try:
                 sources.append(SourceReference.model_validate(item))
             except (TypeError, ValueError):
@@ -2320,9 +2469,9 @@ def create_app(
         service_instance = workspace(request)
         if service_instance is None:
             raise HTTPException(status_code=503, detail="workspace_service_unavailable")
-        rows = service_instance.list(account_id=principal.id)
+        rows = service_instance.list_with_activity(account_id=principal.id)
         return WorkspaceConversationListResponse(
-            conversations=[conversation_view(item, count) for item, count in rows]
+            conversations=[conversation_view(item, activity=activity) for item, activity in rows]
         )
 
     @app.post(
@@ -2594,8 +2743,10 @@ def create_app(
             if not isinstance(compaction_count, int) or compaction_count < 0:
                 compaction_count = 0
             raw_sources = progress.get("source_refs", []) if isinstance(progress, dict) else []
+            visible_answer = run.answer or run.partial_output
+            annotated_sources = annotate_used_sources(raw_sources, visible_answer) if isinstance(raw_sources, list) else []
             run_sources = []
-            for item in raw_sources if isinstance(raw_sources, list) else []:
+            for item in annotated_sources:
                 try:
                     run_sources.append(SourceReference.model_validate(item))
                 except (TypeError, ValueError):
@@ -3459,7 +3610,7 @@ def create_app(
                 material_ids=[material_id],
             )
             parsed = await asyncio.to_thread(
-                MaterialParserRegistry(settings.materials).parse, inputs[0]
+                _material_parser_registry(request).parse, inputs[0]
             )
         except MaterialServiceError as exc:
             raise HTTPException(status_code=404, detail=exc.code) from None
@@ -3547,6 +3698,34 @@ def create_app(
         finally:
             await file.close()
         return MaterialUploadResponse(material=material)
+
+    @app.get("/workspace/materials/{material_id}/download")
+    async def download_workspace_material(
+        material_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+        inline: bool = Query(default=False),
+    ):
+        principal = require_account(request, authorization)
+        materials = request.app.state.material_service
+        if materials is None:
+            raise HTTPException(status_code=503, detail="material_service_unavailable")
+        try:
+            record, mat_input = materials.resolve_for_account(
+                account_id=principal.id, material_id=material_id
+            )
+        except MaterialServiceError as exc:
+            raise HTTPException(status_code=404, detail=exc.code) from None
+        if inline:
+            return FileResponse(
+                Path(mat_input.uri),
+                media_type=record.media_type or "application/octet-stream",
+            )
+        return FileResponse(
+            Path(mat_input.uri),
+            media_type=record.media_type or "application/octet-stream",
+            filename=record.filename,
+        )
 
     @app.delete("/workspace/materials/{material_id}", status_code=204)
     async def delete_library_material(

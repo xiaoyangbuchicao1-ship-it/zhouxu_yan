@@ -105,8 +105,17 @@ export default function Sidebar({
         <span className={`ws-history-mode ws-history-mode-${chat.mode}`} aria-label={modeLabel} title={modeLabel}>
           <ModeIcon size={12} strokeWidth={1.8} aria-hidden="true" />
         </span>
-        {ws.turn?.conversationId === chat.id && ws.turn.state === "receiving" && (
-          <span className="ws-receiving-dot" aria-label="正在接收回答" />
+        {ws.conversationActivity[chat.id] === "running" && (
+          <span className="ws-conv-spinner" role="status" aria-label="正在后台运行" title="正在后台运行" />
+        )}
+        {ws.conversationActivity[chat.id] === "done" && (
+          <span className="ws-conv-dot is-done" aria-label="回复已完成" title="回复已完成" />
+        )}
+        {ws.conversationActivity[chat.id] === "attention" && (
+          <span className="ws-conv-dot is-attention" aria-label="等待确认或已暂停" title="等待确认或已暂停" />
+        )}
+        {ws.conversationActivity[chat.id] === "error" && (
+          <span className="ws-conv-dot is-error" aria-label="运行异常" title="运行异常" />
         )}
       </Link>
       <Menu
@@ -303,7 +312,15 @@ export default function Sidebar({
                   )}
                   {recent.length > 0 && (
                     <div className="ws-history-group">
-                      <h3>最近</h3>
+                      <h3 className="ws-history-group-head">
+                        <span>最近</span>
+                        {ws.runningConversationCount > 0 && (
+                          <span className="ws-running-count" aria-live="polite">
+                            <span className="ws-running-pulse" aria-hidden="true" />
+                            {ws.runningConversationCount} 进行中
+                          </span>
+                        )}
+                      </h3>
                       {recent.map((chat) => row(chat, false))}
                     </div>
                   )}

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
@@ -12,8 +12,11 @@ import {
   Library,
   ArrowUpRight,
   FolderOpen,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import type { useWorkspace } from "@/hooks/use-workspace";
+import { isImageAttachment } from "@/lib/image-attachment";
 import { materialStatus, type Resource } from "@/lib/workbench-api";
 import { Modal, IconButton, Loading, LoadError } from "./Primitives";
 import { ActivityIndicator } from "./ActivityIndicator";
@@ -29,6 +32,35 @@ export function ResourcePreview({
   ws: Workspace;
   close: () => void;
 }) {
+  const isImage = Boolean(resource && isImageAttachment(resource.filename, resource.content_type));
+  const [viewTab, setViewTab] = useState<"image" | "text">("image");
+  const [zoomed, setZoomed] = useState(false);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    setViewTab(isImage ? "image" : "text");
+    setZoomed(false);
+  }, [resource?.id, isImage]);
+
+  const imageQuery = useQuery({
+    queryKey: [...ws.scope, "material-blob", resource?.id],
+    queryFn: ({ signal }) => ws.api.materialBlob(resource!.id, signal),
+    enabled: Boolean(resource && isImage),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!imageQuery.data) {
+      setImageUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(imageQuery.data);
+    setImageUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [imageQuery.data]);
+
   const passages = useInfiniteQuery({
     queryKey: [...ws.scope, "passages", resource?.id],
     queryFn: ({ signal, pageParam }) => ws.api.passages(resource!.id, signal, pageParam),
@@ -46,17 +78,65 @@ export function ResourcePreview({
         if (!open) close();
       }}
       title={resource?.filename || "资料内容"}
-      description="此处展示服务已读取的正文片段，不是原文件预览。"
+      description={
+        isImage && viewTab === "image"
+          ? "正在预览原始图片，也可切换查看解析文本。"
+          : "此处展示服务已读取的正文片段，不是原文件预览。"
+      }
       side="right"
     >
       {resource && (
         <div className="ws-preview-body">
-          <p className="ws-status-line">
-            <FileText size={16} />
-            {materialStatus(resource)}
-            {resource.issue && ` · ${resource.issue}`}
-          </p>
-          {passages.isPending ? (
+          <div className="ws-preview-header-row">
+            <p className="ws-status-line">
+              <FileText size={16} />
+              {materialStatus(resource)}
+              {resource.issue && ` · ${resource.issue}`}
+            </p>
+            {isImage && (
+              <div className="ws-preview-tabs" role="tablist" aria-label="附件预览方式">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={viewTab === "image"}
+                  className={viewTab === "image" ? "is-active" : ""}
+                  onClick={() => setViewTab("image")}
+                >
+                  原图预览
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={viewTab === "text"}
+                  className={viewTab === "text" ? "is-active" : ""}
+                  onClick={() => setViewTab("text")}
+                >
+                  图片识别文本
+                </button>
+                {viewTab === "image" && imageUrl && (
+                  <button
+                    type="button"
+                    className="ws-preview-zoom-btn"
+                    onClick={() => setZoomed((v) => !v)}
+                  >
+                    {zoomed ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                    {zoomed ? "适应" : "原尺寸"}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {isImage && viewTab === "image" ? (
+            imageQuery.isPending ? (
+              <Loading label="正在载入原图…" />
+            ) : imageQuery.isError ? (
+              <LoadError retry={() => void imageQuery.refetch()} />
+            ) : imageUrl ? (
+              <div className={`ws-image-preview-stage ${zoomed ? "is-zoomed" : ""}`}>
+                <img src={imageUrl} alt={resource.filename} />
+              </div>
+            ) : null
+          ) : passages.isPending ? (
             <Loading label="正在载入正文…" />
           ) : passages.isError ? (
             <LoadError retry={() => void passages.refetch()} />
@@ -86,10 +166,10 @@ export function ResourcePreview({
               </section>
             ))
           )}
-          {notices.map((notice) => (
+          {(!isImage || viewTab === "text") && notices.map((notice) => (
             <p className="ws-muted" key={notice}>{notice}</p>
           ))}
-          {passages.hasNextPage && (
+          {(!isImage || viewTab === "text") && passages.hasNextPage && (
             <button
               type="button"
               className="ws-secondary-button"

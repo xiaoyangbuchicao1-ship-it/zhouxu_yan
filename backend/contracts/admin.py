@@ -14,6 +14,8 @@ class AdminAccountView(Contract):
     id: str
     email: str
     display_name: str
+    alias: str | None = None
+    alias_note: str | None = None
     status: Literal["active", "disabled"]
     role: Literal["user", "admin"]
     register_ip: str | None = None
@@ -24,6 +26,11 @@ class AdminAccountView(Contract):
 class AdminAccountUpdateRequest(Contract):
     status: Literal["active", "disabled"] | None = None
     role: Literal["user", "admin"] | None = None
+
+
+class AdminAccountAliasUpdateRequest(Contract):
+    alias: str = Field(default="", max_length=80)
+    note: str = Field(default="", max_length=240)
 
 
 class AdminOverviewView(Contract):
@@ -46,6 +53,7 @@ class AdminAuditView(Contract):
     actor_email: str
     target_account_id: str | None = None
     target_email: str | None = None
+    target_alias: str | None = None
     resource_type: str = "account"
     resource_id: str | None = None
     outcome: Literal["succeeded", "failed"] = "succeeded"
@@ -91,6 +99,8 @@ class AdminConversationAccountView(Contract):
     id: str
     email: str
     display_name: str = ""
+    alias: str | None = None
+    alias_note: str | None = None
 
 
 class AdminConversationStatusCounts(Contract):
@@ -119,7 +129,7 @@ class AdminRunSourceView(Contract):
     """Human-readable evidence attached to a public run projection."""
 
     source_id: str
-    kind: Literal["law", "case", "paper"] | None = None
+    kind: Literal["law", "case", "paper", "web"] | None = None
     title: str
     locator: str | None = None
     section: str | None = None
@@ -127,6 +137,11 @@ class AdminRunSourceView(Contract):
     version_label: str | None = None
     authors: str | None = None
     collection: str | None = None
+    url: str | None = None
+    domain: str | None = None
+    snippet: str | None = None
+    verified_read: bool | None = None
+    used_in_answer: bool | None = None
 
 
 class AdminRunArtifactView(Contract):
@@ -256,7 +271,7 @@ class AdminModelCreateRequest(Contract):
     default_thinking: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
     capabilities: dict[str, str] = Field(default_factory=dict)
     enabled: bool = False
-    access_scope: Literal["all", "admin_only", "allowlist"] = "all"
+    access_scope: Literal["all", "admin_only", "allowlist"] | None = None
     is_default: bool = False
     sort_order: int = 100
     source: str = "admin"
@@ -303,6 +318,7 @@ class AdminModelView(Contract):
     enabled: bool
     access_scope: str
     is_default: bool = False
+    is_domestic: bool = False
     sort_order: int = 100
     source: str = "admin"
     checked_on: str | None = None
@@ -370,12 +386,64 @@ class AdminConnectivityTestResponse(Contract):
     error_code: str | None = None
 
 
+class AdminModelGroupView(Contract):
+    id: str
+    name: str
+    description: str = ""
+    allowed_models: list[str] = Field(default_factory=list)
+    member_count: int = Field(default=0, ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminModelGroupListResponse(Contract):
+    groups: list[AdminModelGroupView]
+
+
+class AdminModelGroupCreateRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=240)
+    allowed_models: list[str] = Field(default_factory=list)
+
+
+class AdminModelGroupUpdateRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=240)
+    allowed_models: list[str] | None = None
+
+
+class AdminDomesticDefaultRequest(Contract):
+    model_config = ConfigDict(extra="forbid")
+    dry_run: bool = False
+
+
+class AdminDomesticDefaultChange(Contract):
+    profile_id: str
+    label: str
+    is_domestic: bool
+    previous_scope: str
+    target_scope: str
+
+
+class AdminDomesticDefaultResponse(Contract):
+    dry_run: bool
+    changes: list[AdminDomesticDefaultChange] = Field(default_factory=list)
+    default_profile_id: str | None = None
+    default_profile_label: str | None = None
+    domestic_open_count: int = Field(default=0, ge=0)
+
+
 class AdminCapabilityView(Contract):
     account_id: str
     email: str
     display_name: str
     model_policy: Literal["default", "allowlist", "disabled"]
     allowed_models: list[str] = Field(default_factory=list)
+    group_id: str | None = None
+    group_name: str | None = None
+    group_allowed_models: list[str] = Field(default_factory=list)
     skill_policy: Literal["default", "builtin_only", "disabled"]
     can_upload_skill: bool
     material_quota_mb: int | None = None
@@ -386,6 +454,8 @@ class AdminCapabilityView(Contract):
 class AdminCapabilityUpdateRequest(Contract):
     model_policy: Literal["default", "allowlist", "disabled"] | None = None
     allowed_models: list[str] | None = None
+    group_id: str | None = None
+    clear_group: bool | None = None
     skill_policy: Literal["default", "builtin_only", "disabled"] | None = None
     can_upload_skill: bool | None = None
     material_quota_mb: int | None = Field(default=None, ge=0, le=1_048_576)

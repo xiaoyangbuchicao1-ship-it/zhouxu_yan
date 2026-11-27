@@ -30,7 +30,7 @@ from backend.contracts.ports import ModelContinuationPort
 from backend.contracts.runtime import Artifact, GraphNodeResult, NodeSpec, Ref
 from backend.contracts.schemas.core import Error, ModuleRequest, PortError
 from backend.harness.lifecycle.control import RunControl, StopRequested
-from backend.infrastructure.sources import source_refs_from_action
+from backend.infrastructure.sources import merge_source_refs, source_refs_from_action
 
 
 class _NodeConfig(BaseModel):
@@ -241,10 +241,12 @@ class HarnessGraphHandlers:
             "request": request.input.model_dump(mode="json"),
             "result": result.model_dump(mode="json"),
         })
-        refs = {item["source_id"]: item for item in state.get("source_refs", [])}
-        refs.update({item["source_id"]: item for item in source_refs_from_action(result)})
-        if refs:
-            state["source_refs"] = list(refs.values())
+        merged_refs = merge_source_refs(
+            list(state.get("source_refs", [])),
+            source_refs_from_action(result),
+        )
+        if merged_refs:
+            state["source_refs"] = merged_refs
         return result
 
     @staticmethod

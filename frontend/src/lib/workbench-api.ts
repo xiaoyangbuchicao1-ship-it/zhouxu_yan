@@ -1,5 +1,5 @@
 import type { ThinkingMode } from "./thinking-modes";
-import { createClientRequestId } from "./client-request-id";
+import { createClientRequestId } from "./client-request-id.ts";
 /* The HTTP adapter validates the versioned Workbench contract at the boundary. */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type RunStatus =
@@ -27,13 +27,42 @@ export type ConversationMode = "chat" | "work";
 export interface RunRecovery { mode: "none" | "checkpoint" | "fresh_attempt"; can_continue: boolean; can_retry: boolean; message?: string | null; }
 
 export interface Project { id: string; name: string; conversation_count: number; created_at: string; updated_at: string; }
-export interface Conversation { id: string; title: string; mode: ConversationMode; project_id: string | null; pinned: boolean; preview?: string; material_count?: number; created_at: string; updated_at: string; }
+export interface Conversation {
+  id: string;
+  title: string;
+  mode: ConversationMode;
+  project_id: string | null;
+  pinned: boolean;
+  preview?: string;
+  material_count?: number;
+  active_run_count?: number;
+  latest_run_id?: string | null;
+  latest_run_status?: string | null;
+  latest_run_updated_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
 export interface Material { id: string; filename: string; status: string; size_bytes?: number; content_type?: string; issue?: string | null; }
 export interface Resource extends Material { chunk_count?: number; conversation_count?: number; created_at: string; updated_at: string; }
 export interface Passage { id: string; ordinal: number; locator?: string; heading_path?: string[] | string; text: string; enabled?: boolean; }
 export interface RunStage { id: string; label: string; elapsed_ms: number | null; active: boolean; details: string[]; }
 export interface Activity { id: string; stage: string; status: string; label: string; detail?: string; }
-export interface SourceReference { source_id: string; kind: "law" | "case" | "paper"; title: string; locator?: string | null; section?: string | null; version_date?: string | null; version_label?: string | null; authors?: string | null; collection?: string | null; }
+export interface SourceReference {
+  source_id: string;
+  kind: "law" | "case" | "paper" | "web";
+  title: string;
+  locator?: string | null;
+  section?: string | null;
+  version_date?: string | null;
+  version_label?: string | null;
+  authors?: string | null;
+  collection?: string | null;
+  url?: string | null;
+  domain?: string | null;
+  snippet?: string | null;
+  verified_read?: boolean | null;
+  used_in_answer?: boolean | null;
+}
 export interface PaperOriginal { document_id: string; sha256: string; size_bytes: number; page?: number | null; page_end?: number | null; page_count: number; content_url: string; }
 export interface SourceDocument extends SourceReference { text: string; source_url?: string | null; notices: string[]; original?: PaperOriginal | null; }
 export interface Artifact { artifact_id: string; name: string; media_type: string; size_bytes: number; sha256: string; version: number; kind: "document" | "preview" | "file"; preview_artifact_id?: string | null; preview_of_artifact_id?: string | null; }
@@ -78,7 +107,7 @@ export function mergeRunMessages(messages: Message[], liveRunId: string | (strin
 }
 
 export class WorkbenchError extends Error { constructor(message: string, public status = 0) { super(message); this.name = "WorkbenchError"; } }
-const base = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+const base = (import.meta.env?.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 const segment = encodeURIComponent;
 
 const CODE_MESSAGES: Record<string, string> = {
@@ -112,9 +141,14 @@ function messageFor(status: number, detail: unknown) {
 
 function streamErrorMessage(value: unknown) {
   const message = typeof value === "string" ? value : "";
-  return message === "已保留当前进度，可以继续处理。"
-    ? message
-    : "处理未完成，已有内容已保留。";
+  if (
+    message === "已保留当前进度，可以继续处理。"
+    || message.includes("余额不足")
+    || message.includes("额度不足")
+  ) {
+    return message;
+  }
+  return "处理未完成，已有内容已保留。";
 }
 
 export function workbenchApi(token: string, lifetime?: AbortSignal) {
@@ -141,8 +175,36 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
   const runPath = (id: string) => `/workspace/runs/${segment(id)}`;
   const artifactUrl = (runId: string, conversationId: string, artifactId: string) => `${base}${runPath(runId)}/artifacts/${segment(artifactId)}?conversation_id=${segment(conversationId)}`;
   const material = (raw: any): Resource => ({ conversation_count: typeof raw.conversation_count === "number" ? raw.conversation_count : 0, id: raw.material_id, filename: raw.name, status: raw.status, size_bytes: raw.size_bytes, issue: raw.issue ?? null, content_type: raw.media_type, created_at: raw.created_at || new Date().toISOString(), updated_at: raw.updated_at || raw.created_at || new Date().toISOString() });
-  const conversation = (raw: any): Conversation => ({ id: raw.conversation_id, title: raw.title, mode: raw.mode === "work" ? "work" : "chat", project_id: raw.project_id ?? null, pinned: raw.pinned, created_at: raw.created_at, updated_at: raw.updated_at, material_count: raw.material_count });
-  const sourceReference = (raw: any): SourceReference => ({ source_id: String(raw.source_id), kind: raw.kind === "case" ? "case" : raw.kind === "paper" ? "paper" : "law", title: String(raw.title || "来源"), locator: raw.locator ?? null, section: raw.section ?? null, version_date: raw.version_date ?? null, version_label: raw.version_label ?? null, authors: raw.authors ?? null, collection: raw.collection ?? null });
+  const conversation = (raw: any): Conversation => ({
+    id: raw.conversation_id,
+    title: raw.title,
+    mode: raw.mode === "work" ? "work" : "chat",
+    project_id: raw.project_id ?? null,
+    pinned: raw.pinned,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+    material_count: raw.material_count,
+    active_run_count: typeof raw.active_run_count === "number" ? raw.active_run_count : 0,
+    latest_run_id: raw.latest_run_id ?? null,
+    latest_run_status: raw.latest_run_status ?? null,
+    latest_run_updated_at: raw.latest_run_updated_at ?? null,
+  });
+  const sourceReference = (raw: any): SourceReference => ({
+    source_id: String(raw.source_id),
+    kind: raw.kind === "web" ? "web" : raw.kind === "case" ? "case" : raw.kind === "paper" ? "paper" : "law",
+    title: String(raw.title || "来源"),
+    locator: raw.locator ?? null,
+    section: raw.section ?? null,
+    version_date: raw.version_date ?? null,
+    version_label: raw.version_label ?? null,
+    authors: raw.authors ?? null,
+    collection: raw.collection ?? null,
+    url: typeof raw.url === "string" ? raw.url : null,
+    domain: typeof raw.domain === "string" ? raw.domain : null,
+    snippet: typeof raw.snippet === "string" ? raw.snippet : null,
+    verified_read: typeof raw.verified_read === "boolean" ? raw.verified_read : null,
+    used_in_answer: typeof raw.used_in_answer === "boolean" ? raw.used_in_answer : null,
+  });
   const artifact = (raw: any): Artifact => ({ artifact_id: String(raw.artifact_id), name: String(raw.name || "文件"), media_type: String(raw.media_type || "application/octet-stream"), size_bytes: Number(raw.size_bytes || 0), sha256: String(raw.sha256 || ""), version: Number(raw.version || 1), kind: raw.kind === "preview" ? "preview" : raw.kind === "document" ? "document" : "file", preview_artifact_id: raw.preview_artifact_id ?? null, preview_of_artifact_id: raw.preview_of_artifact_id ?? null });
   const recovery = (raw: any): RunRecovery => ({ mode: raw?.mode === "checkpoint" ? "checkpoint" : raw?.mode === "fresh_attempt" ? "fresh_attempt" : "none", can_continue: raw?.can_continue === true, can_retry: raw?.can_retry === true, message: typeof raw?.message === "string" ? raw.message : null });
   const detail = (raw: any): ConversationDetail => ({ conversation: conversation(raw.conversation), messages: (raw.messages || []).map((m: any) => ({ id: m.message_id, role: m.role, content: m.content, created_at: m.created_at, run_id: m.run_id, model_snapshot: m.model_snapshot ?? null, context_compaction_count: m.context_compaction_count ?? 0, status: m.status, error_code: m.error_code ?? null, recovery: recovery(m.recovery), materials: (m.materials || []).map(material), updates: m.updates || [], sources: (m.sources || []).map(sourceReference), artifacts: (m.artifacts || []).map(artifact) })), pending_materials: [], linked_resources: (raw.materials || []).map(material) });
@@ -199,10 +261,23 @@ export function workbenchApi(token: string, lifetime?: AbortSignal) {
     uploadResource: async (file: File) => material((await request<any>("/workspace/materials", { method: "POST", body: (() => { const f = new FormData(); f.append("file", file, file.name); return f; })() })).material),
     deleteResource: (id: string) => request<void>(`/workspace/materials/${segment(id)}`, { method: "DELETE" }),
     passages: async (id: string, signal?: AbortSignal, cursor?: string): Promise<{ chunks: Passage[]; next_cursor?: string | null; truncated?: boolean; parse_status?: string; complete?: boolean; notices?: string[] }> => request(`/workspace/materials/${segment(id)}/passages${cursor ? `?cursor=${segment(cursor)}` : ""}`, {}, signal),
+    materialBlob: async (id: string, signal?: AbortSignal): Promise<Blob> => {
+      const response = await fetch(`${base}/workspace/materials/${segment(id)}/download?inline=1`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+        credentials: "omit",
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => undefined);
+        throw new WorkbenchError(messageFor(response.status, data?.detail), response.status);
+      }
+      return response.blob();
+    },
     uploadMaterial: async (id: string, file: File) => material((await request<any>(`${conversationPath(id)}/materials`, { method: "POST", body: (() => { const f = new FormData(); f.append("file", file, file.name); return f; })() })).material),
     removeMaterial: (id: string, materialId: string) => request<void>(`${conversationPath(id)}/materials/${segment(materialId)}`, { method: "DELETE" }),
     link: (id: string, resourceId: string, remove = false) => request<void>(`${conversationPath(id)}/materials/${segment(resourceId)}`, { method: remove ? "DELETE" : "PUT" }),
-    submit: (id: string, text: string, materialIds: string[] = [], signal?: AbortSignal, clientRequestId: string = createClientRequestId(), retryOfRunId?: string, attachedIds: string[] = [], thinkingMode?: ThinkingMode | null, facts: TaskContextFacts = {}, modelProfileId?: string | null) => request<RunCommandResponse>(`${conversationPath(id)}/runs`, { method: "POST", body: JSON.stringify({ conversation_id: id, client_request_id: clientRequestId, text, facts, constraints: [], material_ids: materialIds, attached_material_ids: attachedIds, retry_of_run_id: retryOfRunId, thinking_mode: thinkingMode ?? undefined, model_profile_id: modelProfileId ?? undefined }) }, signal),
+    submit: (id: string, text: string, materialIds: string[] = [], signal?: AbortSignal, clientRequestId: string = createClientRequestId(), retryOfRunId?: string, attachedIds: string[] = [], thinkingMode?: ThinkingMode | null, facts: TaskContextFacts = {}, modelProfileId?: string | null) => request<RunCommandResponse>(`${conversationPath(id)}/runs`, { method: "POST", body: JSON.stringify({ conversation_id: id, client_request_id: clientRequestId, text, facts, constraints: [], material_ids: materialIds, attached_material_ids: attachedIds, retry_of_run_id: retryOfRunId, thinking_mode: thinkingMode ?? undefined, model_profile_id: modelProfileId?.trim() || undefined }) }, signal),
     run: (runId: string, conversationId: string, signal?: AbortSignal) => request<RunCommandResponse>(`${runPath(runId)}?conversation_id=${segment(conversationId)}`, {}, signal),
     artifactUrl: (runId: string, conversationId: string, artifactId: string) => `${base}${runPath(runId)}/artifacts/${segment(artifactId)}?conversation_id=${segment(conversationId)}`,
     async downloadArtifact(runId: string, conversationId: string, artifactId: string, signal?: AbortSignal): Promise<Blob> {

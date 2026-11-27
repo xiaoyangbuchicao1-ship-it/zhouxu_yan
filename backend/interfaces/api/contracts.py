@@ -221,6 +221,10 @@ class WorkspaceConversationView(Contract):
     created_at: datetime
     updated_at: datetime
     run_count: int = 0
+    active_run_count: int = 0
+    latest_run_id: str | None = None
+    latest_run_status: str | None = None
+    latest_run_updated_at: datetime | None = None
 
 
 class WorkspaceConversationListResponse(Contract):

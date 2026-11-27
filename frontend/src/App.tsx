@@ -7,6 +7,7 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import AuthPage from "./pages/Auth";
 import AdminLogin from "./pages/AdminLogin";
+import AuthDoorLayout from "./components/AuthDoorStage";
 import AdminLayout from "./pages/admin/AdminLayout";
 import AdminOverviewPage from "./pages/admin/AdminOverviewPage";
 import AdminAccountsPage from "./pages/admin/AdminAccountsPage";
@@ -43,10 +44,12 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
-          <Route path="/login" element={<AuthPage mode="login" />} />
-          <Route path="/register" element={<AuthPage mode="register" />} />
-          <Route path="/account" element={<AuthPage mode="account" />} />
-          <Route path="/admin/login" element={<AdminLogin />} />
+          <Route element={<AuthDoorLayout />}>
+            <Route path="/login" element={<AuthPage mode="login" />} />
+            <Route path="/register" element={<AuthPage mode="register" />} />
+            <Route path="/account" element={<AuthPage mode="account" />} />
+            <Route path="/admin/login" element={<AdminLogin />} />
+          </Route>
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="overview" element={<AdminOverviewPage />} />

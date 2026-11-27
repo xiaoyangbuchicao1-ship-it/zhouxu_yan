@@ -101,6 +101,8 @@ class MaterialSettings(BaseModel):
     web_user_agent: str = Field(min_length=1)
     ocr_enabled: bool = False
     ocr_language: str = Field(min_length=1)
+    vision_assist_enabled: bool = False
+    vision_assist_timeout_seconds: float = Field(default=25.0, gt=0)
     cache_root: str = "data/files/derived/materials"
     table_rows_per_block: int = Field(default=40, ge=1)
     mineru_enabled: bool = False

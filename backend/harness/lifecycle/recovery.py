@@ -156,6 +156,13 @@ def recovery_for_state(
         or (execution_state or {}).get("delivered_stages")
         or (execution_state or {}).get("task_state")
     )
+    if code == "model_quota_exhausted":
+        return RunRecovery(
+            mode="checkpoint" if checkpoint else "fresh_attempt",
+            can_continue=checkpoint,
+            can_retry=True,
+            message="当前模型服务余额不足，请联系管理员充值，或切换其他模型后重试。",
+        )
     if code in NON_RECOVERABLE_CODES and code not in RETRYABLE_CODES:
         return RunRecovery(
             mode="none",

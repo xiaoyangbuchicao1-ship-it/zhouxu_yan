@@ -23,9 +23,9 @@ from backend.infrastructure.parsing.search_view import search_view
 
 
 class MaterialCatalog:
-    def __init__(self, settings):
+    def __init__(self, settings, *, vision_describer=None):
         self.settings = settings
-        self.registry = MaterialParserRegistry(settings.materials)
+        self.registry = MaterialParserRegistry(settings.materials, vision_describer=vision_describer)
         self.runs = {}
         self.read_positions = {}
         self.coverage = {}
@@ -220,7 +220,13 @@ class MaterialCatalog:
             body = self.projection(view)
             body["text_char_count"] = sum(len(unit.text) for unit in parsed.units)
             body["visual_content_present"] = any(unit.kind == "image" or unit.resources for unit in parsed.units)
-            body["read_hint"] = self.settings.materials.navigation_hint
+            if manifest.media_type.startswith("image/"):
+                body["read_hint"] = (
+                    "这是图片附件，上方文字为视觉/OCR自动解析结果。若当前模型支持看图，请优先调用 "
+                    "read_material(material_id=..., include_image=true) 直接查看原图核对细节后再作答。"
+                )
+            else:
+                body["read_hint"] = self.settings.materials.navigation_hint
             body["body_in_tool_history"] = already_provided
             candidates.append(
                 ContextItem(
@@ -305,11 +311,19 @@ class MaterialCatalog:
                     output.notices.append("当前图像格式不可直接传输。")
                 else:
                     try:
-                        raw = source_path.read_bytes()
-                        if len(raw) <= self.settings.materials.max_inline_image_bytes:
-                            output.image_data_url = (
-                                f"data:{media};base64," + base64.b64encode(raw).decode()
-                            )
+                        from backend.infrastructure.parsing.vision_assist import (
+                            encode_image_for_transport,
+                        )
+
+                        encoded = encode_image_for_transport(
+                            source_path,
+                            media,
+                            max_bytes=self.settings.materials.max_inline_image_bytes,
+                            max_edge=2048,
+                        )
+                        if encoded is not None:
+                            wire_media, b64_data = encoded
+                            output.image_data_url = f"data:{wire_media};base64,{b64_data}"
                         else:
                             output.notices.append("图像超过配置的传输资源上限。")
                     except OSError:

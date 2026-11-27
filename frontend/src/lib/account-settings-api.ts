@@ -8,6 +8,7 @@ export interface UserPreferences {
   concise_process: boolean;
   compact_density: boolean;
   reduced_motion: boolean;
+  completion_sound_enabled: boolean;
   memory_enabled: boolean;
   memory_text: string;
   updated_at?: string | null;
@@ -46,6 +47,7 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   concise_process: false,
   compact_density: false,
   reduced_motion: false,
+  completion_sound_enabled: true,
   memory_enabled: false,
   memory_text: "",
   updated_at: null,

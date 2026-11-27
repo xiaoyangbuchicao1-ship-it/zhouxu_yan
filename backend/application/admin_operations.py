@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.application.admin import AdminService, AdminServiceError
@@ -24,6 +25,7 @@ from backend.infrastructure.database.models import (
     ConversationModel,
     ConversationRunModel,
     MaterialModel,
+    ModelAccessGroupModel,
 )
 from backend.infrastructure.search.maritime_corpus import MaritimeCorpus
 from backend.skills.registry import default_skill_registry
@@ -44,6 +46,33 @@ class AdminOperationsService:
         self.database = database
         self.settings = settings
 
+    @staticmethod
+    def _parse_model_list(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise AdminServiceError("capability_policy_corrupt") from exc
+        if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+            raise AdminServiceError("capability_policy_corrupt")
+        return list(parsed)
+
+    @staticmethod
+    def _clean_model_list(items: list[str] | None) -> list[str]:
+        if items is None:
+            return []
+        if any(not isinstance(item, str) or not item.strip() for item in items):
+            raise AdminServiceError("capability_model_list_invalid")
+        return list(dict.fromkeys(item.strip() for item in items))
+
+    @staticmethod
+    def _require_active_admin(session, actor_id: str) -> AccountModel:
+        actor = session.get(AccountModel, actor_id)
+        if actor is None or actor.role != "admin" or actor.status != "active":
+            raise AdminServiceError("admin_required")
+        return actor
+
     def account_grant(self, account_id: str) -> dict:
         with self.database.session() as session:
             grant = session.get(AccountCapabilityGrantModel, account_id)
@@ -51,22 +80,22 @@ class AdminOperationsService:
                 return {
                     "model_policy": "default",
                     "allowed_models": [],
+                    "group_id": None,
+                    "group_name": None,
+                    "group_allowed_models": [],
                     "skill_policy": "default",
                     "can_upload_skill": True,
                     "material_quota_mb": None,
                 }
-            allowed: list[str] = []
-            if grant.allowed_models_json:
-                try:
-                    parsed = json.loads(grant.allowed_models_json)
-                except json.JSONDecodeError as exc:
-                    raise AdminServiceError("capability_policy_corrupt") from exc
-                if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
-                    raise AdminServiceError("capability_policy_corrupt")
-                allowed = parsed
+            allowed = self._parse_model_list(grant.allowed_models_json)
+            group = session.get(ModelAccessGroupModel, grant.group_id) if grant.group_id else None
+            group_allowed = self._parse_model_list(group.allowed_models_json) if group is not None else []
             return {
                 "model_policy": grant.model_policy,
                 "allowed_models": allowed,
+                "group_id": group.id if group is not None else None,
+                "group_name": group.name if group is not None else None,
+                "group_allowed_models": group_allowed,
                 "skill_policy": grant.skill_policy,
                 "can_upload_skill": bool(grant.can_upload_skill),
                 "material_quota_mb": grant.material_quota_mb,
@@ -84,14 +113,19 @@ class AdminOperationsService:
         policy = grant if grant is not None else self.account_grant(account_id)
         model_policy = policy["model_policy"]
         allowed_models = set(policy["allowed_models"])
+        group_models = set(policy.get("group_allowed_models") or [])
         if model_policy == "disabled":
-            return False
-        if model_policy == "allowlist" and profile_id not in allowed_models:
             return False
         if access_scope == "admin_only":
             return account_role == "admin"
+        if model_policy == "allowlist":
+            return profile_id in allowed_models
         if access_scope == "allowlist":
-            return account_role == "admin" or profile_id in allowed_models
+            return (
+                account_role == "admin"
+                or profile_id in group_models
+                or profile_id in allowed_models
+            )
         return True
 
     def filter_model_revisions(
@@ -133,13 +167,191 @@ class AdminOperationsService:
     def can_upload_skill(self, account_id: str) -> bool:
         return bool(self.account_grant(account_id)["can_upload_skill"])
 
+    def list_model_groups(self) -> list[dict]:
+        with self.database.session() as session:
+            groups = session.scalars(
+                select(ModelAccessGroupModel).order_by(ModelAccessGroupModel.created_at, ModelAccessGroupModel.id)
+            ).all()
+            counts = session.execute(
+                select(
+                    AccountCapabilityGrantModel.group_id,
+                    func.count(AccountCapabilityGrantModel.account_id),
+                )
+                .where(AccountCapabilityGrantModel.group_id.is_not(None))
+                .group_by(AccountCapabilityGrantModel.group_id)
+            ).all()
+            count_map = {str(gid): int(total or 0) for gid, total in counts}
+            return [
+                {
+                    "id": group.id,
+                    "name": group.name,
+                    "description": group.description or "",
+                    "allowed_models": self._parse_model_list(group.allowed_models_json),
+                    "member_count": count_map.get(group.id, 0),
+                    "created_at": group.created_at,
+                    "updated_at": group.updated_at,
+                }
+                for group in groups
+            ]
+
+    def create_model_group(
+        self,
+        *,
+        actor_id: str,
+        name: str,
+        description: str = "",
+        allowed_models: list[str] | None = None,
+    ) -> dict:
+        clean_name = name.strip()
+        if not clean_name:
+            raise AdminServiceError("model_group_name_required")
+        if len(clean_name) > 80:
+            raise AdminServiceError("model_group_name_invalid")
+        clean_desc = (description or "").strip()[:240]
+        clean_models = self._clean_model_list(allowed_models)
+        now = datetime.now(timezone.utc)
+        with self.database.session() as session:
+            self._require_active_admin(session, actor_id)
+            existing = session.scalar(
+                select(ModelAccessGroupModel).where(ModelAccessGroupModel.name == clean_name)
+            )
+            if existing is not None:
+                raise AdminServiceError("model_group_name_exists")
+            group = ModelAccessGroupModel(
+                id=uuid4().hex[:16],
+                name=clean_name,
+                description=clean_desc,
+                allowed_models_json=json.dumps(clean_models, ensure_ascii=False, separators=(",", ":")),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(group)
+            AdminService._add_audit(
+                session,
+                actor_id=actor_id,
+                target_account_id=None,
+                action="model_group.created",
+                resource_type="model_group",
+                resource_id=group.id,
+                details={"name": group.name, "allowed_models": clean_models},
+            )
+            session.commit()
+            return {
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "allowed_models": clean_models,
+                "member_count": 0,
+                "created_at": group.created_at,
+                "updated_at": group.updated_at,
+            }
+
+    def update_model_group(
+        self,
+        *,
+        actor_id: str,
+        group_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        allowed_models: list[str] | None = None,
+    ) -> dict:
+        if name is None and description is None and allowed_models is None:
+            raise AdminServiceError("capability_change_required")
+        now = datetime.now(timezone.utc)
+        with self.database.session() as session:
+            self._require_active_admin(session, actor_id)
+            group = session.get(ModelAccessGroupModel, group_id)
+            if group is None:
+                raise AdminServiceError("model_group_not_found")
+            if name is not None:
+                clean_name = name.strip()
+                if not clean_name:
+                    raise AdminServiceError("model_group_name_required")
+                if len(clean_name) > 80:
+                    raise AdminServiceError("model_group_name_invalid")
+                conflict = session.scalar(
+                    select(ModelAccessGroupModel).where(
+                        ModelAccessGroupModel.name == clean_name,
+                        ModelAccessGroupModel.id != group_id,
+                    )
+                )
+                if conflict is not None:
+                    raise AdminServiceError("model_group_name_exists")
+                group.name = clean_name
+            if description is not None:
+                group.description = description.strip()[:240]
+            if allowed_models is not None:
+                clean_models = self._clean_model_list(allowed_models)
+                group.allowed_models_json = json.dumps(
+                    clean_models, ensure_ascii=False, separators=(",", ":")
+                )
+            else:
+                clean_models = self._parse_model_list(group.allowed_models_json)
+            group.updated_at = now
+            member_count = int(
+                session.scalar(
+                    select(func.count(AccountCapabilityGrantModel.account_id)).where(
+                        AccountCapabilityGrantModel.group_id == group_id
+                    )
+                )
+                or 0
+            )
+            AdminService._add_audit(
+                session,
+                actor_id=actor_id,
+                target_account_id=None,
+                action="model_group.updated",
+                resource_type="model_group",
+                resource_id=group.id,
+                details={"name": group.name, "allowed_models": clean_models},
+            )
+            session.commit()
+            return {
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "allowed_models": clean_models,
+                "member_count": member_count,
+                "created_at": group.created_at,
+                "updated_at": group.updated_at,
+            }
+
+    def delete_model_group(self, *, actor_id: str, group_id: str) -> dict:
+        with self.database.session() as session:
+            self._require_active_admin(session, actor_id)
+            group = session.get(ModelAccessGroupModel, group_id)
+            if group is None:
+                raise AdminServiceError("model_group_not_found")
+            session.execute(
+                update(AccountCapabilityGrantModel)
+                .where(AccountCapabilityGrantModel.group_id == group_id)
+                .values(group_id=None)
+            )
+            group_name = group.name
+            session.delete(group)
+            AdminService._add_audit(
+                session,
+                actor_id=actor_id,
+                target_account_id=None,
+                action="model_group.deleted",
+                resource_type="model_group",
+                resource_id=group_id,
+                details={"name": group_name},
+            )
+            session.commit()
+            return {"deleted": True, "group_id": group_id}
+
     def list_capabilities(self) -> list[dict]:
         with self.database.session() as session:
             rows = session.execute(
-                select(AccountModel, AccountCapabilityGrantModel)
+                select(AccountModel, AccountCapabilityGrantModel, ModelAccessGroupModel)
                 .outerjoin(
                     AccountCapabilityGrantModel,
                     AccountCapabilityGrantModel.account_id == AccountModel.id,
+                )
+                .outerjoin(
+                    ModelAccessGroupModel,
+                    ModelAccessGroupModel.id == AccountCapabilityGrantModel.group_id,
                 )
                 .order_by(AccountModel.created_at.desc(), AccountModel.id)
             ).all()
@@ -151,16 +363,17 @@ class AdminOperationsService:
             ).all()
             usage_map = {str(aid): int(total or 0) for aid, total in usage_rows}
             result = []
-            for account, grant in rows:
-                allowed = []
-                if grant is not None and grant.allowed_models_json:
-                    try:
-                        parsed = json.loads(grant.allowed_models_json)
-                    except json.JSONDecodeError as exc:
-                        raise AdminServiceError("capability_policy_corrupt") from exc
-                    if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
-                        raise AdminServiceError("capability_policy_corrupt")
-                    allowed = parsed
+            for account, grant, group in rows:
+                allowed = (
+                    self._parse_model_list(grant.allowed_models_json)
+                    if grant is not None
+                    else []
+                )
+                group_allowed = (
+                    self._parse_model_list(group.allowed_models_json)
+                    if group is not None
+                    else []
+                )
                 result.append(
                     {
                         "account_id": account.id,
@@ -168,6 +381,9 @@ class AdminOperationsService:
                         "display_name": account.display_name,
                         "model_policy": grant.model_policy if grant is not None else "default",
                         "allowed_models": allowed,
+                        "group_id": group.id if group is not None else None,
+                        "group_name": group.name if group is not None else None,
+                        "group_allowed_models": group_allowed,
                         "skill_policy": grant.skill_policy if grant is not None else "default",
                         "can_upload_skill": bool(grant.can_upload_skill) if grant is not None else True,
                         "material_quota_mb": grant.material_quota_mb if grant is not None else None,
@@ -184,6 +400,8 @@ class AdminOperationsService:
         account_id: str,
         model_policy: str | None = None,
         allowed_models: list[str] | None = None,
+        group_id: str | None = None,
+        clear_group: bool | None = None,
         skill_policy: str | None = None,
         can_upload_skill: bool | None = None,
         material_quota_mb: int | None = None,
@@ -194,9 +412,7 @@ class AdminOperationsService:
         if skill_policy is not None and skill_policy not in _SKILL_POLICIES:
             raise AdminServiceError("capability_skill_policy_invalid")
         if allowed_models is not None:
-            if any(not isinstance(item, str) or not item.strip() for item in allowed_models):
-                raise AdminServiceError("capability_model_list_invalid")
-            allowed_models = list(dict.fromkeys(item.strip() for item in allowed_models))
+            allowed_models = self._clean_model_list(allowed_models)
         if model_policy == "allowlist" and allowed_models is not None and not allowed_models:
             raise AdminServiceError("capability_model_list_required")
         if material_quota_mb is not None and (
@@ -209,26 +425,45 @@ class AdminOperationsService:
         if (
             all(
                 value is None
-                for value in (model_policy, allowed_models, skill_policy, can_upload_skill, material_quota_mb)
+                for value in (
+                    model_policy,
+                    allowed_models,
+                    group_id,
+                    skill_policy,
+                    can_upload_skill,
+                    material_quota_mb,
+                )
             )
             and not clear_material_quota
+            and not clear_group
         ):
             raise AdminServiceError("capability_change_required")
 
         now = datetime.now(timezone.utc)
         with self.database.session() as session:
-            actor = session.get(AccountModel, actor_id)
-            if actor is None or actor.role != "admin" or actor.status != "active":
-                raise AdminServiceError("admin_required")
+            self._require_active_admin(session, actor_id)
             account = session.get(AccountModel, account_id)
             if account is None:
                 raise AdminServiceError("account_not_found")
+            target_group: ModelAccessGroupModel | None = None
+            if clear_group:
+                resolved_group_id = None
+            elif group_id is not None:
+                trimmed = group_id.strip()
+                if not trimmed:
+                    resolved_group_id = None
+                else:
+                    target_group = session.get(ModelAccessGroupModel, trimmed)
+                    if target_group is None:
+                        raise AdminServiceError("model_group_not_found")
+                    resolved_group_id = target_group.id
             grant = session.get(AccountCapabilityGrantModel, account_id)
             if grant is None:
                 grant = AccountCapabilityGrantModel(
                     account_id=account_id,
                     model_policy="default",
                     allowed_models_json=None,
+                    group_id=None,
                     skill_policy="default",
                     can_upload_skill=True,
                     material_quota_mb=None,
@@ -240,6 +475,10 @@ class AdminOperationsService:
                 grant.model_policy = model_policy
             if allowed_models is not None:
                 grant.allowed_models_json = json.dumps(allowed_models, ensure_ascii=False, separators=(",", ":"))
+            if clear_group or group_id is not None:
+                grant.group_id = resolved_group_id
+            elif grant.group_id:
+                target_group = session.get(ModelAccessGroupModel, grant.group_id)
             if skill_policy is not None:
                 grant.skill_policy = skill_policy
             if can_upload_skill is not None:
@@ -267,13 +506,19 @@ class AdminOperationsService:
                 details={
                     "model_policy": grant.model_policy,
                     "allowed_models": json.loads(grant.allowed_models_json) if grant.allowed_models_json else [],
+                    "group_id": grant.group_id,
                     "skill_policy": grant.skill_policy,
                     "can_upload_skill": bool(grant.can_upload_skill),
                     "material_quota_mb": grant.material_quota_mb,
                 },
             )
             session.commit()
-            return self._capability_view(account, grant, material_used_bytes=used_bytes)
+            return self._capability_view(
+                account,
+                grant,
+                group=target_group,
+                material_used_bytes=used_bytes,
+            )
 
     def list_skills(self) -> dict:
         from backend.application.maritime.catalog import READY_BUILTIN_METADATA
@@ -475,15 +720,24 @@ class AdminOperationsService:
         account: AccountModel,
         grant: AccountCapabilityGrantModel,
         *,
+        group: ModelAccessGroupModel | None = None,
         material_used_bytes: int = 0,
     ) -> dict:
         allowed = json.loads(grant.allowed_models_json) if grant.allowed_models_json else []
+        group_allowed = (
+            json.loads(group.allowed_models_json)
+            if group is not None and group.allowed_models_json
+            else []
+        )
         return {
             "account_id": account.id,
             "email": account.email,
             "display_name": account.display_name,
             "model_policy": grant.model_policy,
             "allowed_models": allowed,
+            "group_id": group.id if group is not None else None,
+            "group_name": group.name if group is not None else None,
+            "group_allowed_models": group_allowed,
             "skill_policy": grant.skill_policy,
             "can_upload_skill": bool(grant.can_upload_skill),
             "material_quota_mb": grant.material_quota_mb,

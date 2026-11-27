@@ -220,26 +220,6 @@ class MaterialService:
             except OSError:
                 break
 
-    def resolve_for_admin(self, *, material_id: str) -> tuple[MaterialModel, MaterialInput]:
-        """Resolve any account's material for authorized admin inspection/download."""
-        session = self.database.session()
-        try:
-            record = session.get(MaterialModel, material_id)
-        finally:
-            session.close()
-        if record is None:
-            raise MaterialServiceError("material_unavailable")
-        root = self._storage_root().resolve()
-        path = (root / record.storage_key).resolve()
-        if root not in path.parents or not path.is_file():
-            raise MaterialServiceError("material_unavailable")
-        return record, MaterialInput(
-            uri=str(path),
-            material_id=record.id,
-            name=record.filename,
-            media_type=record.media_type,
-        )
-
     def delete_account_material(self, *, account_id: str, material_id: str) -> None:
         """Delete an account-owned material regardless of its conversation scope."""
         session = self.database.session()
@@ -266,13 +246,7 @@ class MaterialService:
             except OSError:
                 break
 
-    def resolve_for_admin(self, *, material_id: str) -> tuple[MaterialModel, MaterialInput]:
-        """Resolve any account's material for authorized admin inspection/download."""
-        session = self.database.session()
-        try:
-            record = session.get(MaterialModel, material_id)
-        finally:
-            session.close()
+    def _resolve_material_input(self, record: MaterialModel | None) -> tuple[MaterialModel, MaterialInput]:
         if record is None:
             raise MaterialServiceError("material_unavailable")
         root = self._storage_root().resolve()
@@ -285,3 +259,26 @@ class MaterialService:
             name=record.filename,
             media_type=record.media_type,
         )
+
+    def resolve_for_admin(self, *, material_id: str) -> tuple[MaterialModel, MaterialInput]:
+        """Resolve any account's material for authorized admin inspection/download."""
+        session = self.database.session()
+        try:
+            record = session.get(MaterialModel, material_id)
+        finally:
+            session.close()
+        return self._resolve_material_input(record)
+
+    def resolve_for_account(self, *, account_id: str, material_id: str) -> tuple[MaterialModel, MaterialInput]:
+        """Resolve an account-owned material for authenticated preview/download."""
+        session = self.database.session()
+        try:
+            record = session.scalar(
+                select(MaterialModel).where(
+                    MaterialModel.id == material_id,
+                    MaterialModel.account_id == account_id,
+                )
+            )
+        finally:
+            session.close()
+        return self._resolve_material_input(record)

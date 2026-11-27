@@ -6,6 +6,15 @@ import { useNavigate } from "react-router-dom";
 import { saveSession } from "@/lib/auth-session";
 import { createClientRequestId } from "@/lib/client-request-id";
 import { modelLabel, type ModelSwitchEvent } from "@/lib/model-selection";
+import { playCompletionSound } from "@/lib/completion-sound";
+import {
+  ACTIVE_RUN_STATUSES,
+  computeConversationActivity,
+  isCardStaleAgainstServer,
+  reconcileConversationTransitions,
+  type ConversationActivityState,
+  type PrevConversationRunState,
+} from "@/lib/conversation-activity";
 import type { AuthSession } from "@/lib/auth";
 import { mergeProgressActivity } from "@/lib/run-progress";
 import { workbenchApi, WorkbenchError, acceptStreamSequence, type ModelProfile, type ModelCatalog, type ModelRunSnapshot, type RunStage, type Activity, type Artifact, type ConversationMode, type Material, type RunEnvelope, type RunNodeState, type RunRecovery, type RunStatus, type Conversation, type ConversationDetail, type SourceReference, type TaskContextFacts } from "@/lib/workbench-api";
@@ -13,6 +22,7 @@ import { workbenchApi, WorkbenchError, acceptStreamSequence, type ModelProfile, 
 export interface PendingTurn { conversationId: string; runId?: string; mode: ConversationMode; question: string; answer: string; modelSnapshot?: ModelRunSnapshot | null; contextCompactionCount?: number; materials: Material[]; updates: string[]; activities: Activity[]; stages?: RunStage[]; observedAt?: number; nodes: RunNodeState[]; activeElapsedMs?: number | null; wallElapsedMs?: number | null; sources: SourceReference[]; artifacts: Artifact[]; recovery: RunRecovery; state: "receiving" | "pausing" | "waiting" | "succeeded" | "failed" | "cancelled" | "paused"; status: RunStatus; revision: number; createdAt?: string; error?: string; inputRequest?: { requestId: string; kind?: string; question: string; options: { value: string; label: string }[]; allowFreeText: boolean }; }
 export interface Upload { key: string; conversationId: string; file: File; error?: string; }
 const terminal = new Set<RunStatus>(["succeeded", "failed", "cancelled", "paused"]);
+export type { ConversationActivityState };
 const stateFor = (status: RunStatus): PendingTurn["state"] => {
   if (status === "waiting_user") return "waiting";
   if (status === "pausing") return "pausing";
@@ -29,6 +39,7 @@ export interface WorkspaceTaskContext {
   initialMode?: ConversationMode;
   defaultMode?: ConversationMode;
   defaultThinkingMode?: ThinkingMode;
+  completionSoundEnabled?: boolean;
 }
 
 export function useWorkspace(session: AuthSession, id?: string, taskContext: WorkspaceTaskContext = {}) {
@@ -41,7 +52,19 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const thinkingKey = `zhouxu.thinking.v1.${session.account.id}`;
   const modelKey = `zhouxu.model.v1.${session.account.id}`;
   const suppressedRunsKey = `zhouxu.suppressed-runs.v1.${session.account.id}`;
+  const unreadKey = `zhouxu.unread-chats.v1.${session.account.id}`;
   const [thinkingMode, updateThinkingMode] = useState<ThinkingMode>(() => readThinkingMode(thinkingKey));
+  const [unreadChats, setUnreadChats] = useState<Record<string, "done" | "error" | "attention">>(() => {
+    try {
+      const raw = JSON.parse(sessionStorage.getItem(unreadKey) || "{}");
+      return raw && typeof raw === "object" ? raw : {};
+    } catch { return {}; }
+  });
+  const completionSoundEnabledRef = useRef(taskContext.completionSoundEnabled !== false);
+  completionSoundEnabledRef.current = taskContext.completionSoundEnabled !== false;
+  const activeIdRef = useRef(id);
+  activeIdRef.current = id;
+  const prevConvRunRef = useRef<Record<string, PrevConversationRunState>>({});
   const [modelProfileId, setModelProfileId] = useState(() => sessionStorage.getItem(modelKey) || "");
   const [modelSwitchEvents, setModelSwitchEvents] = useState<Record<string, ModelSwitchEvent>>({});
   const [draftConversationMode, setDraftConversationMode] = useState<ConversationMode>(taskContext.initialMode || taskContext.defaultMode || "chat");
@@ -55,6 +78,8 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     try { return JSON.parse(sessionStorage.getItem(attachmentKey) || "{}"); } catch { return {}; }
   });
   const [cards, setCards] = useState<Record<string, PendingTurn>>({});
+  const cardsRef = useRef(cards);
+  cardsRef.current = cards;
   const [suppressedRunIds, setSuppressedRunIds] = useState<string[]>(() => {
     try {
       const value = JSON.parse(sessionStorage.getItem(suppressedRunsKey) || "[]");
@@ -74,7 +99,24 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   const creation = useRef<Promise<string>>();
   const naming = useRef(new Set<string>());
   const projects = useQuery({ queryKey: [...scope, "projects"], queryFn: () => api.projects(), retry: false });
-  const history = useQuery({ queryKey: [...scope, "history"], queryFn: ({ signal }) => api.conversations(signal), retry: false });
+  const history = useQuery({
+    queryKey: [...scope, "history"],
+    queryFn: ({ signal }) => api.conversations(signal),
+    retry: false,
+    refetchInterval: (query) => {
+      const list: Conversation[] = query.state.data?.conversations ?? [];
+      const byChat = new Map<string, Conversation>(list.map(c => [c.id, c]));
+      const activeStreams = new Set(Object.keys(controllers.current));
+      const nowMs = Date.now();
+      const hasServerActive = list.some(c => (c.active_run_count ?? 0) > 0 || (c.latest_run_status ? ACTIVE_RUN_STATUSES.has(c.latest_run_status) : false));
+      const hasLocalActive = Object.values(cardsRef.current).some(
+        c =>
+          ACTIVE_RUN_STATUSES.has(c.status) &&
+          !isCardStaleAgainstServer(c, byChat.get(c.conversationId), activeIdRef.current, activeStreams, nowMs),
+      );
+      return hasServerActive || hasLocalActive ? 3000 : false;
+    },
+  });
   const resources = useQuery({ queryKey: [...scope, "resources"], queryFn: ({ signal }) => api.resources(signal), retry: false });
   const modelCatalog = useQuery<ModelCatalog>({ queryKey: [...scope, "models"], queryFn: ({ signal }) => api.models(signal), retry: false });
   const detail = useQuery({ queryKey: [...scope, "chat", id], queryFn: ({ signal }) => api.detail(id!, signal), enabled: Boolean(id), retry: false });
@@ -350,6 +392,17 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
         await applyRun(id, run, all.filter(m => run.payload.attached_material_ids?.includes(m.id)));
         if (run.status !== "waiting_user") observe(id, run.run_id);
       }
+      if (activeRuns.length === 0 && !controller.signal.aborted) {
+        setCards(current => {
+          const staleIds = Object.entries(current)
+            .filter(([, card]) => card.conversationId === id && ACTIVE_RUN_STATUSES.has(card.status))
+            .map(([runId]) => runId);
+          if (!staleIds.length) return current;
+          const next = { ...current };
+          for (const runId of staleIds) delete next[runId];
+          return next;
+        });
+      }
       if (activeRuns.length === 0 && snapshot.runs.length > 0 && !controller.signal.aborted) {
         const latest = snapshot.runs[snapshot.runs.length - 1];
         if (latest.status === "paused" || (latest.status === "failed" && latest.recovery?.can_continue)) {
@@ -370,7 +423,7 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
   async function send(mode: "queue" | "steer" = "queue") {
     const question = draft.trim();
     const selectedMode = thinkingMode;
-    const selectedProfileId = modelProfileId;
+    const selectedProfileId = modelProfileId.trim() || modelCatalog.data?.default_profile_id || undefined;
     const selectionEventId = modelSwitchEvents[id || "new"]?.id;
     if (!question || submitLock.current || preparing || turn?.state === "pausing" || uploads.some(u => !u.error) || question.length > 50000) return;
     if (turn?.state === "waiting" && turn.inputRequest?.kind === "mode_upgrade") {
@@ -592,10 +645,84 @@ export function useWorkspace(session: AuthSession, id?: string, taskContext: Wor
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [api, id]);
+  useEffect(() => {
+    try { sessionStorage.setItem(unreadKey, JSON.stringify(unreadChats)); } catch { /* ignore */ }
+  }, [unreadKey, unreadChats]);
+  useEffect(() => {
+    const clearActiveUnread = () => {
+      const currentId = activeIdRef.current;
+      if (!currentId) return;
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      setUnreadChats(prev => {
+        if (!(currentId in prev)) return prev;
+        const next = { ...prev };
+        delete next[currentId];
+        return next;
+      });
+    };
+    clearActiveUnread();
+    document.addEventListener("visibilitychange", clearActiveUnread);
+    return () => document.removeEventListener("visibilitychange", clearActiveUnread);
+  }, [id]);
+  useEffect(() => {
+    const list = history.data?.conversations;
+    if (!list) return;
+    const isDocumentVisible = typeof document === "undefined" || document.visibilityState === "visible";
+    const { nextPrevMap, newlyCompleted, invalidatedChatIds, staleCardRunIds } = reconcileConversationTransitions(
+      list,
+      cards,
+      prevConvRunRef.current,
+      activeIdRef.current,
+      new Set(Object.keys(controllers.current)),
+      isDocumentVisible,
+    );
+    prevConvRunRef.current = nextPrevMap;
+    for (const convId of invalidatedChatIds) {
+      void client.invalidateQueries({ queryKey: [...scope, "chat", convId] });
+    }
+    if (staleCardRunIds.length > 0) {
+      setCards(current => {
+        let changed = false;
+        const next = { ...current };
+        for (const runId of staleCardRunIds) {
+          if (runId in next) {
+            delete next[runId];
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+    }
+    if (newlyCompleted.length > 0) {
+      setUnreadChats(prev => {
+        const next = { ...prev };
+        for (const item of newlyCompleted) next[item.convId] = item.kind;
+        return next;
+      });
+      if (completionSoundEnabledRef.current) {
+        playCompletionSound();
+      }
+    }
+  }, [history.data, cards, client, scope]);
+  const conversationActivity = useMemo<Record<string, ConversationActivityState>>(
+    () =>
+      computeConversationActivity(
+        history.data?.conversations ?? [],
+        cards,
+        unreadChats,
+        id,
+        new Set(Object.keys(controllers.current)),
+      ),
+    [history.data, cards, unreadChats, id],
+  );
+  const runningConversationCount = useMemo(
+    () => Object.values(conversationActivity).filter(state => state === "running").length,
+    [conversationActivity],
+  );
   const dismissContinuation = useCallback(() => {
     if (!turn?.runId) return;
     if (turn.status !== "paused" && turn.status !== "failed") return;
     setCards(current => { const next = { ...current }; delete next[turn.runId!]; return next; });
   }, [turn]);
-  return { uploadBusy: preparing || uploads.some(u => u.conversationId === id && !u.error), deleteConversation, thinkingMode, setThinkingMode, modelProfileId, modelCatalog: modelCatalog.data, setModelProfile, pendingModelSwitch: modelSwitchEvents[id || "new"]?.toProfileId === modelProfileId ? modelSwitchEvents[id || "new"] : undefined, conversationMode, setConversationMode, modeChanging: false, visibleRuns: currentCards, suppressedRunIds, downloadArtifact, api, scope, notice, setNotice, busy: turn?.state === "receiving" || turn?.state === "pausing", projects, history, resources, detail, act, refresh, report, projectFilter, setProjectFilter, draft, setDraft, draftMaterials, turn, queuedRuns, send, steerQueued, reloadTurn, retryTurn, continueRun, answerInputRequest, dismissContinuation, pause: () => control(false), cancel: () => control(true), steer: () => send("steer"), ensureConversation, uploads, uploadFiles, uploadOne, stageMaterial, removeDraftMaterial, dismissUpload: (key: string) => setUploads(current => current.filter(u => u.key !== key)) };
+  return { uploadBusy: preparing || uploads.some(u => u.conversationId === id && !u.error), deleteConversation, thinkingMode, setThinkingMode, modelProfileId, modelCatalog: modelCatalog.data, setModelProfile, pendingModelSwitch: modelSwitchEvents[id || "new"]?.toProfileId === modelProfileId ? modelSwitchEvents[id || "new"] : undefined, conversationMode, setConversationMode, modeChanging: false, visibleRuns: currentCards, conversationActivity, runningConversationCount, suppressedRunIds, downloadArtifact, api, scope, notice, setNotice, busy: turn?.state === "receiving" || turn?.state === "pausing", projects, history, resources, detail, act, refresh, report, projectFilter, setProjectFilter, draft, setDraft, draftMaterials, turn, queuedRuns, send, steerQueued, reloadTurn, retryTurn, continueRun, answerInputRequest, dismissContinuation, pause: () => control(false), cancel: () => control(true), steer: () => send("steer"), ensureConversation, uploads, uploadFiles, uploadOne, stageMaterial, removeDraftMaterial, dismissUpload: (key: string) => setUploads(current => current.filter(u => u.key !== key)) };
 }

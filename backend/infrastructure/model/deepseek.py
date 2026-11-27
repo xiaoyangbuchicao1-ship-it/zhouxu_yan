@@ -33,6 +33,70 @@ from backend.infrastructure.model.endpoint_policy import (
 )
 
 
+_QUOTA_BALANCE_TOKENS = (
+    "insufficient_quota",
+    "insufficient_balance",
+    "insufficient balance",
+    "insufficient credit",
+    "insufficient credits",
+    "insufficient_user_quota",
+    "quota_exceeded",
+    "quota exceeded",
+    "billing_hard_limit",
+    "credit balance is too low",
+    "out of credit",
+    "out of quota",
+    "余额不足",
+    "额度不足",
+    "额度已用完",
+    "欠费",
+    "请充值",
+)
+
+
+def is_quota_or_balance_error(status_code: int, body_text: str = "") -> bool:
+    """Detect upstream provider balance/quota exhaustion without misclassifying rate limits."""
+
+    if status_code == 402:
+        return True
+    if status_code not in {400, 401, 403, 429} or not body_text:
+        return False
+    parts = [body_text]
+    try:
+        parsed = json.loads(body_text)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        err = parsed.get("error")
+        if isinstance(err, dict):
+            for key in ("code", "type", "message"):
+                if isinstance(err.get(key), str):
+                    parts.append(err[key])
+        if isinstance(parsed.get("message"), str):
+            parts.append(parsed["message"])
+    haystack = " ".join(parts).lower()
+    return any(token in haystack for token in _QUOTA_BALANCE_TOKENS)
+
+
+def _sync_error_body(response: httpx.Response) -> str:
+    raw = getattr(response, "text", None)
+    if isinstance(raw, str):
+        return raw[:2000]
+    content = getattr(response, "content", b"")
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content[:2000]).decode("utf-8", errors="ignore")
+    return ""
+
+
+async def _async_error_body(response: httpx.Response) -> str:
+    aread = getattr(response, "aread", None)
+    if callable(aread):
+        raw = await aread()
+        if isinstance(raw, (bytes, bytearray)):
+            return bytes(raw[:2000]).decode("utf-8", errors="ignore")
+    return _sync_error_body(response)
+
+
 class DeepSeekModel:
     def _explicit(self, purpose):
         return self.settings.model.decision_protocol == "explicit" and purpose != "compaction"
@@ -614,13 +678,14 @@ class DeepSeekModel:
                 json=self._payload(request),
                 headers={"x-zhouxu-purpose": request.input.purpose},
             )
-            if response.status_code == 402:
-                raise PortError(self.settings.error("model_quota_exhausted"))
-            if response.status_code == 429 or response.status_code >= 500:
-                raise PortError(
-                    self.settings.error("model_unavailable", retryable=True)
-                )
             if not response.is_success:
+                body_text = _sync_error_body(response)
+                if is_quota_or_balance_error(response.status_code, body_text):
+                    raise PortError(self.settings.error("model_quota_exhausted"))
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise PortError(
+                        self.settings.error("model_unavailable", retryable=True)
+                    )
                 raise PortError(self.settings.error("model_rejected"))
             data = response.json()
             usage = data.get("usage")
@@ -693,13 +758,14 @@ class DeepSeekModel:
                 json=payload,
                 headers={"x-zhouxu-purpose": request.input.purpose},
             ) as response:
-                if response.status_code == 402:
-                    raise PortError(self.settings.error("model_quota_exhausted"))
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise PortError(
-                        self.settings.error("model_unavailable", retryable=True)
-                    )
                 if not response.is_success:
+                    body_text = await _async_error_body(response)
+                    if is_quota_or_balance_error(response.status_code, body_text):
+                        raise PortError(self.settings.error("model_quota_exhausted"))
+                    if response.status_code == 429 or response.status_code >= 500:
+                        raise PortError(
+                            self.settings.error("model_unavailable", retryable=True)
+                        )
                     raise PortError(self.settings.error("model_rejected"))
                 async for line in response.aiter_lines():
                     if not line:

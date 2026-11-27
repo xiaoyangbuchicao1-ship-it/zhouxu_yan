@@ -94,7 +94,7 @@ function describe(event: AdminAuditEvent): string[] {
   return tags;
 }
 
-interface TimelineItem { key: string; time: string; who: string; what: string; target?: { id: string; email: string }; details: string[]; failed: boolean; count?: number }
+interface TimelineItem { key: string; time: string; who: string; what: string; target?: { id: string; email: string; alias?: string | null }; details: string[]; failed: boolean; count?: number }
 
 /** 查看会话太碎：同一天、同一个人看同一个账户，折成一行。 */
 function foldViews(events: AdminAuditEvent[]): TimelineItem[] {
@@ -105,7 +105,7 @@ function foldViews(events: AdminAuditEvent[]): TimelineItem[] {
     if (existing) existing.count = (existing.count ?? 1) + 1;
     else folded.set(key, {
       key, time: event.created_at, who: event.actor_email, what: "查看了会话",
-      target: event.target_account_id && event.target_email ? { id: event.target_account_id, email: event.target_email } : undefined,
+      target: event.target_account_id && event.target_email ? { id: event.target_account_id, email: event.target_email, alias: event.target_alias } : undefined,
       details: [], failed: false, count: 1,
     });
   }
@@ -120,7 +120,7 @@ function toItems(events: AdminAuditEvent[], view: View): TimelineItem[] {
     who: event.actor_email,
     what: auditActionLabel(event.action),
     target: event.target_account_id && event.target_email && event.target_account_id !== event.actor_id
-      ? { id: event.target_account_id, email: event.target_email } : undefined,
+      ? { id: event.target_account_id, email: event.target_email, alias: event.target_alias } : undefined,
     details: describe(event),
     failed: event.outcome === "failed",
   }));
@@ -253,7 +253,11 @@ export default function AdminAuditPage() {
                                 <strong>{item.who}</strong>{" "}
                                 {item.what}
                                 {item.count && item.count > 1 ? ` ${item.count} 次` : ""}
-                                {item.target && <> → <Link className="admin-cell-link" to={accountConversationPath(item.target.id)}>{item.target.email}</Link></>}
+                                {item.target && (
+                                  <> → <Link className="admin-cell-link" to={accountConversationPath(item.target.id)}>
+                                    {item.target.alias ? `${item.target.alias} (${item.target.email})` : item.target.email}
+                                  </Link></>
+                                )}
                               </p>
                               {item.details.length > 0 && <p className="admin-timeline-detail">{item.details.join(" · ")}</p>}
                             </div>

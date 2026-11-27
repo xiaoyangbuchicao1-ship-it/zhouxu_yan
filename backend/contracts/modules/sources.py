@@ -13,7 +13,7 @@ from backend.contracts.schemas.core import Contract
 
 class SourceReference(Contract):
     source_id: str
-    kind: Literal["law", "case", "paper"]
+    kind: Literal["law", "case", "paper", "web"]
     title: str
     locator: str | None = None
     section: str | None = None
@@ -21,6 +21,11 @@ class SourceReference(Contract):
     version_label: str | None = None
     authors: str | None = None
     collection: str | None = None
+    url: str | None = None
+    domain: str | None = None
+    snippet: str | None = None
+    verified_read: bool | None = None
+    used_in_answer: bool | None = None
 
 
 class PaperOriginal(Contract):

@@ -26,6 +26,7 @@ class InferredModelDefaults:
     default_thinking: str
     matched: bool
     source_hint: str
+    supports_vision: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -35,7 +36,41 @@ class InferredModelDefaults:
             "default_thinking": self.default_thinking,
             "matched": self.matched,
             "source_hint": self.source_hint,
+            "supports_vision": self.supports_vision,
         }
+
+
+_VISION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"deepseek[-_]?flash", re.I),
+    re.compile(r"(?:^|/)gpt-(?:4o|4\.1|4\.5|5|6)", re.I),
+    re.compile(r"(?:^|/)o(?:1|3|4)(?:[-.]|$)", re.I),
+    re.compile(r"claude[-._]", re.I),
+    re.compile(r"gemini[-._]", re.I),
+    re.compile(r"glm-(?:4v|5)", re.I),
+    re.compile(r"(?:qwen.*vl|vision|[-_]vl(?:[-.]|$))", re.I),
+)
+
+_NON_VISION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"deepseek.*(?:v4-pro|pro|r1|v3|chat|coder|reasoner)", re.I),
+    re.compile(r"(?:embedding|rerank|whisper|tts|audio)", re.I),
+)
+
+
+def infer_vision_support(model_id: str, entry: dict | None = None) -> bool:
+    if isinstance(entry, dict):
+        transport = entry.get("image_transport")
+        if isinstance(transport, str) and transport != "none":
+            return True
+        if transport == "none" and str(entry.get("provider") or "").lower() == "deepseek":
+            return False
+    raw = (model_id or "").strip().lower()
+    if not raw:
+        return False
+    tail = raw.rsplit("/", 1)[-1]
+    for pattern in _NON_VISION_PATTERNS:
+        if pattern.search(tail) or pattern.search(raw):
+            return False
+    return any(pattern.search(tail) or pattern.search(raw) for pattern in _VISION_PATTERNS)
 
 
 @lru_cache(maxsize=1)
@@ -271,6 +306,7 @@ def infer_model_defaults(model_id: str) -> InferredModelDefaults:
                 default_thinking=default_t,
                 matched=True,
                 source_hint="内置模型目录",
+                supports_vision=infer_vision_support(raw, entry),
             )
 
     for pattern, ctx, out, modes, default_t, hint in _RULES:
@@ -282,6 +318,7 @@ def infer_model_defaults(model_id: str) -> InferredModelDefaults:
                 default_thinking=default_t,
                 matched=True,
                 source_hint=hint,
+                supports_vision=infer_vision_support(raw),
             )
 
     family = model_family(raw)
@@ -293,5 +330,6 @@ def infer_model_defaults(model_id: str) -> InferredModelDefaults:
             default_thinking="none",
             matched=True,
             source_hint=f"{family.upper()} 通用默认",
+            supports_vision=infer_vision_support(raw),
         )
     return _SAFE_DEFAULT

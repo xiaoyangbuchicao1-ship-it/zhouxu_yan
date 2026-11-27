@@ -7,6 +7,30 @@ export interface InferredModelSpec {
   default_thinking: ThinkingMode;
   matched: boolean;
   source_hint: string;
+  supports_vision?: boolean;
+}
+
+const VISION_PATTERNS: RegExp[] = [
+  /deepseek[-_]?flash/i,
+  /(?:^|\/)gpt-(?:4o|4\.1|4\.5|5|6)/i,
+  /(?:^|\/)o(?:1|3|4)(?:[-.]|$)/i,
+  /claude[-._]/i,
+  /gemini[-._]/i,
+  /glm-(?:4v|5)/i,
+  /(?:qwen.*vl|vision|[-_]vl(?:[-.]|$))/i,
+];
+
+const NON_VISION_PATTERNS: RegExp[] = [
+  /deepseek.*(?:v4-pro|pro|r1|v3|chat|coder|reasoner)/i,
+  /(?:embedding|rerank|whisper|tts|audio)/i,
+];
+
+export function inferVisionSupportLocal(modelId: string): boolean {
+  const raw = modelId.trim().toLowerCase();
+  if (!raw) return false;
+  const tail = raw.includes("/") ? raw.slice(raw.lastIndexOf("/") + 1) : raw;
+  if (NON_VISION_PATTERNS.some(p => p.test(tail) || p.test(raw))) return false;
+  return VISION_PATTERNS.some(p => p.test(tail) || p.test(raw));
 }
 
 const RULES: Array<[RegExp, number, number, ThinkingMode[], ThinkingMode, string]> = [
@@ -38,6 +62,7 @@ export const SAFE_MODEL_DEFAULTS: InferredModelSpec = {
   default_thinking: "none",
   matched: false,
   source_hint: "通用默认值",
+  supports_vision: false,
 };
 
 export function inferModelSpecLocal(modelId: string): InferredModelSpec {
@@ -45,6 +70,7 @@ export function inferModelSpecLocal(modelId: string): InferredModelSpec {
   if (!raw) return SAFE_MODEL_DEFAULTS;
   const lowered = raw.toLowerCase();
   const tail = lowered.includes("/") ? lowered.slice(lowered.lastIndexOf("/") + 1) : lowered;
+  const supports_vision = inferVisionSupportLocal(raw);
   for (const [pattern, context_tokens, max_output_tokens, thinking_modes, default_thinking, source_hint] of RULES) {
     if (pattern.test(tail) || pattern.test(lowered)) {
       return {
@@ -54,8 +80,9 @@ export function inferModelSpecLocal(modelId: string): InferredModelSpec {
         default_thinking,
         matched: true,
         source_hint,
+        supports_vision,
       };
     }
   }
-  return SAFE_MODEL_DEFAULTS;
+  return { ...SAFE_MODEL_DEFAULTS, supports_vision };
 }

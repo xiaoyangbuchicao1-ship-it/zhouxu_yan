@@ -43,6 +43,7 @@ def build_harness(
     account_skill_loader: Callable[[str, str, int | None], dict[str, Any]] | None = None,
     skill_permission_checker: Callable[[str, str, bool], bool] | None = None,
     web_client=None,
+    vision_describer=None,
 ) -> Harness:
     context_model = model_context or model
     if not isinstance(context_model, ModelContextPort):
@@ -64,7 +65,7 @@ def build_harness(
         if bridge.spec.name in registered:
             raise ValueError("duplicate_tool_registration")
         registered[bridge.spec.name] = (bridge.spec, bridge)
-    catalog = MaterialCatalog(settings)
+    catalog = MaterialCatalog(settings, vision_describer=vision_describer)
     from backend.infrastructure.tools.material_read import MaterialReadTool
     from backend.infrastructure.tools.material_search import MaterialSearchTool
 
@@ -312,6 +313,9 @@ async def open_harnesses(
                     directory=model_directory,
                 )
             )
+            from backend.infrastructure.parsing.vision_assist import create_vision_describer
+
+            vision_describer = create_vision_describer(selected, model.registry)
             harnesses[mode] = build_harness(
                 model=model,
                 settings=selected,
@@ -324,6 +328,7 @@ async def open_harnesses(
                 account_skill_loader=account_skill_loader,
                 skill_permission_checker=skill_permission_checker,
                 web_client=web_client,
+                vision_describer=vision_describer,
             )
         yield harnesses
 

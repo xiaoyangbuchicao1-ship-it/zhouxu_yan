@@ -114,6 +114,7 @@ function Desk({ session }: { session: AuthSession }) {
     initialMode,
     defaultMode: prefs.default_mode,
     defaultThinkingMode: prefs.default_thinking_mode,
+    completionSoundEnabled: prefs.completion_sound_enabled !== false,
   });
   const osReduced = useReducedMotion();
   const reduced = Boolean(osReduced || prefs.reduced_motion);

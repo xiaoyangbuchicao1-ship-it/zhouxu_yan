@@ -110,6 +110,8 @@ class Database:
                         "ops_email_v1",
                         "account_register_ip_v1",
                         "account_quota_v1",
+                        "model_groups_v1",
+                        "ui_ux_v2",
                     ):
                         connection.exec_driver_sql(
                             f"INSERT OR IGNORE INTO schema_versions(version, applied_at) VALUES ('{version}', datetime('now'))"
@@ -148,6 +150,41 @@ class Database:
                             "ADD COLUMN material_quota_mb INTEGER"
                         )
                     )
+            if "group_id" not in grant_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE account_capability_grants "
+                            "ADD COLUMN group_id VARCHAR(32) REFERENCES model_access_groups(id) ON DELETE SET NULL"
+                        )
+                    )
+            with self.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_account_capability_grants_group_id "
+                        "ON account_capability_grants (group_id)"
+                    )
+                )
+        if "user_preferences" in tables:
+            pref_columns = {
+                column["name"] for column in inspector.get_columns("user_preferences")
+            }
+            if "completion_sound_enabled" not in pref_columns:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE user_preferences "
+                            "ADD COLUMN completion_sound_enabled BOOLEAN NOT NULL DEFAULT 1"
+                        )
+                    )
+        if "admin_account_aliases" in tables:
+            with self.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_admin_account_aliases_target "
+                        "ON admin_account_aliases (target_account_id)"
+                    )
+                )
         if "conversations" not in tables:
             conversation_columns = set()
         else:

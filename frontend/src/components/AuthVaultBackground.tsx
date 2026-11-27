@@ -2,7 +2,8 @@ import { Component, Suspense, lazy, type ReactNode } from "react";
 
 // Keep Three.js out of the landing page's initial bundle.
 const HexagonalVault = lazy(() => import("./react-bits/hexagonal-vault"));
-const colors = ["#527da9", "#b2cddd"];
+const USER_COLORS = ["#527da9", "#b2cddd"];
+const ADMIN_COLORS = ["#9f7f4c", "#e6cba0"];
 const fallback = <div className="auth-vault-fallback" />;
 
 class BackgroundBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -17,14 +18,15 @@ class BackgroundBoundary extends Component<{ children: ReactNode }, { failed: bo
   }
 }
 
-export default function AuthVaultBackground() {
+export default function AuthVaultBackground({ realm = "user" }: { realm?: "user" | "admin" }) {
+  const isAdmin = realm === "admin";
   return (
     <BackgroundBoundary>
       <Suspense fallback={fallback}>
         <HexagonalVault
           className="auth-vault"
-          colors={colors}
-          backgroundColor="#080c10"
+          colors={isAdmin ? ADMIN_COLORS : USER_COLORS}
+          backgroundColor={isAdmin ? "#080706" : "#060b11"}
           cellSize={1.6}
           lattice={0.55}
           glow={1.2}

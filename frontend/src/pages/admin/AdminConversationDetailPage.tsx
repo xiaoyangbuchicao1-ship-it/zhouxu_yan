@@ -14,7 +14,9 @@ import {
   Eye,
   FileText,
   LoaderCircle,
+  Maximize2,
   MessageSquare,
+  Minimize2,
   Paperclip,
   Search,
   Wrench,
@@ -27,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { isImageAttachment } from "@/lib/image-attachment";
 import { Markdown } from "@/components/workspace/PublicMarkdown";
 import {
   createAdminApi,
@@ -50,6 +53,7 @@ import {
 } from "./AdminShared";
 
 function sourceKindLabel(kind: AdminConversationSource["kind"]): string {
+  if (kind === "web") return "网络";
   if (kind === "law") return "法规";
   if (kind === "case") return "案例";
   if (kind === "paper") return "论文";
@@ -105,6 +109,12 @@ export default function AdminConversationDetailPage() {
   const [materialPreview, setMaterialPreview] = useState<{
     materialId: string;
     filename: string;
+    isImage: boolean;
+    tab: "image" | "text";
+    zoomed: boolean;
+    imageLoading: boolean;
+    imageUrl: string | null;
+    imageError: string | null;
     loading: boolean;
     loadingMore: boolean;
     data: AdminPassageListResponse | null;
@@ -112,6 +122,13 @@ export default function AdminConversationDetailPage() {
   } | null>(null);
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const url = materialPreview?.imageUrl;
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [materialPreview?.imageUrl]);
 
   const detailQuery = useQuery({
     queryKey: ["admin", "account", accountId, "conversation", conversationId],
@@ -157,21 +174,58 @@ export default function AdminConversationDetailPage() {
     }
   }
 
-  async function openMaterialPreview(materialId: string, filename: string) {
+  async function openMaterialPreview(materialId: string, filename: string, mediaType?: string) {
     setDownloadError(null);
-    setMaterialPreview({ materialId, filename, loading: true, loadingMore: false, data: null, error: null });
+    const isImage = isImageAttachment(filename, mediaType);
+    setMaterialPreview({
+      materialId,
+      filename,
+      isImage,
+      tab: isImage ? "image" : "text",
+      zoomed: false,
+      imageLoading: isImage,
+      imageUrl: null,
+      imageError: null,
+      loading: true,
+      loadingMore: false,
+      data: null,
+      error: null,
+    });
+    if (isImage) {
+      void api.materialBlob(materialId).then(blob => {
+        const objectUrl = URL.createObjectURL(blob);
+        setMaterialPreview(prev => {
+          if (!prev || prev.materialId !== materialId) {
+            URL.revokeObjectURL(objectUrl);
+            return prev;
+          }
+          return { ...prev, imageLoading: false, imageUrl: objectUrl, imageError: null };
+        });
+      }).catch(cause => {
+        setMaterialPreview(prev => prev && prev.materialId === materialId ? {
+          ...prev,
+          imageLoading: false,
+          imageError: cause instanceof Error ? cause.message : "原图暂时无法加载。",
+        } : prev);
+      });
+    }
     try {
       const data = await api.materialPassages(materialId);
-      setMaterialPreview({ materialId, filename, loading: false, loadingMore: false, data, error: null });
+      setMaterialPreview(prev => prev && prev.materialId === materialId ? {
+        ...prev,
+        loading: false,
+        loadingMore: false,
+        data,
+        error: null,
+      } : prev);
     } catch (cause) {
-      setMaterialPreview({
-        materialId,
-        filename,
+      setMaterialPreview(prev => prev && prev.materialId === materialId ? {
+        ...prev,
         loading: false,
         loadingMore: false,
         data: null,
         error: cause instanceof Error ? cause.message : "附件内容暂时无法读取。",
-      });
+      } : prev);
     }
   }
 
@@ -228,9 +282,14 @@ export default function AdminConversationDetailPage() {
     (item, idx, arr) => arr.findIndex(other => other.run_id === item.run_id) === idx,
   );
   const owner = detail?.account;
+  const ownerLabel = owner
+    ? owner.alias
+      ? `${owner.alias}（${owner.display_name || owner.email}）`
+      : owner.display_name || owner.email
+    : null;
   const headerDesc = [
     detail ? modeLabel(detail.conversation.mode) : null,
-    owner ? owner.display_name || owner.email : null,
+    ownerLabel,
     `${allRuns.length} 次运行`,
   ].filter(Boolean).join(" · ");
 
@@ -271,7 +330,7 @@ export default function AdminConversationDetailPage() {
                   run={run}
                   downloadingKey={downloadingKey}
                   onInspectSource={src => void openSourcePreview(src)}
-                  onPreviewMaterial={(id, name) => void openMaterialPreview(id, name)}
+                  onPreviewMaterial={(id, name, mediaType) => void openMaterialPreview(id, name, mediaType)}
                   onDownloadMaterial={(id, name) => void handleDownloadMaterial(id, name)}
                   onDownloadArtifact={(runId, artId, name) => void handleDownloadArtifact(runId, artId, name)}
                 />
@@ -342,26 +401,75 @@ export default function AdminConversationDetailPage() {
           <DialogHeader>
             <DialogTitle>{materialPreview ? `用户附件 · ${materialPreview.filename}` : "用户附件"}</DialogTitle>
             <DialogDescription>
-              {materialPreview?.data
-                ? `解析状态：${materialPreview.data.parse_status} · 已显示 ${materialPreview.data.chunks.length} 段`
-                : "查看已解析的正文片段或下载原始附件"}
+              {materialPreview?.isImage && materialPreview.tab === "image"
+                ? "正在预览原始上传图片（可切换到图片识别文本查看解析内容）"
+                : materialPreview?.data
+                  ? `解析状态：${materialPreview.data.parse_status} · 已显示 ${materialPreview.data.chunks.length} 段`
+                  : "查看已解析的正文片段或下载原始附件"}
             </DialogDescription>
           </DialogHeader>
           <div className="admin-source-body">
             {materialPreview && (
-              <div className="admin-row-actions" style={{ justifyContent: "flex-start" }}>
-                <button
-                  type="button"
-                  className="admin-row-action"
-                  disabled={downloadingKey !== null}
-                  onClick={() => void handleDownloadMaterial(materialPreview.materialId, materialPreview.filename)}
-                >
-                  {downloadingKey === `mat:${materialPreview.materialId}` ? <LoaderCircle className="admin-spin" size={14} /> : <Download size={14} />}
-                  下载原文件
-                </button>
+              <div className="admin-preview-toolbar">
+                <div className="admin-row-actions" style={{ justifyContent: "flex-start" }}>
+                  {materialPreview.isImage && (
+                    <div className="admin-segment" role="tablist" aria-label="附件预览视图">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={materialPreview.tab === "image"}
+                        className={materialPreview.tab === "image" ? "is-active" : ""}
+                        onClick={() => setMaterialPreview(prev => prev ? { ...prev, tab: "image" } : prev)}
+                      >
+                        原图预览
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={materialPreview.tab === "text"}
+                        className={materialPreview.tab === "text" ? "is-active" : ""}
+                        onClick={() => setMaterialPreview(prev => prev ? { ...prev, tab: "text" } : prev)}
+                      >
+                        图片识别文本
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="admin-row-action"
+                    disabled={downloadingKey !== null}
+                    onClick={() => void handleDownloadMaterial(materialPreview.materialId, materialPreview.filename)}
+                  >
+                    {downloadingKey === `mat:${materialPreview.materialId}` ? <LoaderCircle className="admin-spin" size={14} /> : <Download size={14} />}
+                    下载原文件
+                  </button>
+                </div>
+                {materialPreview.isImage && materialPreview.tab === "image" && materialPreview.imageUrl && (
+                  <button
+                    type="button"
+                    className="admin-row-action"
+                    onClick={() => setMaterialPreview(prev => prev ? { ...prev, zoomed: !prev.zoomed } : prev)}
+                  >
+                    {materialPreview.zoomed ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                    {materialPreview.zoomed ? "适应窗口" : "原始尺寸"}
+                  </button>
+                )}
               </div>
             )}
-            {materialPreview?.loading ? (
+            {materialPreview?.isImage && materialPreview.tab === "image" ? (
+              materialPreview.imageLoading ? (
+                <div className="admin-loading" style={{ minHeight: 220 }}>
+                  <LoaderCircle className="admin-spin" size={18} />
+                  正在加载原始图片…
+                </div>
+              ) : materialPreview.imageUrl ? (
+                <div className={`admin-image-preview-stage ${materialPreview.zoomed ? "is-zoomed" : ""}`}>
+                  <img src={materialPreview.imageUrl} alt={materialPreview.filename} />
+                </div>
+              ) : (
+                <p className="admin-cc-hint">{materialPreview.imageError || "图片暂时无法显示。"}</p>
+              )
+            ) : materialPreview?.loading ? (
               <div className="admin-loading" style={{ minHeight: 160 }}>
                 <LoaderCircle className="admin-spin" size={18} />
                 正在读取附件内容…
@@ -422,11 +530,11 @@ function RunCard({
   run: AdminConversationRun;
   downloadingKey: string | null;
   onInspectSource: (source: AdminConversationSource) => void;
-  onPreviewMaterial: (materialId: string, filename: string) => void;
+  onPreviewMaterial: (materialId: string, filename: string, mediaType?: string) => void;
   onDownloadMaterial: (materialId: string, filename: string) => void;
   onDownloadArtifact: (runId: string, artifactId: string, filename: string) => void;
 }) {
-  const [sourceFilter, setSourceFilter] = useState<"all" | "law" | "case" | "paper">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "web" | "law" | "case" | "paper">("all");
   const [showAllSources, setShowAllSources] = useState(false);
 
   const statusClass = run.status === "succeeded" ? "is-success" : run.status === "failed" ? "is-error" : "";
@@ -438,6 +546,7 @@ function RunCard({
 
   const counts = {
     total: sources.length,
+    web: sources.filter(s => s.kind === "web").length,
     law: sources.filter(s => s.kind === "law").length,
     case: sources.filter(s => s.kind === "case").length,
     paper: sources.filter(s => s.kind === "paper").length,
@@ -490,7 +599,7 @@ function RunCard({
                   <button
                     type="button"
                     className="admin-pill-btn"
-                    onClick={() => onPreviewMaterial(mat.material_id, mat.filename)}
+                    onClick={() => onPreviewMaterial(mat.material_id, mat.filename, mat.media_type)}
                   >
                     <Eye size={12} />
                     查看
@@ -568,6 +677,15 @@ function RunCard({
               >
                 全部 ({counts.total})
               </button>
+              {counts.web > 0 && (
+                <button
+                  type="button"
+                  className={sourceFilter === "web" ? "is-active" : ""}
+                  onClick={() => setSourceFilter("web")}
+                >
+                  网络 ({counts.web})
+                </button>
+              )}
               {counts.law > 0 && (
                 <button
                   type="button"
@@ -605,21 +723,33 @@ function RunCard({
                     <div className="admin-source-card-main">
                       <div className="admin-source-card-title">
                         <span className={`admin-source-kind is-${kind || "other"}`}>{sourceKindLabel(kind)}</span>
+                        {source.used_in_answer === true && <span className="admin-source-kind is-cited">已引用</span>}
                         <strong>{source.title}</strong>
                       </div>
                       <p className="admin-source-card-meta">
-                        {[source.locator, source.section, source.authors, source.collection, source.version_date, source.version_label]
+                        {[source.domain, source.locator, source.section, source.authors, source.collection, source.version_date, source.version_label]
                           .filter(Boolean)
                           .join(" · ") || source.source_id}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      className="admin-cc-btn"
-                      onClick={() => onInspectSource(source)}
-                    >
-                      查看正文
-                    </button>
+                    {source.kind === "web" && source.url ? (
+                      <a
+                        className="admin-cc-btn"
+                        href={source.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        打开链接
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        className="admin-cc-btn"
+                        onClick={() => onInspectSource(source)}
+                      >
+                        查看正文
+                      </button>
+                    )}
                   </li>
                 );
               })}

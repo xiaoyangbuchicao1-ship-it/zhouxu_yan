@@ -38,7 +38,7 @@ from backend.contracts.schemas.core import (
     PortError,
 )
 from backend.harness.lifecycle.control import RunControl, StopRequested
-from backend.infrastructure.sources import source_refs_from_action
+from backend.infrastructure.sources import merge_source_refs, source_refs_from_action
 from backend.harness.runtime.context_recovery import compaction_succeeded
 
 
@@ -373,7 +373,8 @@ class Harness:
         tool_counts: dict[str, int] = dict(saved.tool_counts)
         last_progress_stage: str | None = None
         last_progress_label: str | None = None
-        completed_units = 0
+        prior_rounds = max(0, int(saved.rounds_completed or 0))
+        completed_units = prior_rounds
         current_unit: str | None = None
         last_answer: str | None = None
         result_fingerprints: dict[str, int] = {}
@@ -1031,7 +1032,8 @@ class Harness:
             exhausted_tools: set[str] = set()
             length_recoveries = 0
             for round_index in range(self.settings.runtime.max_rounds):
-                current_unit = f"round:{round_index + 1}"
+                display_round = prior_rounds + round_index + 1
+                current_unit = f"round:{display_round}"
                 if self.material_catalog:
                     material_candidates = self.material_catalog.candidates(run_id)
                 memory = await invoke(
@@ -1207,7 +1209,7 @@ class Harness:
                     round_index > 0
                     and round_index == self.settings.runtime.max_rounds - 1
                 )
-                if round_index == 0 and not retained_results:
+                if display_round == 1 and not retained_results:
                     progress("model_processing", "理解问题并规划步骤")
                 elif is_final_round:
                     progress("synthesizing", "汇总全部依据并准备作答")
@@ -1216,9 +1218,9 @@ class Harness:
                     and r.get("tool_name") in {"write", "write_file", "edit", "paper_compile"}
                     for r in retained_results
                 ):
-                    progress("synthesizing", f"核对文稿与推进交付（第 {round_index + 1} 轮）")
+                    progress("synthesizing", f"核对文稿与推进交付（第 {display_round} 轮）")
                 else:
-                    progress("synthesizing", f"分析已查依据并继续（第 {round_index + 1} 轮）")
+                    progress("synthesizing", f"分析已查依据并继续（第 {display_round} 轮）")
                 proposal = await invoke(
                     "reasoning",
                     ReasoningInput(
@@ -1481,9 +1483,7 @@ class Harness:
                                     }
                                 )
                         retained_results.append(result.model_dump(mode="json"))
-                        for ref in source_refs_from_action(result):
-                            if ref["source_id"] not in {item.get("source_id") for item in source_refs}:
-                                source_refs.append(ref)
+                        source_refs = merge_source_refs(source_refs, source_refs_from_action(result))
                         await remember(
                             "action",
                             {"action": result.model_dump()},
@@ -1584,7 +1584,7 @@ class Harness:
                 review = await invoke(
                     "reflection", ReflectionInput(proposed=proposal, actions=actions)
                 )
-                completed_units = round_index + 1
+                completed_units = display_round
                 await remember(
                     "reflection", {"review": review.model_dump()}, review.feedback
                 )

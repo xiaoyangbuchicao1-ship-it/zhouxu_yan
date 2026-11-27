@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   Check, KeyRound, LogOut, Plus, ShieldCheck, Slash,
-  Sparkles, SlidersHorizontal, Trash2, User, type LucideIcon,
+  Sparkles, SlidersHorizontal, Trash2, User, Volume2, type LucideIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { KeyCaps } from "./KeyCaps";
+import { playCompletionSound } from "@/lib/completion-sound";
 import type { AuthSession } from "@/lib/auth";
 import type {
   AccountSummary,
@@ -531,6 +532,30 @@ export function UserCenterDialog({
                   </div>
                   <div className="ws-uc-row-ctrl">
                     <Switch id="uc-reduced-motion" aria-label="减弱界面动效" checked={preferences.reduced_motion} onCheckedChange={(checked) => void patchHabit({ reduced_motion: checked }, "减弱界面动效")} />
+                  </div>
+                </div>
+                <hr className="ws-uc-divider" />
+
+                <div className="ws-uc-row">
+                  <div className="ws-uc-row-label">
+                    <h3>回复完成提示音</h3>
+                    <p>后台会话或切出页面完成时轻响提示。</p>
+                  </div>
+                  <div className="ws-uc-row-ctrl">
+                    <button
+                      type="button"
+                      className="ws-uc-ghost-btn inline-flex items-center gap-1"
+                      onClick={() => playCompletionSound()}
+                    >
+                      <Volume2 size={13} aria-hidden="true" />
+                      试听
+                    </button>
+                    <Switch
+                      id="uc-completion-sound"
+                      aria-label="回复完成提示音"
+                      checked={preferences.completion_sound_enabled !== false}
+                      onCheckedChange={(checked) => void patchHabit({ completion_sound_enabled: checked }, "回复完成提示音")}
+                    />
                   </div>
                 </div>
                 <hr className="ws-uc-divider" />

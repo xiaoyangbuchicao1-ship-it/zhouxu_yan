@@ -86,6 +86,19 @@ class BusinessAuditModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class ModelAccessGroupModel(Base):
+    """Named model access group granting non-default models to assigned users."""
+
+    __tablename__ = "model_access_groups"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    description: Mapped[str] = mapped_column(String(240), default="")
+    allowed_models_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class AccountCapabilityGrantModel(Base):
     """Per-account model and skill access policy.
 
@@ -101,6 +114,12 @@ class AccountCapabilityGrantModel(Base):
     )
     model_policy: Mapped[str] = mapped_column(String(24), default="default")
     allowed_models_json: Mapped[str | None] = mapped_column(Text)
+    group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("model_access_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        default=None,
+    )
     skill_policy: Mapped[str] = mapped_column(String(24), default="default")
     can_upload_skill: Mapped[bool] = mapped_column(Boolean, default=True)
     material_quota_mb: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
@@ -392,6 +411,7 @@ class UserPreferenceModel(Base):
     concise_process: Mapped[bool] = mapped_column(Boolean, default=False)
     compact_density: Mapped[bool] = mapped_column(Boolean, default=False)
     reduced_motion: Mapped[bool] = mapped_column(Boolean, default=False)
+    completion_sound_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     memory_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     memory_text: Mapped[str] = mapped_column(Text, default="")
     commands_seeded: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -469,4 +489,21 @@ Index(
     EmailVerificationCodeModel.purpose,
     EmailVerificationCodeModel.created_at,
 )
+class AdminAccountAliasModel(Base):
+    """Per-admin private alias and short note for another account."""
+
+    __tablename__ = "admin_account_aliases"
+
+    admin_account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    target_account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    alias: Mapped[str] = mapped_column(String(80), default="")
+    note: Mapped[str] = mapped_column(String(240), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 Index("ix_email_codes_ip_recent", EmailVerificationCodeModel.request_ip, EmailVerificationCodeModel.created_at)
+Index("ix_admin_account_aliases_target", AdminAccountAliasModel.target_account_id)

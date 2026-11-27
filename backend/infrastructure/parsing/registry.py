@@ -25,15 +25,16 @@ _artifact_lock = threading.RLock()
 
 
 class MaterialParserRegistry:
-    def __init__(self, settings: MaterialSettings):
+    def __init__(self, settings: MaterialSettings, *, vision_describer=None):
         self.settings = settings
+        self.vision_describer = vision_describer
         self.cache = ParseCache(settings.cache_root)
         self.parsers = [
             WebParser(settings),
             PdfParser(settings),
             DocxParser(settings),
             SpreadsheetParser(settings),
-            ImageParser(settings),
+            ImageParser(settings, vision_describer=vision_describer),
             TextParser(settings),
         ]
 
@@ -98,6 +99,7 @@ class MaterialParserRegistry:
             "packages": packages,
             "ocr": self.settings.ocr_enabled,
             "language": self.settings.ocr_language,
+            "vision_assist": bool(self.settings.vision_assist_enabled and self.vision_describer is not None),
             "table_rows": self.settings.table_rows_per_block,
             "mineru": self.settings.mineru_enabled,
             "mineru_version": self.settings.mineru_version,
@@ -111,9 +113,12 @@ class MaterialParserRegistry:
                 b"".join(
                     path.read_bytes()
                     for path in sorted(
-                        __import__("pathlib")
-                        .Path(__file__)
-                        .parent.glob("adapters/*.py")
+                        list(__import__("pathlib").Path(__file__).parent.glob("adapters/*.py"))
+                        + [
+                            p
+                            for p in [__import__("pathlib").Path(__file__).parent / "vision_assist.py"]
+                            if p.is_file()
+                        ]
                     )
                 )
             ).hexdigest(),

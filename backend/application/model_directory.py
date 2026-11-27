@@ -65,6 +65,73 @@ _BLOCKED_HEADERS = frozenset({
 })
 
 
+_OVERSEAS_MODEL_TOKENS = (
+    "claude",
+    "gpt-",
+    "gpt4",
+    "gpt5",
+    "chatgpt",
+    "o1-",
+    "o3-",
+    "o4-",
+    "gemini",
+    "grok",
+    "llama",
+    "mistral",
+    "mixtral",
+    "sonar",
+    "perplexity",
+    "command-r",
+    "anthropic",
+    "openai/",
+)
+_DOMESTIC_MODEL_TOKENS = (
+    "deepseek",
+    "qwen",
+    "qwq",
+    "tongyi",
+    "glm",
+    "chatglm",
+    "zhipu",
+    "moonshot",
+    "kimi",
+    "doubao",
+    "ernie",
+    "wenxin",
+    "hunyuan",
+    "minimax",
+    "abab",
+    "baichuan",
+    "yi-",
+    "step-",
+    "spark",
+    "xinghuo",
+    "internlm",
+    "sensechat",
+)
+
+
+def is_domestic_mainstream_model(
+    provider: ModelProviderModel,
+    upstream_model_id: str,
+    label: str,
+    family: str,
+) -> bool:
+    """Classify whether a model belongs to Chinese domestic mainstream models."""
+
+    haystack = f"{upstream_model_id} {label}".lower()
+    tail = upstream_model_id.lower().rsplit("/", 1)[-1]
+    if family in {"claude", "gpt", "gemini"}:
+        return False
+    if tail in {"o1", "o3", "o4"} or any(token in haystack for token in _OVERSEAS_MODEL_TOKENS):
+        return False
+    if family in {"deepseek", "qwen", "glm", "kimi"}:
+        return True
+    if any(token in haystack for token in _DOMESTIC_MODEL_TOKENS):
+        return True
+    return provider.preset_type in {"deepseek", "volcengine"}
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -480,9 +547,13 @@ class ModelDirectoryAdminService:
             if raw_max_output is None
             else self._positive_int(raw_max_output, "max_output_tokens_invalid")
         )
-        access_scope = str(data.get("access_scope", "all"))
-        if access_scope not in _ACCESS_SCOPES:
-            raise AdminServiceError("access_scope_invalid")
+        raw_access_scope = data.get("access_scope")
+        if raw_access_scope is not None:
+            access_scope = str(raw_access_scope)
+            if access_scope not in _ACCESS_SCOPES:
+                raise AdminServiceError("access_scope_invalid")
+        else:
+            access_scope = None
         if bool(data.get("enabled", False)) or bool(data.get("is_default", False)):
             raise AdminServiceError("model_connectivity_unverified")
 
@@ -512,17 +583,36 @@ class ModelDirectoryAdminService:
                         "deepseek_chat_completions": "deepseek",
                     }.get(effective_proto, "other")
                 family = inferred if inferred in _FAMILIES else "other"
+            label_text = self._text(data.get("label"), "model_label_required", 160)
+            resolved_scope = (
+                access_scope
+                if access_scope is not None
+                else (
+                    "all"
+                    if is_domestic_mainstream_model(
+                        provider, upstream_model_id, label_text, family
+                    )
+                    else "allowlist"
+                )
+            )
             provider_revision = self._provider_revision(session, provider_id)
             verification = _unverified_payload(
                 None,
                 provider_revision_id=provider_revision.id,
                 profile_revision=1,
             )
+            raw_caps = dict(data.get("capabilities") or {})
+            if "vision" not in raw_caps:
+                raw_caps["vision"] = (
+                    "confirmed"
+                    if infer_model_defaults(upstream_model_id).supports_vision
+                    else "unsupported"
+                )
             profile = ModelProfileModel(
                 profile_id=profile_id,
                 provider_id=provider_id,
                 upstream_model_id=upstream_model_id,
-                label=self._text(data.get("label"), "model_label_required", 160),
+                label=label_text,
                 family=family,
                 protocol_override=protocol,
                 context_tokens=context_tokens,
@@ -530,10 +620,10 @@ class ModelDirectoryAdminService:
                 thinking_modes_json=json.dumps(modes, separators=(",", ":")),
                 default_thinking=default,
                 capabilities_json=json.dumps(
-                    self._capabilities(data.get("capabilities", {})), separators=(",", ":")
+                    self._capabilities(raw_caps), separators=(",", ":")
                 ),
                 enabled=False,
-                access_scope=access_scope,
+                access_scope=resolved_scope,
                 is_default=False,
                 sort_order=self._sort_order(data.get("sort_order", 100)),
                 verification_json=json.dumps(verification, ensure_ascii=False, separators=(",", ":")),
@@ -788,6 +878,151 @@ class ModelDirectoryAdminService:
             )
             session.commit()
             return {"archived": True, "profile_id": profile_id}
+
+    def apply_domestic_default_scopes(self, *, actor_id: str, dry_run: bool = False) -> dict:
+        """Open Chinese domestic mainstream models to all users and restrict others to group/allowlist."""
+
+        with self.database.session() as session:
+            self._require_admin(session, actor_id)
+            rows = session.execute(
+                select(ModelProfileModel, ModelProviderModel)
+                .join(ModelProviderModel, ModelProviderModel.id == ModelProfileModel.provider_id)
+                .where(
+                    ModelProfileModel.archived_at.is_(None),
+                    ModelProviderModel.archived_at.is_(None),
+                )
+                .order_by(ModelProfileModel.sort_order, ModelProfileModel.created_at)
+            ).all()
+            changes: list[dict] = []
+            projected_scopes: dict[str, str] = {}
+            domestic_ids: set[str] = set()
+            for profile, provider in rows:
+                is_domestic = is_domestic_mainstream_model(
+                    provider,
+                    profile.upstream_model_id,
+                    profile.label,
+                    profile.family,
+                )
+                if is_domestic:
+                    domestic_ids.add(profile.profile_id)
+                if profile.access_scope == "admin_only":
+                    projected_scopes[profile.profile_id] = "admin_only"
+                    continue
+                target_scope = "all" if is_domestic else "allowlist"
+                projected_scopes[profile.profile_id] = target_scope
+                if profile.access_scope != target_scope:
+                    changes.append(
+                        {
+                            "profile_id": profile.profile_id,
+                            "label": profile.label,
+                            "is_domestic": is_domestic,
+                            "previous_scope": profile.access_scope,
+                            "target_scope": target_scope,
+                        }
+                    )
+
+            enabled_domestic = [
+                profile
+                for profile, provider in rows
+                if profile.enabled
+                and provider.enabled
+                and projected_scopes.get(profile.profile_id) == "all"
+                and profile.profile_id in domestic_ids
+            ]
+            current_default = next(
+                (profile for profile, _provider in rows if profile.is_default),
+                None,
+            )
+            next_default_profile: ModelProfileModel | None = current_default
+            if (
+                current_default is None
+                or not current_default.enabled
+                or projected_scopes.get(current_default.profile_id) != "all"
+            ):
+                if enabled_domestic:
+                    next_default_profile = enabled_domestic[0]
+                else:
+                    next_default_profile = next(
+                        (
+                            profile
+                            for profile, provider in rows
+                            if profile.enabled
+                            and provider.enabled
+                            and projected_scopes.get(profile.profile_id) == "all"
+                        ),
+                        None,
+                    )
+            next_default_id = next_default_profile.profile_id if next_default_profile else None
+            next_default_label = next_default_profile.label if next_default_profile else None
+            domestic_open_count = sum(
+                1 for pid in domestic_ids if projected_scopes.get(pid) == "all"
+            )
+            if dry_run:
+                return {
+                    "dry_run": True,
+                    "changes": changes,
+                    "default_profile_id": next_default_id,
+                    "default_profile_label": next_default_label,
+                    "domestic_open_count": domestic_open_count,
+                }
+
+            now = _now()
+            changed_ids = {item["profile_id"] for item in changes}
+            for profile, _provider in rows:
+                scope_changed = profile.profile_id in changed_ids
+                default_changed = (
+                    next_default_id is not None
+                    and profile.profile_id == next_default_id
+                    and not profile.is_default
+                ) or (
+                    profile.is_default
+                    and profile.profile_id != next_default_id
+                )
+                if not scope_changed and not default_changed:
+                    continue
+                if scope_changed:
+                    profile.access_scope = projected_scopes[profile.profile_id]
+                if next_default_id is not None:
+                    profile.is_default = profile.profile_id == next_default_id
+                elif profile.profile_id in changed_ids and projected_scopes[profile.profile_id] != "all":
+                    profile.is_default = False
+                next_revision = profile.current_revision + 1
+                profile.current_revision = next_revision
+                profile.updated_at = now
+                provider_revision = self._provider_revision(session, profile.provider_id)
+                session.add(
+                    ModelProfileRevisionModel(
+                        id=f"{profile.profile_id}:r{next_revision}",
+                        profile_id=profile.profile_id,
+                        provider_revision_id=provider_revision.id,
+                        revision=next_revision,
+                        facts_json=json.dumps(
+                            self._facts(profile), ensure_ascii=False, separators=(",", ":")
+                        ),
+                        created_at=now,
+                    )
+                )
+            AdminService._add_audit(
+                session,
+                actor_id=actor_id,
+                target_account_id=None,
+                action="model.domestic_defaults_applied",
+                resource_type="model_directory",
+                resource_id=next_default_id,
+                details={
+                    "changed_count": len(changes),
+                    "default_profile_id": next_default_id,
+                    "domestic_open_count": domestic_open_count,
+                },
+            )
+            session.commit()
+            return {
+                "dry_run": False,
+                "changes": changes,
+                "default_profile_id": next_default_id,
+                "default_profile_label": next_default_label,
+                "domestic_open_count": domestic_open_count,
+            }
 
     async def discover_models(self, *, actor_id: str, provider_id: str) -> dict:
         with self.database.session() as session:
@@ -1292,6 +1527,9 @@ class ModelDirectoryAdminService:
             "enabled": profile.enabled,
             "access_scope": profile.access_scope,
             "is_default": profile.is_default,
+            "is_domestic": is_domestic_mainstream_model(
+                provider, profile.upstream_model_id, profile.label, profile.family
+            ),
             "sort_order": profile.sort_order,
             "source": profile.source,
             "checked_on": profile.checked_on,

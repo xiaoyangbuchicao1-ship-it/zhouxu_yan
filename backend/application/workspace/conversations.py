@@ -133,6 +133,67 @@ class WorkspaceService:
         finally:
             session.close()
 
+    _ACTIVE_RUN_STATUSES = frozenset({
+        "queued",
+        "preparing",
+        "running",
+        "waiting_user",
+        "pausing",
+        "resuming",
+        "retrying",
+    })
+
+    def list_with_activity(self, *, account_id: str) -> list[tuple[ConversationModel, dict]]:
+        rows = self.list(account_id=account_id)
+        if not rows:
+            return []
+        conv_ids = [conv.id for conv, _ in rows]
+        session = self.database.session()
+        try:
+            runs = list(
+                session.scalars(
+                    select(ConversationRunModel)
+                    .where(ConversationRunModel.conversation_id.in_(conv_ids))
+                    .order_by(
+                        ConversationRunModel.created_at.desc(),
+                        ConversationRunModel.run_id.desc(),
+                    )
+                ).all()
+            )
+            stats: dict[str, dict] = {}
+            for run in runs:
+                entry = stats.get(run.conversation_id)
+                if entry is None:
+                    entry = {
+                        "run_count": 0,
+                        "active_run_count": 0,
+                        "latest_run_id": run.run_id,
+                        "latest_run_status": run.status,
+                        "latest_run_updated_at": run.completed_at or run.created_at,
+                    }
+                    stats[run.conversation_id] = entry
+                entry["run_count"] += 1
+                if run.status in self._ACTIVE_RUN_STATUSES:
+                    entry["active_run_count"] += 1
+            return [
+                (
+                    conv,
+                    stats.get(
+                        conv.id,
+                        {
+                            "run_count": run_count,
+                            "active_run_count": 0,
+                            "latest_run_id": None,
+                            "latest_run_status": None,
+                            "latest_run_updated_at": None,
+                        },
+                    ),
+                )
+                for conv, run_count in rows
+            ]
+        finally:
+            session.close()
+
     def update(
         self,
         *,

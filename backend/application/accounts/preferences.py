@@ -73,6 +73,7 @@ class AccountPreferenceService:
                 "concise_process": False,
                 "compact_density": False,
                 "reduced_motion": False,
+                "completion_sound_enabled": True,
                 "memory_enabled": False,
                 "memory_text": "",
                 "updated_at": None,
@@ -87,6 +88,11 @@ class AccountPreferenceService:
             "concise_process": bool(row.concise_process),
             "compact_density": bool(row.compact_density),
             "reduced_motion": bool(row.reduced_motion),
+            "completion_sound_enabled": bool(
+                getattr(row, "completion_sound_enabled", True)
+                if getattr(row, "completion_sound_enabled", None) is not None
+                else True
+            ),
             "memory_enabled": bool(row.memory_enabled),
             "memory_text": row.memory_text or "",
             "updated_at": row.updated_at,
@@ -115,6 +121,7 @@ class AccountPreferenceService:
                 concise_process=False,
                 compact_density=False,
                 reduced_motion=False,
+                completion_sound_enabled=True,
                 memory_enabled=False,
                 memory_text="",
                 commands_seeded=False,
@@ -153,6 +160,7 @@ class AccountPreferenceService:
                 "concise_process",
                 "compact_density",
                 "reduced_motion",
+                "completion_sound_enabled",
                 "memory_enabled",
             ):
                 if updates.get(bool_field) is not None:

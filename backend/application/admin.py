@@ -12,6 +12,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from backend.infrastructure.database.connection import Database
 from backend.infrastructure.database.models import (
     AccountModel,
+    AdminAccountAliasModel,
     BusinessAuditModel,
     ConversationModel,
     ConversationRunModel,
@@ -30,12 +31,20 @@ class AdminService:
     def __init__(self, database: Database):
         self.database = database
 
-    def list_accounts(self) -> list[dict]:
+    def list_accounts(self, *, actor_id: str | None = None) -> list[dict]:
         with self.database.session() as session:
             accounts = session.scalars(
                 select(AccountModel).order_by(AccountModel.created_at.desc(), AccountModel.id)
             ).all()
-            return [self._account_view(account) for account in accounts]
+            alias_map: dict[str, AdminAccountAliasModel] = {}
+            if actor_id:
+                for row in session.scalars(
+                    select(AdminAccountAliasModel).where(
+                        AdminAccountAliasModel.admin_account_id == actor_id
+                    )
+                ).all():
+                    alias_map[row.target_account_id] = row
+            return [self._account_view(account, alias_map.get(account.id)) for account in accounts]
 
     def list_accounts_page(
         self,
@@ -45,6 +54,7 @@ class AdminService:
         role: str | None = None,
         page: int = 1,
         page_size: int = 20,
+        actor_id: str | None = None,
     ) -> dict:
         """Return the administrator's account table as a bounded server page."""
         if page < 1 or page_size < 1 or page_size > 100:
@@ -54,14 +64,36 @@ class AdminService:
         if role is not None and role not in {"user", "admin"}:
             raise AdminServiceError("invalid_account_role")
         with self.database.session() as session:
-            statement = select(AccountModel)
-            count_statement = select(func.count(AccountModel.id))
+            if actor_id:
+                statement = select(AccountModel, AdminAccountAliasModel).outerjoin(
+                    AdminAccountAliasModel,
+                    and_(
+                        AdminAccountAliasModel.admin_account_id == actor_id,
+                        AdminAccountAliasModel.target_account_id == AccountModel.id,
+                    ),
+                )
+                count_statement = select(func.count(AccountModel.id)).outerjoin(
+                    AdminAccountAliasModel,
+                    and_(
+                        AdminAccountAliasModel.admin_account_id == actor_id,
+                        AdminAccountAliasModel.target_account_id == AccountModel.id,
+                    ),
+                )
+            else:
+                statement = select(AccountModel)
+                count_statement = select(func.count(AccountModel.id))
             if query.strip():
                 needle = f"%{query.strip().lower()}%"
-                predicate = or_(
+                predicates = [
                     func.lower(AccountModel.email).like(needle),
                     func.lower(AccountModel.display_name).like(needle),
-                )
+                ]
+                if actor_id:
+                    predicates.extend([
+                        func.lower(func.coalesce(AdminAccountAliasModel.alias, "")).like(needle),
+                        func.lower(func.coalesce(AdminAccountAliasModel.note, "")).like(needle),
+                    ])
+                predicate = or_(*predicates)
                 statement = statement.where(predicate)
                 count_statement = count_statement.where(predicate)
             if status is not None:
@@ -73,13 +105,19 @@ class AdminService:
             total = int(session.scalar(count_statement) or 0)
             total_pages = max(1, (total + page_size - 1) // page_size)
             effective_page = min(page, total_pages)
-            accounts = session.scalars(
+            ordered = (
                 statement.order_by(AccountModel.created_at.desc(), AccountModel.id)
                 .offset((effective_page - 1) * page_size)
                 .limit(page_size)
-            ).all()
+            )
+            if actor_id:
+                rows = session.execute(ordered).all()
+                views = [self._account_view(account, alias_row) for account, alias_row in rows]
+            else:
+                accounts = session.scalars(ordered).all()
+                views = [self._account_view(account) for account in accounts]
             return {
-                "accounts": [self._account_view(account) for account in accounts],
+                "accounts": views,
                 "query": query,
                 "status": status,
                 "role": role,
@@ -190,7 +228,49 @@ class AdminService:
                     details=change,
                 )
             session.commit()
-            return self._account_view(target)
+            alias_row = session.get(AdminAccountAliasModel, (actor.id, target.id))
+            return self._account_view(target, alias_row)
+
+    def set_account_alias(
+        self,
+        *,
+        actor_id: str,
+        account_id: str,
+        alias: str = "",
+        note: str = "",
+    ) -> dict:
+        clean_alias = (alias or "").strip()[:80]
+        clean_note = (note or "").strip()[:240]
+        with self.database.session() as session:
+            actor = session.get(AccountModel, actor_id)
+            if actor is None or actor.role != "admin" or actor.status != "active":
+                raise AdminServiceError("admin_required")
+            target = session.get(AccountModel, account_id)
+            if target is None:
+                raise AdminServiceError("account_not_found")
+            row = session.get(AdminAccountAliasModel, (actor.id, target.id))
+            if not clean_alias and not clean_note:
+                if row is not None:
+                    session.delete(row)
+                    row = None
+                    session.commit()
+                return self._account_view(target, None)
+            now = self._now()
+            if row is None:
+                row = AdminAccountAliasModel(
+                    admin_account_id=actor.id,
+                    target_account_id=target.id,
+                    alias=clean_alias,
+                    note=clean_note,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.alias = clean_alias
+                row.note = clean_note
+                row.updated_at = now
+            session.commit()
+            return self._account_view(target, row)
 
     _ACTIVE_RUN_STATUSES = ("queued", "preparing", "running", "pausing", "resuming", "retrying")
 
@@ -252,6 +332,14 @@ class AdminService:
             # business_audits.actor_id uses ON DELETE RESTRICT; remove rows
             # authored by the deleted account and detach target references
             # before deleting the account itself.
+            session.execute(
+                delete(AdminAccountAliasModel).where(
+                    or_(
+                        AdminAccountAliasModel.admin_account_id == deleted_id,
+                        AdminAccountAliasModel.target_account_id == deleted_id,
+                    )
+                )
+            )
             session.execute(
                 delete(BusinessAuditModel).where(BusinessAuditModel.actor_id == deleted_id)
             )
@@ -345,6 +433,7 @@ class AdminService:
         query: str = "",
         cursor: str | None = None,
         limit: int = 50,
+        actor_id: str | None = None,
     ) -> dict:
         if limit < 1 or limit > 200:
             raise AdminServiceError("invalid_audit_limit")
@@ -429,7 +518,22 @@ class AdminService:
             rows = session.execute(statement).all()
             has_more = len(rows) > limit
             rows = rows[:limit]
-            events = [self._audit_view(event, actor_acc, target_acc) for event, actor_acc, target_acc in rows]
+            alias_map: dict[str, str] = {}
+            if actor_id and rows:
+                target_ids = list({e.target_account_id for e, _, _ in rows if e.target_account_id})
+                if target_ids:
+                    for item in session.scalars(
+                        select(AdminAccountAliasModel).where(
+                            AdminAccountAliasModel.admin_account_id == actor_id,
+                            AdminAccountAliasModel.target_account_id.in_(target_ids),
+                        )
+                    ).all():
+                        if item.alias:
+                            alias_map[item.target_account_id] = item.alias
+            events = [
+                self._audit_view(event, actor_acc, target_acc, alias_map.get(event.target_account_id or ""))
+                for event, actor_acc, target_acc in rows
+            ]
             next_cursor = None
             if has_more and rows:
                 next_cursor = self._encode_audit_cursor(rows[-1][0].created_at, rows[-1][0].id)
@@ -465,7 +569,12 @@ class AdminService:
         return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     @staticmethod
-    def _audit_view(event: BusinessAuditModel, actor_account: AccountModel, target_account: AccountModel | None) -> dict:
+    def _audit_view(
+        event: BusinessAuditModel,
+        actor_account: AccountModel,
+        target_account: AccountModel | None,
+        target_alias: str | None = None,
+    ) -> dict:
         return {
             "id": event.id,
             "action": event.action,
@@ -473,6 +582,7 @@ class AdminService:
             "actor_email": actor_account.email,
             "target_account_id": event.target_account_id,
             "target_email": target_account.email if target_account else None,
+            "target_alias": target_alias or None,
             "resource_type": getattr(event, "resource_type", "account") or "account",
             "resource_id": getattr(event, "resource_id", None),
             "outcome": getattr(event, "outcome", "succeeded") or "succeeded",
@@ -481,11 +591,13 @@ class AdminService:
         }
 
     @staticmethod
-    def _account_view(account: AccountModel) -> dict:
+    def _account_view(account: AccountModel, alias_row: AdminAccountAliasModel | None = None) -> dict:
         return {
             "id": account.id,
             "email": account.email,
             "display_name": account.display_name,
+            "alias": (alias_row.alias or None) if alias_row is not None else None,
+            "alias_note": (alias_row.note or None) if alias_row is not None else None,
             "status": account.status,
             "role": account.role,
             "register_ip": getattr(account, "register_ip", None) or None,

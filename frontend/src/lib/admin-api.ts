@@ -4,6 +4,8 @@ export interface AdminAccount {
   id: string;
   email: string;
   display_name: string;
+  alias?: string | null;
+  alias_note?: string | null;
   status: "active" | "disabled";
   role: AccountRole;
   register_ip?: string | null;
@@ -61,6 +63,7 @@ export interface AdminAuditEvent {
   actor_email: string;
   target_account_id: string | null;
   target_email: string | null;
+  target_alias?: string | null;
   resource_type?: string;
   resource_id?: string | null;
   outcome?: "succeeded" | "failed";
@@ -108,7 +111,7 @@ export interface AdminConversationNode {
 
 export interface AdminConversationSource {
   source_id: string;
-  kind: "law" | "case" | "paper" | null;
+  kind: "law" | "case" | "paper" | "web" | null;
   title: string;
   locator?: string | null;
   section?: string | null;
@@ -116,6 +119,11 @@ export interface AdminConversationSource {
   version_label?: string | null;
   authors?: string | null;
   collection?: string | null;
+  url?: string | null;
+  domain?: string | null;
+  snippet?: string | null;
+  verified_read?: boolean | null;
+  used_in_answer?: boolean | null;
 }
 
 export interface AdminConversationArtifact {
@@ -199,6 +207,8 @@ export interface AdminConversationAccount {
   id: string;
   email: string;
   display_name: string;
+  alias?: string | null;
+  alias_note?: string | null;
 }
 
 export interface AdminConversationList {
@@ -214,11 +224,46 @@ export interface AdminCapability {
   display_name: string;
   model_policy: "default" | "allowlist" | "disabled";
   allowed_models: string[];
+  group_id?: string | null;
+  group_name?: string | null;
+  group_allowed_models?: string[];
   skill_policy: "default" | "builtin_only" | "disabled";
   can_upload_skill: boolean;
   material_quota_mb?: number | null;
   material_used_bytes?: number;
   updated_at: string | null;
+}
+
+export interface AdminModelGroup {
+  id: string;
+  name: string;
+  description: string;
+  allowed_models: string[];
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminModelGroupInput {
+  name: string;
+  description?: string;
+  allowed_models: string[];
+}
+
+export interface AdminDomesticDefaultChange {
+  profile_id: string;
+  label: string;
+  is_domestic: boolean;
+  previous_scope: string;
+  target_scope: string;
+}
+
+export interface AdminDomesticDefaultResult {
+  dry_run: boolean;
+  changes: AdminDomesticDefaultChange[];
+  default_profile_id: string | null;
+  default_profile_label: string | null;
+  domestic_open_count: number;
 }
 
 export interface AdminSkillStatus {
@@ -524,6 +569,7 @@ export interface AdminModelProfile {
   enabled: boolean;
   access_scope: string;
   is_default: boolean;
+  is_domestic?: boolean;
   sort_order: number;
   source: string;
   checked_on: string | null;
@@ -583,6 +629,7 @@ export interface AdminModelInferResult {
   default_thinking: ThinkingMode;
   matched: boolean;
   source_hint: string;
+  supports_vision?: boolean;
 }
 
 export interface AdminConnectivityTestResult {
@@ -721,6 +768,10 @@ export function adminErrorMessage(code: string): string {
     material_unavailable: "这份用户附件已不存在或暂时无法读取。",
     material_service_unavailable: "资料服务暂时不可用，请稍后重试。",
     storage_space_low: "服务器磁盘剩余空间不足 5 GB，已暂停新附件上传，请先清理空间。",
+    model_group_not_found: "这个模型权限分组已不存在，请刷新页面。",
+    model_group_name_required: "请填写分组名称。",
+    model_group_name_invalid: "分组名称不能超过 80 个字符。",
+    model_group_name_exists: "已有同名权限分组，请换一个名称。",
   };
   return messages[code] ?? "这次操作未能完成，请稍后重试。";
 }
@@ -859,9 +910,15 @@ async function request<T>(path: string, token: string, options: RequestInit = {}
   }
 }
 
-async function downloadBinary(path: string, token: string, fallbackName: string): Promise<void> {
+async function fetchBinaryResponse(
+  path: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; disposition: string }> {
   const controller = new AbortController();
   let timedOut = false;
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
   try {
     const response = await fetch(`${apiBase}${path}`, {
@@ -876,29 +933,37 @@ async function downloadBinary(path: string, token: string, fallbackName: string)
       const code = typeof data?.detail === "string" ? data.detail : response.status >= 500 ? "unavailable" : "request_failed";
       throw new AdminApiError(code, response.status);
     }
-    const blob = await response.blob();
-    const disposition = response.headers.get("Content-Disposition") || "";
-    const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
-    const plainMatch = /filename="([^"]+)"/i.exec(disposition);
-    const filename = utf8Match
-      ? decodeURIComponent(utf8Match[1])
-      : plainMatch
-        ? plainMatch[1]
-        : fallbackName;
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return {
+      blob: await response.blob(),
+      disposition: response.headers.get("Content-Disposition") || "",
+    };
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (error instanceof AdminApiError) throw error;
     throw new AdminApiError(timedOut ? "timeout" : "unavailable");
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
   }
+}
+
+async function downloadBinary(path: string, token: string, fallbackName: string): Promise<void> {
+  const { blob, disposition } = await fetchBinaryResponse(path, token);
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const plainMatch = /filename="([^"]+)"/i.exec(disposition);
+  const filename = utf8Match
+    ? decodeURIComponent(utf8Match[1])
+    : plainMatch
+      ? plainMatch[1]
+      : fallbackName;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function createAdminApi(token: string) {
@@ -937,6 +1002,11 @@ export function createAdminApi(token: string) {
     },
     updateAccount: (id: string, update: AdminAccountUpdate) =>
       request<AdminAccount>(`/admin/accounts/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(update) }),
+    setAccountAlias: (id: string, input: { alias: string; note?: string }) =>
+      request<AdminAccount>(`/admin/accounts/${encodeURIComponent(id)}/alias`, token, {
+        method: "PUT",
+        body: JSON.stringify({ alias: input.alias, note: input.note ?? "" }),
+      }),
     deleteAccount: (id: string) =>
       request<{ deleted: boolean; account_id: string; email: string; conversations_deleted: number; materials_deleted: number; skills_deleted: number }>(
         `/admin/accounts/${encodeURIComponent(id)}`,
@@ -968,6 +1038,16 @@ export function createAdminApi(token: string) {
       request<{ archived: boolean; profile_id: string }>(`/admin/models/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
     testModel: (id: string) =>
       request<AdminConnectivityTestResult>(`/admin/models/${encodeURIComponent(id)}/test`, token, { method: "POST" }),
+    applyDomesticDefault: (dryRun = false) =>
+      request<AdminDomesticDefaultResult>("/admin/models/apply-domestic-default", token, { method: "POST", body: JSON.stringify({ dry_run: dryRun }) }),
+    modelGroups: (signal?: AbortSignal) =>
+      request<{ groups: AdminModelGroup[] }>("/admin/model-groups", token, {}, signal),
+    createModelGroup: (value: AdminModelGroupInput) =>
+      request<AdminModelGroup>("/admin/model-groups", token, { method: "POST", body: JSON.stringify(value) }),
+    updateModelGroup: (id: string, value: Partial<AdminModelGroupInput>) =>
+      request<AdminModelGroup>(`/admin/model-groups/${encodeURIComponent(id)}`, token, { method: "PATCH", body: JSON.stringify(value) }),
+    deleteModelGroup: (id: string) =>
+      request<{ deleted: boolean; group_id: string }>(`/admin/model-groups/${encodeURIComponent(id)}`, token, { method: "DELETE" }),
     accountConversations: async (accountId: string, filters: AdminConversationFilters = {}) =>
       conversationList(await request<unknown>(
         `/admin/accounts/${encodeURIComponent(accountId)}/conversations${conversationQuery(filters)}`,
@@ -987,7 +1067,7 @@ export function createAdminApi(token: string) {
       return value;
     },
     capabilities: (signal?: AbortSignal) => request<{ accounts: AdminCapability[] }>("/admin/capabilities", token, {}, signal),
-    updateCapability: (accountId: string, update: Partial<Pick<AdminCapability, "model_policy" | "allowed_models" | "skill_policy" | "can_upload_skill" | "material_quota_mb">> & { clear_material_quota?: boolean }) =>
+    updateCapability: (accountId: string, update: Partial<Pick<AdminCapability, "model_policy" | "allowed_models" | "group_id" | "skill_policy" | "can_upload_skill" | "material_quota_mb">> & { clear_material_quota?: boolean; clear_group?: boolean }) =>
       request<AdminCapability>(`/admin/capabilities/${encodeURIComponent(accountId)}`, token, { method: "PATCH", body: JSON.stringify(update) }),
     systemMetrics: (signal?: AbortSignal) => request<AdminSystemMetrics>("/admin/system/metrics", token, {}, signal),
     skills: (signal?: AbortSignal) => request<{ status: "ready" | "degraded" | "unavailable"; total: number; skills: AdminSkillStatus[]; uploaded: AdminUploadedSkill[] }>("/admin/skills", token, {}, signal),
@@ -1010,6 +1090,14 @@ export function createAdminApi(token: string) {
     materialPassages: (materialId: string, cursor?: string | null, signal?: AbortSignal) => {
       const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
       return request<AdminPassageListResponse>(`/admin/materials/${encodeURIComponent(materialId)}/passages${suffix}`, token, {}, signal);
+    },
+    materialBlob: async (materialId: string, signal?: AbortSignal) => {
+      const { blob } = await fetchBinaryResponse(
+        `/admin/materials/${encodeURIComponent(materialId)}/download?inline=1`,
+        token,
+        signal,
+      );
+      return blob;
     },
     downloadMaterial: (materialId: string, filename: string) =>
       downloadBinary(`/admin/materials/${encodeURIComponent(materialId)}/download`, token, filename),

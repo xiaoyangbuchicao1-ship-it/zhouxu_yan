@@ -99,3 +99,40 @@ test("RunProgress 展示阶段子步骤清单，Composer 技能条与 Sidebar �
   assert.ok(css.includes(".ws-context-fill"));
   assert.ok(css.includes("border: none;"));
 });
+
+test("资料与依据按 全部/网络资料/法规/案例/论文资料 排序，支持网络外链及引用区分", () => {
+  const panel = readSrc("components/workspace/ResearchPanel.tsx");
+  assert.ok(panel.includes('["all", "web", "law", "case", "paper"]'));
+  assert.ok(panel.includes('target="_blank"'));
+  assert.ok(panel.includes('rel="noopener noreferrer"'));
+  assert.ok(panel.includes("回答已引用"));
+  assert.ok(panel.includes("其他检索参考"));
+  assert.ok(panel.includes("used_in_answer"));
+
+  const adminModels = readSrc("pages/admin/AdminModelsPage.tsx");
+  assert.ok(adminModels.includes("国内主流模型设为全局默认"));
+  assert.ok(adminModels.includes("全站默认"));
+
+  const adminAccounts = readSrc("pages/admin/AdminAccountsPage.tsx");
+  assert.ok(adminAccounts.includes("权限分组"));
+  assert.ok(adminAccounts.includes("当前生效可用模型"));
+  assert.ok(adminAccounts.includes("我的备注别名"));
+
+  const adminCss = readSrc("pages/admin.css");
+  assert.ok(adminCss.includes(".admin-spin { animation:"));
+
+  const authTsx = readSrc("pages/Auth.tsx");
+  assert.ok(!authTsx.includes("auth-mode-nav"));
+
+  const settingsModal = readSrc("components/workspace/UserCenterDialog.tsx");
+  assert.ok(settingsModal.includes("回复完成提示音"));
+  assert.ok(settingsModal.includes("playCompletionSound"));
+
+  const sidebarTsx = readSrc("components/workspace/Sidebar.tsx");
+  assert.ok(sidebarTsx.includes("ws-conv-spinner"));
+  assert.ok(sidebarTsx.includes("ws-conv-dot"));
+
+  const wbApi = readSrc("lib/workbench-api.ts");
+  assert.ok(wbApi.includes('message.includes("余额不足")'));
+  assert.ok(wbApi.includes('message.includes("额度不足")'));
+});

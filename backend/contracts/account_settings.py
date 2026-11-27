@@ -18,6 +18,7 @@ class UserPreferencesView(Contract):
     concise_process: bool = False
     compact_density: bool = False
     reduced_motion: bool = False
+    completion_sound_enabled: bool = True
     memory_enabled: bool = False
     memory_text: str = Field(default="", max_length=1200)
     updated_at: datetime | None = None
@@ -29,6 +30,7 @@ class UserPreferencesUpdateRequest(Contract):
     concise_process: bool | None = None
     compact_density: bool | None = None
     reduced_motion: bool | None = None
+    completion_sound_enabled: bool | None = None
     memory_enabled: bool | None = None
     memory_text: str | None = Field(default=None, max_length=1200)
 

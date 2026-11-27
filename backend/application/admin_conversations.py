@@ -10,8 +10,10 @@ from sqlalchemy import and_, func, or_, select
 
 from backend.application.admin import AdminService, AdminServiceError
 from backend.infrastructure.database.connection import Database
+from backend.infrastructure.sources import annotate_used_sources
 from backend.infrastructure.database.models import (
     AccountModel,
+    AdminAccountAliasModel,
     ConversationModel,
     ConversationRunModel,
     MaterialModel,
@@ -67,10 +69,26 @@ class AdminConversationService:
             .scalar_subquery()
         )
 
+    @staticmethod
+    def _account_summary(session, account: AccountModel, actor_id: str | None) -> dict:
+        alias_row = (
+            session.get(AdminAccountAliasModel, (actor_id, account.id))
+            if actor_id
+            else None
+        )
+        return {
+            "id": account.id,
+            "email": account.email,
+            "display_name": account.display_name,
+            "alias": (alias_row.alias or None) if alias_row is not None else None,
+            "alias_note": (alias_row.note or None) if alias_row is not None else None,
+        }
+
     def list_conversations(
         self,
         *,
         account_id: str,
+        actor_id: str | None = None,
         query: str = "",
         mode: str | None = None,
         archived: bool | None = None,
@@ -93,11 +111,7 @@ class AdminConversationService:
             account = session.get(AccountModel, account_id)
             if account is None:
                 raise AdminServiceError("account_not_found")
-            account_summary = {
-                "id": account.id,
-                "email": account.email,
-                "display_name": account.display_name,
-            }
+            account_summary = self._account_summary(session, account, actor_id)
             run_count = (
                 select(
                     ConversationRunModel.conversation_id.label("conversation_id"),
@@ -248,11 +262,7 @@ class AdminConversationService:
             rows = rows[:limit]
             account = session.get(AccountModel, account_id)
             account_summary = (
-                {
-                    "id": account.id,
-                    "email": account.email,
-                    "display_name": account.display_name,
-                }
+                self._account_summary(session, account, actor_id)
                 if account is not None
                 else None
             )
@@ -366,7 +376,8 @@ class AdminConversationService:
         snapshot = cls._snapshot(run)
         progress = cls._progress(run.progress_json)
         nodes = cls._public_nodes(run.progress_json)
-        sources = cls._public_sources(run.progress_json)
+        answer_text = run.answer if run.answer is not None else run.partial_output
+        sources = annotate_used_sources(cls._public_sources(run.progress_json), answer_text)
         tool_traces = cls._public_tool_traces(progress)
         materials = [
             material_map[mid]
@@ -523,7 +534,8 @@ class AdminConversationService:
             return []
         allowed = {
             "source_id", "kind", "title", "locator", "section", "version_date",
-            "version_label", "authors", "collection",
+            "version_label", "authors", "collection", "url", "domain", "snippet",
+            "verified_read", "used_in_answer",
         }
         result = []
         for value in values:
@@ -533,7 +545,7 @@ class AdminConversationService:
             if not isinstance(title, str) or not title.strip():
                 continue
             item = {key: value[key] for key in allowed if key in value and value[key] is not None}
-            if item.get("kind") not in {"law", "case", "paper"}:
+            if item.get("kind") not in {"law", "case", "paper", "web"}:
                 item.pop("kind", None)
             authors = item.get("authors")
             if isinstance(authors, (list, tuple)):

@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from backend.config.settings import BACKEND_ROOT, Settings, resolve_case_snapshot_dir
 from backend.contracts.modules.sources import (
@@ -23,8 +24,11 @@ from backend.contracts.modules.sources import (
 )
 
 _URL = re.compile(r"https?://[^\s<>\]\)]+", re.IGNORECASE)
-_SOURCE_ID = re.compile(r"(?:law|case)-[a-f0-9]{24}|paper-[A-Za-z0-9._-]+")
+_SOURCE_ID = re.compile(r"(?:law|case|web)-[a-f0-9]{24}|paper-[A-Za-z0-9._-]+")
 _PAPER_MARKUP = re.compile(r"<[^>]*>")
+_DOCKET_NO = re.compile(r"[（(]\d{4}[)）][^，。,；;\s）)]+号")
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000}
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,37 @@ def paper_source_id(card_id: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._-]+", card_id):
         raise ValueError("invalid_information_card_id")
     return f"paper-{card_id}"
+
+
+def _safe_http_url(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw or any(ch.isspace() for ch in raw):
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    return raw
+
+
+def _canonical_web_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    normalized = parsed._replace(scheme=parsed.scheme.lower(), netloc=parsed.netloc.lower()).geturl()
+    return normalized[:-1] if normalized.endswith("/") and len(normalized) > len(f"{parsed.scheme}://{parsed.netloc}/") else normalized
+
+
+def web_source_id(url: str) -> str:
+    return _source_id("web", _canonical_web_url(url))
+
+
+def _domain_label(url: str, site_name: Any = None) -> str | None:
+    if isinstance(site_name, str) and site_name.strip():
+        return site_name.strip()[:80]
+    host = (urlparse(url).hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or None
 
 
 def _version_label(is_current: Any) -> str | None:
@@ -102,6 +137,8 @@ def source_refs_from_action(result: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
     raw_items = payload.get("items")
+    if not isinstance(raw_items, list) and tool_name == "web_search":
+        raw_items = payload.get("results")
     items = raw_items if isinstance(raw_items, list) else [payload]
     refs: list[dict[str, Any]] = []
     for item in items:
@@ -152,10 +189,175 @@ def source_refs_from_action(result: Any) -> list[dict[str, Any]]:
             reference = _paper_reference(card)
             if reference:
                 refs.append(reference)
-    unique: dict[str, dict[str, Any]] = {}
-    for ref in refs:
-        unique.setdefault(ref["source_id"], ref)
-    return list(unique.values())
+        elif tool_name in {"web_search", "web_read"}:
+            url = _safe_http_url(item.get("url"))
+            if not url:
+                continue
+            domain = _domain_label(url, item.get("site_name"))
+            title = str(item.get("title") or "").strip() or domain or url
+            is_read = tool_name == "web_read"
+            raw_snippet = (
+                re.sub(r"\s+", " ", str(item.get("content") or "")).strip()
+                if is_read
+                else str(item.get("snippet") or item.get("summary") or "").strip()
+            )
+            snippet = raw_snippet[:220] if raw_snippet else None
+            version_date = str(item.get("date") or "").strip() or None
+            version_label = str(item.get("site_name") or "").strip() or domain
+            refs.append(
+                SourceReference(
+                    source_id=web_source_id(url),
+                    kind="web",
+                    title=title,
+                    url=url,
+                    domain=domain,
+                    version_date=version_date,
+                    version_label=version_label,
+                    snippet=snippet,
+                    verified_read=is_read,
+                ).model_dump(mode="json", exclude_none=True)
+            )
+    return merge_source_refs([], refs)
+
+
+def merge_source_refs(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge source references while upgrading web_search entries on web_read."""
+
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for ref in [*existing, *incoming]:
+        if not isinstance(ref, dict):
+            continue
+        source_id = ref.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            continue
+        if source_id not in merged:
+            merged[source_id] = dict(ref)
+            order.append(source_id)
+            continue
+        current = merged[source_id]
+        if ref.get("verified_read") is True:
+            current["verified_read"] = True
+        for key in ("title", "url", "domain", "version_date", "version_label", "snippet"):
+            val = ref.get(key)
+            if isinstance(val, str) and val.strip():
+                cur_val = current.get(key)
+                if not cur_val or (key == "snippet" and ref.get("verified_read") is True) or (key == "title" and current.get("title") == current.get("url")):
+                    current[key] = val.strip()
+    return [merged[key] for key in order]
+
+
+def _cn_to_int(text: str) -> int | None:
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    total, current = 0, 0
+    for ch in text:
+        if ch in _CN_DIGITS:
+            current = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            unit = _CN_UNITS[ch]
+            total += (current or 1) * unit
+            current = 0
+        else:
+            return None
+    return total + current
+
+
+def _int_to_cn(num: int) -> str:
+    digits = "零一二三四五六七八九"
+    if num <= 0 or num >= 10000:
+        return str(num)
+    units = [(1000, "千"), (100, "百"), (10, "十"), (1, "")]
+    parts: list[str] = []
+    zero_pending = False
+    for unit, name in units:
+        d, num = divmod(num, unit)
+        if d == 0:
+            if parts and num > 0:
+                zero_pending = True
+            continue
+        if zero_pending:
+            parts.append("零")
+            zero_pending = False
+        if not (unit == 10 and d == 1 and not parts):
+            parts.append(digits[d])
+        parts.append(name)
+    return "".join(parts) or "零"
+
+
+def _article_variants(article_no: str) -> list[str]:
+    clean = article_no.strip()
+    variants = [clean]
+    m = re.search(r"第\s*([零〇一二两三四五六七八九十百千\d]+)\s*条", clean)
+    if m:
+        num = _cn_to_int(m.group(1))
+        if num is not None:
+            cn = _int_to_cn(num)
+            variants.extend([f"第{num}条", f"第 {num} 条", f"第{cn}条", f"{num}条"])
+    return list(dict.fromkeys(v for v in variants if v))
+
+
+def _is_source_used_in_answer(ref: dict[str, Any], answer: str, answer_lower: str) -> bool:
+    kind = ref.get("kind")
+    title = str(ref.get("title") or "").strip()
+    if kind == "web":
+        url = str(ref.get("url") or "").strip()
+        if url and _canonical_web_url(url).lower() in answer_lower:
+            return True
+        domain = str(ref.get("domain") or "").strip().lower()
+        clean_title = re.split(r"\s+[-_|—]\s+", title)[0].strip()
+        if len(clean_title) >= 8 and clean_title.lower() in answer_lower:
+            return True
+        if domain and domain in answer_lower:
+            tokens = [tok for tok in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{4,}", clean_title)]
+            if any(tok.lower() in answer_lower for tok in tokens):
+                return True
+        return False
+    if kind == "law":
+        law_core = re.sub(r"[《》]", "", title)
+        law_core = re.sub(r"中华人民共和国", "", law_core)
+        law_core = re.sub(r"[（(][^）)]*[）)]", "", law_core).strip()
+        if len(law_core) < 2 or law_core not in answer:
+            return False
+        locator = str(ref.get("locator") or "").strip()
+        return any(variant in answer for variant in _article_variants(locator)) if locator else True
+    if kind == "case":
+        docket = _DOCKET_NO.search(title)
+        if docket and docket.group(0) in answer:
+            return True
+        clean = re.sub(r"[《》\[\]]", "", title).strip()
+        prefix = re.split(r"[—\-|：:]", clean)[0].strip()
+        return (len(clean) >= 6 and clean in answer) or (len(prefix) >= 6 and prefix in answer)
+    if kind == "paper":
+        clean = re.sub(r"[《》]", "", title).strip()
+        if len(clean) >= 6 and clean in answer:
+            return True
+        authors = str(ref.get("authors") or "").strip()
+        first_author = re.split(r"[、，,;；\s]+", authors)[0].strip() if authors else ""
+        if len(first_author) >= 2 and first_author in answer:
+            frags = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{4,}", clean)
+            if any(frag in answer for frag in frags):
+                return True
+        return False
+    return False
+
+
+def annotate_used_sources(sources: list[dict[str, Any]], answer_text: str | None) -> list[dict[str, Any]]:
+    """Annotate each source ref with used_in_answer when a final/partial answer exists."""
+
+    if not isinstance(answer_text, str) or not answer_text.strip():
+        return [dict(item) for item in sources if isinstance(item, dict)]
+    answer_lower = answer_text.lower()
+    annotated: list[dict[str, Any]] = []
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        copy = dict(item)
+        copy["used_in_answer"] = _is_source_used_in_answer(copy, answer_text, answer_lower)
+        annotated.append(copy)
+    return annotated
 
 
 class CorpusSourceRepository:

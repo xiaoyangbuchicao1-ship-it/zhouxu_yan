@@ -13,7 +13,12 @@ from backend.contracts.events.runtime import RunEvent
 from backend.contracts.modules.loop import DecisionProposal
 from backend.contracts.schemas.core import ModuleRequest, PortError
 from backend.infrastructure.model.decision import DeliveryText
-from backend.infrastructure.model.deepseek import DeepSeekModel
+from backend.infrastructure.model.deepseek import (
+    DeepSeekModel,
+    _async_error_body,
+    _sync_error_body,
+    is_quota_or_balance_error,
+)
 from backend.infrastructure.model.endpoint_policy import EndpointPolicyError
 from backend.infrastructure.model.public_text import PublicText
 
@@ -146,13 +151,14 @@ class NativeProtocolModel(DeepSeekModel):
         self._remember(request, message, decision, self._response_frame(data))
         return decision, tokens
 
-    def _check_status(self, response):
-        if response.status_code == 402:
+    def _check_status(self, response, body_text: str = ""):
+        if response.is_success:
+            return
+        if is_quota_or_balance_error(response.status_code, body_text):
             raise PortError(self.settings.error("model_quota_exhausted"))
         if response.status_code == 429 or response.status_code >= 500:
             raise PortError(self.settings.error("model_unavailable", retryable=True))
-        if not response.is_success:
-            raise PortError(self.settings.error("model_rejected"))
+        raise PortError(self.settings.error("model_rejected"))
 
     def _event(self, request, status, began, tokens, http_status, error_code=None, first_frame_ms=None):
         self.events.emit(RunEvent(
@@ -173,7 +179,8 @@ class NativeProtocolModel(DeepSeekModel):
                 headers={**self._request_headers(), "x-zhouxu-purpose": request.input.purpose},
             )
             http_status = response.status_code
-            self._check_status(response)
+            body_text = "" if response.is_success else _sync_error_body(response)
+            self._check_status(response, body_text)
             decision, tokens = self._decode_native(request, response.json())
             status = "incomplete" if decision.incomplete else "ok"
             return decision
@@ -226,7 +233,8 @@ class NativeProtocolModel(DeepSeekModel):
                 headers={**self._request_headers(), "x-zhouxu-purpose": request.input.purpose},
             ) as response:
                 http_status = response.status_code
-                self._check_status(response)
+                body_text = "" if response.is_success else await _async_error_body(response)
+                self._check_status(response, body_text)
                 if "application/json" in response.headers.get("content-type", ""):
                     data = json.loads(await response.aread())
                 else:
@@ -292,10 +300,28 @@ class OpenAIResponsesModel(NativeProtocolModel):
             content = message.get("content")
             if content:
                 if isinstance(content, list):
-                    raise PortError(self.settings.error("model_image_unsupported"))
-                result.append({"role": role, "content": [{
-                    "type": "output_text" if role == "assistant" else "input_text", "text": content,
-                }]})
+                    parts = []
+                    for part in content:
+                        part_type = part.get("type") if isinstance(part, dict) else None
+                        if part_type == "text":
+                            parts.append({
+                                "type": "output_text" if role == "assistant" else "input_text",
+                                "text": part["text"],
+                            })
+                        elif part_type == "image_url":
+                            image_info = part.get("image_url")
+                            url = image_info.get("url") if isinstance(image_info, dict) else image_info
+                            if not isinstance(url, str) or not url:
+                                raise PortError(self.settings.error("model_image_unsupported"))
+                            parts.append({"type": "input_image", "image_url": url})
+                        else:
+                            raise PortError(self.settings.error("model_image_unsupported"))
+                    if parts:
+                        result.append({"role": role, "content": parts})
+                else:
+                    result.append({"role": role, "content": [{
+                        "type": "output_text" if role == "assistant" else "input_text", "text": content,
+                    }]})
             for call in message.get("tool_calls", []):
                 result.append({"type": "function_call", "call_id": call["id"],
                                "name": call["function"]["name"],

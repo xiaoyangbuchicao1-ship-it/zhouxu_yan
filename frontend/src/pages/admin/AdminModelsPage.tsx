@@ -1,4 +1,5 @@
 import {
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -15,11 +16,13 @@ import {
   Search,
   Server,
   Settings2,
+  ShieldCheck,
   Sparkles,
   Star,
   Trash2,
   Wallet,
 } from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -33,6 +36,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import {
   Dialog,
@@ -48,6 +52,7 @@ import {
   createAdminApi,
   type AdminConnectivityTestResult,
   type AdminDiscoveredModel,
+  type AdminDomesticDefaultResult,
   type AdminModelProfile,
   type AdminModelProvider,
   type AdminProviderBalance,
@@ -190,6 +195,33 @@ function balanceTooltip(balance: AdminProviderBalance): string | undefined {
   return parts.length ? parts.join(" · ") : undefined;
 }
 
+function scopeDisplayLabel(scope: string): string {
+  if (scope === "admin_only") return "仅管理员";
+  if (scope === "allowlist") return "按分组授权";
+  return "全员默认";
+}
+
+function guessIsDomesticModel(upstreamId: string, providerPreset?: string): boolean {
+  const lower = upstreamId.toLowerCase();
+  const tail = lower.split("/").pop() ?? lower;
+  const overseas = [
+    "claude", "gpt-", "gpt4", "gpt5", "chatgpt", "o1-", "o3-", "o4-",
+    "gemini", "grok", "llama", "mistral", "mixtral", "sonar", "perplexity",
+    "command-r", "anthropic", "openai/",
+  ];
+  if (tail === "o1" || tail === "o3" || tail === "o4" || overseas.some(t => lower.includes(t))) {
+    return false;
+  }
+  const domestic = [
+    "deepseek", "qwen", "qwq", "tongyi", "glm", "chatglm", "zhipu",
+    "moonshot", "kimi", "doubao", "ernie", "wenxin", "hunyuan",
+    "minimax", "abab", "baichuan", "yi-", "step-", "spark", "xinghuo",
+    "internlm", "sensechat",
+  ];
+  if (domestic.some(t => lower.includes(t))) return true;
+  return providerPreset === "deepseek" || providerPreset === "volcengine";
+}
+
 interface ModelModalState {
   mode: "create" | "edit";
   providerId: string;
@@ -212,6 +244,9 @@ export default function AdminModelsPage() {
   const [modelModal, setModelModal] = useState<ModelModalState | null>(null);
   const [discoverTarget, setDiscoverTarget] = useState<AdminModelProvider | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<{ kind: "provider" | "model"; id: string; label: string } | null>(null);
+  const [domesticPreview, setDomesticPreview] = useState<AdminDomesticDefaultResult | null>(null);
+  const [domesticBusy, setDomesticBusy] = useState(false);
+  const [defaultSwitching, setDefaultSwitching] = useState(false);
   const [pageBanner, setPageBanner] = useState<{ tone: "ok" | "fail"; text: string } | null>(null);
 
   const directoryQuery = useQuery({
@@ -224,10 +259,66 @@ export default function AdminModelsPage() {
   const providers = useMemo(() => directoryQuery.data?.providers ?? [], [directoryQuery.data]);
   const models = useMemo(() => directoryQuery.data?.models ?? [], [directoryQuery.data]);
   const localHostsAllowed = Boolean(directoryQuery.data?.local_hosts_allowed);
+  const openDefaultModels = useMemo(
+    () => models.filter(m => m.enabled && m.access_scope === "all"),
+    [models],
+  );
+  const activeDefaultModel = useMemo(
+    () => models.find(m => m.is_default),
+    [models],
+  );
 
   async function refreshDirectory() {
     await queryClient.invalidateQueries({ queryKey: ["admin", "model-directory"] });
     await queryClient.invalidateQueries({ queryKey: ["workspace", "models"] });
+  }
+
+  async function switchGlobalDefault(profileId: string) {
+    if (!profileId || defaultSwitching) return;
+    setDefaultSwitching(true);
+    setPageBanner(null);
+    try {
+      const updated = await api.updateModel(profileId, { is_default: true, enabled: true });
+      await refreshDirectory();
+      setPageBanner({ tone: "ok", text: `全站默认模型已切换为「${updated.label}」。` });
+    } catch (error) {
+      setPageBanner({ tone: "fail", text: error instanceof Error ? error.message : "切换默认模型失败。" });
+    } finally {
+      setDefaultSwitching(false);
+    }
+  }
+
+  async function previewDomesticDefault() {
+    if (domesticBusy) return;
+    setDomesticBusy(true);
+    setPageBanner(null);
+    try {
+      const result = await api.applyDomesticDefault(true);
+      setDomesticPreview(result);
+    } catch (error) {
+      setPageBanner({ tone: "fail", text: error instanceof Error ? error.message : "预览默认策略失败。" });
+    } finally {
+      setDomesticBusy(false);
+    }
+  }
+
+  async function confirmDomesticDefault() {
+    if (domesticBusy) return;
+    setDomesticBusy(true);
+    try {
+      const result = await api.applyDomesticDefault(false);
+      setDomesticPreview(null);
+      await refreshDirectory();
+      setPageBanner({
+        tone: "ok",
+        text: `已调整 ${result.changes.length} 个模型范围，全局默认开放 ${result.domestic_open_count} 个国内主流模型。`,
+      });
+    } catch (error) {
+      setDomesticPreview(null);
+      setPageBanner({ tone: "fail", text: error instanceof Error ? error.message : "应用策略失败。" });
+    } finally {
+      setDomesticBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -350,6 +441,63 @@ export default function AdminModelsPage() {
               message={directoryQuery.error instanceof Error ? directoryQuery.error.message : "刷新没有完成。"}
               onRetry={() => void directoryQuery.refetch()}
             />
+          )}
+
+          {models.length > 0 && (
+            <section className="admin-model-policy-bar" aria-label="默认模型策略">
+              <div className="admin-policy-primary">
+                <span className="admin-policy-label">
+                  <Star size={14} aria-hidden="true" />
+                  全站默认
+                </span>
+                {openDefaultModels.length > 0 ? (
+                  <Select
+                    value={activeDefaultModel?.access_scope === "all" && activeDefaultModel.enabled ? activeDefaultModel.profile_id : ""}
+                    disabled={defaultSwitching}
+                    onValueChange={val => void switchGlobalDefault(val)}
+                  >
+                    <SelectTrigger className="admin-policy-select" aria-label="全站默认模型">
+                      <SelectValue placeholder={activeDefaultModel ? activeDefaultModel.label : "选择默认模型"} />
+                    </SelectTrigger>
+                    <SelectContent className="admin-select-menu">
+                      {openDefaultModels.map(item => (
+                        <SelectItem key={item.profile_id} value={item.profile_id}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <span className="admin-cell-muted">暂无全员开放的已启用模型</span>
+                )}
+              </div>
+
+              <div className="admin-policy-open-list">
+                <span className="admin-policy-label">默认开放</span>
+                <strong className="admin-policy-count">{openDefaultModels.length} 个</strong>
+                {openDefaultModels.slice(0, 3).map(item => (
+                  <span key={item.profile_id} className="admin-cc-badge">{item.label}</span>
+                ))}
+                {openDefaultModels.length > 3 && (
+                  <span
+                    className="admin-cc-badge"
+                    title={openDefaultModels.slice(3).map(item => item.label).join("、")}
+                  >
+                    +{openDefaultModels.length - 3}
+                  </span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                className="admin-cc-btn admin-policy-action"
+                disabled={domesticBusy}
+                onClick={() => void previewDomesticDefault()}
+              >
+                <ShieldCheck size={14} aria-hidden="true" />
+                {domesticBusy ? "检查中…" : "国内主流模型设为全局默认"}
+              </button>
+            </section>
           )}
 
           <nav className="admin-cc-tabs" aria-label="服务商">
@@ -501,6 +649,51 @@ export default function AdminModelsPage() {
               }}
             >
               {archiveMutation.isPending ? "处理中…" : "确认归档"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={Boolean(domesticPreview)} onOpenChange={open => { if (!open && !domesticBusy) setDomesticPreview(null); }}>
+        <AlertDialogContent className="admin-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>将国内主流模型设为全局默认？</AlertDialogTitle>
+            <AlertDialogDescription>
+              DeepSeek、通义千问、GLM、Kimi、豆包等国内主流模型将设为「全员默认」；海外及其余模型将调整为「按分组授权」（已有分组或白名单不受影响，仅管理员模型保持不变）。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {domesticPreview && (
+            <div className="admin-policy-preview">
+              <p className="admin-policy-preview-meta">
+                全站默认首选：<strong>{domesticPreview.default_profile_label || "暂无已启用中国主流模型"}</strong>
+              </p>
+              {domesticPreview.changes.length === 0 ? (
+                <p className="admin-drawer-note">所有模型的可见范围已符合该策略，无需改动。</p>
+              ) : (
+                <ul className="admin-policy-change-list">
+                  {domesticPreview.changes.map(change => (
+                    <li key={change.profile_id}>
+                      <span>{change.label}</span>
+                      <small>
+                        {scopeDisplayLabel(change.previous_scope)} → <strong>{scopeDisplayLabel(change.target_scope)}</strong>
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel className="admin-dialog-cancel" disabled={domesticBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="admin-dialog-confirm"
+              disabled={domesticBusy}
+              onClick={event => {
+                event.preventDefault();
+                void confirmDomesticDefault();
+              }}
+            >
+              {domesticBusy ? "应用中…" : "确认应用"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -969,6 +1162,21 @@ function ProviderModelsSection({
     }
   }
 
+  async function changeAccessScope(model: AdminModelProfile, scope: "all" | "allowlist" | "admin_only") {
+    if (model.access_scope === scope) return;
+    setBusyId(model.profile_id);
+    onBanner(null);
+    try {
+      await api.updateModel(model.profile_id, { access_scope: scope });
+      await onDirectoryChanged();
+      onBanner({ tone: "ok", text: `「${model.label}」已设为${scopeDisplayLabel(scope)}。` });
+    } catch (cause) {
+      onBanner({ tone: "fail", text: cause instanceof Error ? cause.message : "权限范围未改成功。" });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   /* 批量操作逐个执行：某一个失败不影响其余，最后一次说清楚结果。 */
   async function runBatch(kind: "enable" | "disable" | "test") {
     const targets = chosen.filter(model => {
@@ -1133,7 +1341,12 @@ function ProviderModelsSection({
                   {visible.map(model => {
                     const busy = busyId === model.profile_id || batchBusy;
                     const verified = model.connectivity_status === "verified";
-                    const scopeText = model.access_scope === "admin_only" ? "仅管理员" : model.access_scope === "allowlist" ? "指定账户" : "";
+                    const scopeTone =
+                      model.access_scope === "admin_only"
+                        ? "is-admin"
+                        : model.access_scope === "allowlist"
+                          ? "is-allowlist"
+                          : "is-all";
                     return (
                       <tr key={model.profile_id} className={model.enabled ? "is-enabled" : ""}>
                         <td className="admin-cc-col-check">
@@ -1153,7 +1366,39 @@ function ProviderModelsSection({
                                 默认
                               </span>
                             )}
-                            {scopeText && <span className="admin-cc-badge">{scopeText}</span>}
+                            {model.capabilities?.vision === "confirmed" && (
+                              <span className="admin-cc-badge" title="支持原图直传看图">
+                                <Eye size={11} aria-hidden="true" />
+                                看图
+                              </span>
+                            )}
+                            <DropdownMenu.Root>
+                              <DropdownMenu.Trigger asChild>
+                                <button
+                                  type="button"
+                                  className={`admin-scope-pill ${scopeTone}`}
+                                  disabled={busy}
+                                  title="点击快速调整可用范围"
+                                >
+                                  <span>{scopeDisplayLabel(model.access_scope)}</span>
+                                  <ChevronDown size={11} aria-hidden="true" />
+                                </button>
+                              </DropdownMenu.Trigger>
+                              <DropdownMenu.Portal>
+                                <DropdownMenu.Content className="admin-scope-menu" sideOffset={5} align="start">
+                                  {(["all", "allowlist", "admin_only"] as const).map(scope => (
+                                    <DropdownMenu.Item
+                                      key={scope}
+                                      className={`admin-scope-menu-item ${model.access_scope === scope ? "is-selected" : ""}`}
+                                      onSelect={() => void changeAccessScope(model, scope)}
+                                    >
+                                      <span>{scopeDisplayLabel(scope)}</span>
+                                      {model.access_scope === scope && <Check size={13} aria-hidden="true" />}
+                                    </DropdownMenu.Item>
+                                  ))}
+                                </DropdownMenu.Content>
+                              </DropdownMenu.Portal>
+                            </DropdownMenu.Root>
                           </div>
                           {model.connectivity_status === "failed" && model.connectivity_error && (
                             <p className="admin-cc-model-fail">{probeErrorText(model.connectivity_error)}</p>
@@ -1265,11 +1510,19 @@ function UnifiedModelDialog({
   const [maxOutputTokens, setMaxOutputTokens] = useState(editing?.max_output_tokens ?? initialSpec?.max_output_tokens ?? 16384);
   const [modes, setModes] = useState<ThinkingMode[]>(editing?.thinking_modes ?? initialSpec?.thinking_modes ?? ["none"]);
   const [defaultThinking, setDefaultThinking] = useState<ThinkingMode>(editing?.default_thinking ?? initialSpec?.default_thinking ?? "none");
+  const [supportsVision, setSupportsVision] = useState<boolean>(
+    editing ? editing.capabilities?.vision === "confirmed" : Boolean(initialSpec?.supports_vision),
+  );
   const [inferredHint, setInferredHint] = useState(initialSpec?.source_hint ?? "通用默认值");
   const [inferredMatched, setInferredMatched] = useState(Boolean(initialSpec?.matched));
   const [advancedTouched, setAdvancedTouched] = useState(Boolean(editing));
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [accessScope, setAccessScope] = useState(editing?.access_scope ?? "all");
+  const initialProvider = providers.find(p => p.id === (editing?.provider_id || modal.providerId || providers[0]?.id));
+  const [accessScope, setAccessScope] = useState(
+    editing?.access_scope
+      ?? (guessIsDomesticModel(modal.prefillUpstreamId ?? "", initialProvider?.preset_type) ? "all" : "allowlist"),
+  );
+  const [scopeTouched, setScopeTouched] = useState(Boolean(editing));
   const [testImmediately, setTestImmediately] = useState(!editing);
 
   const [saving, setSaving] = useState(false);
@@ -1286,6 +1539,9 @@ function UnifiedModelDialog({
     setMaxOutputTokens(spec.max_output_tokens);
     setModes(spec.thinking_modes);
     setDefaultThinking(spec.default_thinking);
+    if (typeof spec.supports_vision === "boolean") {
+      setSupportsVision(spec.supports_vision);
+    }
     setInferredHint(spec.source_hint);
     setInferredMatched(spec.matched);
   }
@@ -1306,6 +1562,7 @@ function UnifiedModelDialog({
             default_thinking: res.default_thinking,
             matched: res.matched,
             source_hint: res.source_hint,
+            supports_vision: res.supports_vision,
           });
         })
         .catch(() => {
@@ -1325,6 +1582,9 @@ function UnifiedModelDialog({
     }
     if (!editing && !advancedTouched) {
       applySpec(inferModelSpecLocal(next));
+    }
+    if (!editing && !scopeTouched) {
+      setAccessScope(guessIsDomesticModel(next, selectedProvider?.preset_type) ? "all" : "allowlist");
     }
   }
 
@@ -1370,6 +1630,10 @@ function UnifiedModelDialog({
       }
 
       const overrideValue = protocolChoice ? (protocolChoice as ModelProtocol) : null;
+      const nextCapabilities = {
+        ...(editing?.capabilities ?? {}),
+        vision: supportsVision ? "confirmed" : "unsupported",
+      };
       let savedModel: AdminModelProfile;
       if (editing) {
         savedModel = await api.updateModel(editing.profile_id, {
@@ -1381,6 +1645,7 @@ function UnifiedModelDialog({
           thinking_modes: modes,
           default_thinking: defaultThinking,
           access_scope: accessScope,
+          capabilities: nextCapabilities,
         });
       } else {
         savedModel = await api.createModel({
@@ -1393,6 +1658,7 @@ function UnifiedModelDialog({
           thinking_modes: modes,
           default_thinking: defaultThinking,
           access_scope: accessScope,
+          capabilities: nextCapabilities,
           enabled: false,
         });
       }
@@ -1562,11 +1828,18 @@ function UnifiedModelDialog({
           </div>
 
           <label className="admin-cc-field">
-            <span>谁能用</span>
-            <select name="access_scope" value={accessScope} onChange={e => setAccessScope(e.target.value)}>
-              <option value="all">所有人</option>
+            <span>可见范围</span>
+            <select
+              name="access_scope"
+              value={accessScope}
+              onChange={e => {
+                setScopeTouched(true);
+                setAccessScope(e.target.value);
+              }}
+            >
+              <option value="all">全员默认（所有用户）</option>
+              <option value="allowlist">按分组 / 指定账户授权</option>
               <option value="admin_only">仅管理员</option>
-              <option value="allowlist">指定账户</option>
             </select>
           </label>
 
@@ -1585,7 +1858,7 @@ function UnifiedModelDialog({
                           : "已套用通用默认参数"}
                   </strong>
                   <p>
-                    {formatTokenBudget(contextTokens)} 上下文 · {formatTokenBudget(maxOutputTokens)} 输出 · {formatThinkingSummary(modes, defaultThinking)}
+                    {formatTokenBudget(contextTokens)} 上下文 · {formatTokenBudget(maxOutputTokens)} 输出 · {formatThinkingSummary(modes, defaultThinking)} · {supportsVision ? "支持看图" : "仅文本"}
                     {protocolChoice ? ` · ${protocolDisplayName(protocolChoice as ModelProtocol)}` : ""}
                   </p>
                 </div>
@@ -1723,6 +1996,18 @@ function UnifiedModelDialog({
                     </select>
                   </label>
                 </div>
+                <label className="admin-cc-check">
+                  <input
+                    type="checkbox"
+                    name="supports_vision"
+                    checked={supportsVision}
+                    onChange={e => {
+                      setAdvancedTouched(true);
+                      setSupportsVision(e.target.checked);
+                    }}
+                  />
+                  <span>支持看图（开启后允许把用户上传的原图直接传给该模型）</span>
+                </label>
                 <p className="admin-cc-hint">不确定时不用改：普通模型保持“关闭”，支持推理的模型按需勾选档位即可。</p>
               </div>
             )}
