@@ -1,73 +1,52 @@
 /* ==========================================================================
-   舟序 · 双开卷宗门认证舞台 (Archival 3D Door Stage · Dark Maritime Edition)
+   舟序 · 全景光场认证舞台 (Panoramic Vault Stage)
    - 只作用于 /login, /register, /account, /admin/login
-   - 汲取 Orrel Studio 的实体门扇 3D 物理与盲压质感 + Teeshift 的三段中轴秩序
-   - 视觉语言完全归属舟序：深海石板暗纸、雾蓝钢线（用户）与秩序冷金（管理台）
+   - 无门板挤压，全屏六边形呼吸光场 + 轻盈光幕身份切换 + 登录瞬间纵深推入
+   - 用户端深海石板蓝 (#89aacc) / 管理台黑曜石暖金 (#c9a875)
    ========================================================================== */
 
-.auth-svg-defs {
-  position: absolute;
-  width: 0;
-  height: 0;
-  pointer-events: none;
-}
-
 .auth-vault-stage {
-  --door-accent: #89aacc;
-  --door-accent-soft: rgba(137, 170, 204, 0.22);
-  --door-paper-outer: #0b1118;
-  --door-paper-mid: #101822;
-  --door-paper-inner: #15202d;
-  --door-edge-a: #0a1017;
-  --door-edge-b: #24364a;
-  --door-edge-c: #111b27;
-  --handle-closed: #192534;
-  --handle-open: #223244;
+  --stage-accent: #89aacc;
+  --stage-accent-soft: rgba(137, 170, 204, 0.2);
+  --stage-bg: #050a10;
+  --mx: 50%;
+  --my: 44%;
 
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background: #05090e;
+  background: var(--stage-bg);
   color: hsl(var(--text));
   isolation: isolate;
+  transition: background-color 0.42s ease;
 }
 
 .auth-vault-stage.is-admin {
-  --door-accent: #c9a875;
-  --door-accent-soft: rgba(201, 168, 117, 0.22);
-  --door-paper-outer: #0b0c0e;
-  --door-paper-mid: #111316;
-  --door-paper-inner: #17191d;
-  --door-edge-a: #0b0c0e;
-  --door-edge-b: #322c23;
-  --door-edge-c: #151412;
-  --handle-closed: #1d1c19;
-  --handle-open: #2b2720;
+  --stage-accent: #c9a875;
+  --stage-accent-soft: rgba(201, 168, 117, 0.22);
+  --stage-bg: #070605;
 }
 
 /* ==========================================================================
-   Layer 1 · 门内空间（同一扇门后，两种截然不同的深海/治理密室）
+   Layer 1 · 全景六边形光场 + 顶光 + 指针呼吸微光 + 四周柔和暗角
    ========================================================================== */
-.auth-chamber {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  padding: 76px 20px 28px;
-}
-
-.auth-chamber-backdrop {
+.auth-stage-backdrop {
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: #060b11;
+  background: var(--stage-bg);
+  transform: scale(1);
+  opacity: 1;
+  transition:
+    background-color 0.42s ease,
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.32s ease;
 }
-.auth-vault-stage.is-admin .auth-chamber-backdrop {
-  background: #07080a;
+
+.auth-vault-stage.is-entering .auth-stage-backdrop {
+  transform: scale(1.045);
+  opacity: 0.22;
 }
 
 .auth-vault {
@@ -75,298 +54,75 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: 0.72;
+  opacity: 0.78;
   pointer-events: none;
 }
+
 .auth-vault-fallback {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse at 50% 45%, rgba(114, 152, 187, 0.14), transparent 56%),
+    radial-gradient(ellipse at 50% 44%, rgba(114, 152, 187, 0.14), transparent 58%),
     url("/auth-vault-grid.svg") center / 200px 346.41px,
-    #060b11;
+    #050a10;
 }
 .auth-vault-stage.is-admin .auth-vault-fallback {
   background:
-    radial-gradient(ellipse at 50% 45%, rgba(201, 168, 117, 0.16), transparent 56%),
+    radial-gradient(ellipse at 50% 44%, rgba(201, 168, 117, 0.15), transparent 58%),
     url("/auth-vault-grid.svg") center / 200px 346.41px,
-    #080706;
+    #070605;
 }
 
-/* 顶光天窗：门推开后从上方洒入的柔和空间光 */
-.auth-chamber-skylight {
+/* 顶部天光与底部轻托 */
+.auth-stage-skylight {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse 46% 42% at 50% 24%, rgba(110, 158, 204, 0.2), transparent 72%),
-    radial-gradient(ellipse 38% 36% at 50% 82%, rgba(52, 92, 130, 0.14), transparent 70%);
-  transition: background 0.35s ease;
+    radial-gradient(ellipse 56% 42% at 50% 18%, rgba(110, 158, 204, 0.17), transparent 72%),
+    radial-gradient(ellipse 46% 36% at 50% 88%, rgba(44, 82, 118, 0.12), transparent 70%);
+  transition: background 0.42s ease;
 }
-.auth-vault-stage.is-admin .auth-chamber-skylight {
+.auth-vault-stage.is-admin .auth-stage-skylight {
   background:
-    radial-gradient(ellipse 44% 40% at 50% 24%, rgba(201, 168, 117, 0.18), transparent 72%),
-    radial-gradient(ellipse 36% 32% at 50% 82%, rgba(130, 104, 68, 0.1), transparent 70%);
+    radial-gradient(ellipse 54% 40% at 50% 18%, rgba(201, 168, 117, 0.15), transparent 72%),
+    radial-gradient(ellipse 44% 34% at 50% 88%, rgba(132, 102, 62, 0.09), transparent 70%);
 }
 
-/* 门洞纵深暗角 */
-.auth-chamber-vignette {
+/* 跟随鼠标的极轻柔和环境光 */
+.auth-stage-cursor-glow {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(ellipse 48% 68% at 50% 48%, transparent 32%, rgba(3, 6, 10, 0.72) 100%),
-    linear-gradient(180deg, rgba(4, 7, 11, 0.45) 0%, transparent 18%, transparent 84%, rgba(4, 7, 11, 0.65) 100%);
+  background: radial-gradient(
+    520px circle at var(--mx) var(--my),
+    rgba(137, 170, 204, 0.085),
+    transparent 68%
+  );
+  transition: opacity 0.3s ease;
 }
-
-/* 室内熄灯幕布：由 JS 随门扇开度同步控制 */
-.auth-chamber-dim {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background: #03060a;
-  opacity: 0.86;
-  pointer-events: none;
-}
-
-.auth-chamber-content {
-  position: relative;
-  z-index: 2;
-  width: min(100%, 384px);
-  will-change: opacity, transform;
-}
-
-/* ==========================================================================
-   Layer 2 · 双开实体 3D 卷宗门（真实外侧铰链、门厚、纸纹与盲压大字标）
-   ========================================================================== */
-.auth-doors {
-  position: absolute;
-  inset: 0;
-  z-index: 10;
-  perspective-origin: 50% 50%;
-  transform-style: preserve-3d;
-  pointer-events: none;
-}
-
-.auth-door {
-  position: absolute;
-  top: 0;
-  height: 100%;
-  width: 50%;
-  transform-style: preserve-3d;
-  will-change: transform;
-  pointer-events: auto;
-}
-.auth-vault-stage.is-open .auth-door {
-  pointer-events: none;
-}
-.auth-door-handle {
-  pointer-events: auto;
-}
-.auth-door-left {
-  left: 0;
-  transform-origin: 0% 50%;
-}
-.auth-door-right {
-  right: 0;
-  transform-origin: 100% 50%;
-}
-
-.auth-door-face {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  backface-visibility: hidden;
-  transition: background 0.35s ease;
-}
-.auth-door-left .auth-door-face {
-  background: linear-gradient(90deg, var(--door-paper-outer) 0%, var(--door-paper-mid) 56%, var(--door-paper-inner) 100%);
-}
-.auth-door-right .auth-door-face {
-  background: linear-gradient(90deg, var(--door-paper-inner) 0%, var(--door-paper-mid) 44%, var(--door-paper-outer) 100%);
-}
-
-/* 细腻矿石纸纹：消除塑料平滑感 */
-.auth-door-grain {
-  position: absolute;
-  inset: 0;
-  opacity: 0.52;
-  mix-blend-mode: overlay;
-  pointer-events: none;
-  background-size: 240px 240px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.88' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.72 0 0 0 0 0.80 0 0 0 0 0.88 0 0 0 0.22 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-/* 门面顶部极细档案铭文 */
-.auth-door-engrave {
-  position: absolute;
-  top: clamp(92px, 14vh, 138px);
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  pointer-events: none;
-  user-select: none;
-}
-.auth-door-engrave-left {
-  left: clamp(28px, 4.4vw, 64px);
-  align-items: flex-start;
-}
-.auth-door-engrave-right {
-  right: clamp(28px, 4.4vw, 64px);
-  align-items: flex-end;
-}
-.auth-engrave-index {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  color: color-mix(in srgb, var(--door-accent) 46%, transparent);
-}
-.auth-engrave-meta {
-  font-size: 10px;
-  letter-spacing: 0.26em;
-  color: rgba(182, 198, 214, 0.22);
-}
-
-/* 底部无墨盲压凹印大字标（合门时跨中缝拼为 Zhouxu.） */
-.auth-door-emboss {
-  position: absolute;
-  bottom: clamp(14px, 3vh, 30px);
-  width: min(440px, 44vw);
-  height: clamp(110px, 19vh, 185px);
-  overflow: visible;
-  pointer-events: none;
-  user-select: none;
-}
-.auth-door-emboss-left {
-  right: 0;
-}
-.auth-door-emboss-right {
-  left: 0;
-}
-
-/* 旋转时门缘动态阴影 */
-.auth-door-shade {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  pointer-events: none;
-}
-.auth-door-left .auth-door-shade {
-  background: linear-gradient(90deg, rgba(2, 5, 9, 0) 25%, rgba(2, 5, 9, 0.92) 100%);
-}
-.auth-door-right .auth-door-shade {
-  background: linear-gradient(270deg, rgba(2, 5, 9, 0) 25%, rgba(2, 5, 9, 0.92) 100%);
-}
-
-/* 1px 暗缝 + 1px 亮唇 */
-.auth-door-seam {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  pointer-events: none;
-}
-.auth-door-left .auth-door-seam {
-  right: 0;
-  background: rgba(0, 0, 0, 0.78);
-}
-.auth-door-right .auth-door-seam {
-  left: 0;
-  background: rgba(184, 212, 238, 0.16);
-}
-.auth-vault-stage.is-admin .auth-door-right .auth-door-seam {
-  background: rgba(224, 194, 142, 0.18);
-}
-
-/* 16px 真实门板物理厚度 */
-.auth-door-edge {
-  position: absolute;
-  top: 0;
-  height: 100%;
-  width: 16px;
-  background: linear-gradient(90deg, var(--door-edge-a), var(--door-edge-b) 45%, var(--door-edge-c));
-  pointer-events: none;
-}
-.auth-door-left .auth-door-edge {
-  left: 100%;
-  transform-origin: 0% 50%;
-  transform: rotateY(90deg);
-}
-.auth-door-right .auth-door-edge {
-  right: 100%;
-  transform-origin: 100% 50%;
-  transform: rotateY(-90deg);
-}
-
-/* 哑光雕塑感双门拉手 */
-.auth-door-handle {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 26px;
-  height: clamp(128px, 20vh, 178px);
-  border: 1px solid rgba(184, 208, 232, 0.14);
-  border-radius: 999px;
-  background: var(--handle-closed);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 0 16px;
-  cursor: pointer;
-  box-shadow:
-    inset 1px 1px 2px rgba(255, 255, 255, 0.08),
-    inset -2px -3px 6px rgba(0, 0, 0, 0.55),
-    0 10px 26px rgba(0, 0, 0, 0.48);
-  transition:
-    background 0.25s ease,
-    border-color 0.25s ease,
-    box-shadow 0.25s ease,
-    transform 0.2s ease;
-}
-.auth-door-handle-left {
-  right: 22px;
-}
-.auth-door-handle-right {
-  left: 22px;
-}
-.auth-door-handle:hover {
-  border-color: color-mix(in srgb, var(--door-accent) 48%, transparent);
-  box-shadow:
-    inset 1px 1px 2px rgba(255, 255, 255, 0.14),
-    inset -2px -3px 6px rgba(0, 0, 0, 0.5),
-    0 0 22px var(--door-accent-soft),
-    0 10px 26px rgba(0, 0, 0, 0.55);
-}
-.auth-vault-stage.is-lit .auth-door-handle {
-  background: var(--handle-open);
-  border-color: color-mix(in srgb, var(--door-accent) 32%, transparent);
-}
-.auth-handle-slot {
-  width: 2px;
-  flex: 1;
-  max-height: 82px;
-  border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.06) 0%,
-    rgba(0, 0, 0, 0.45) 100%
+.auth-vault-stage.is-admin .auth-stage-cursor-glow {
+  background: radial-gradient(
+    520px circle at var(--mx) var(--my),
+    rgba(201, 168, 117, 0.09),
+    transparent 68%
   );
 }
-.auth-handle-pip {
-  width: 6px;
-  height: 6px;
-  margin-top: 12px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--door-accent) 42%, #243140);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
-  transition: background 0.28s ease, box-shadow 0.28s ease;
+
+/* 边缘收光，聚焦中央工作面同时保留全景舒展感 */
+.auth-stage-vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 68% 72% at 50% 48%, transparent 38%, rgba(3, 6, 10, 0.64) 100%),
+    linear-gradient(180deg, rgba(4, 7, 11, 0.44) 0%, transparent 16%, transparent 86%, rgba(4, 7, 11, 0.56) 100%);
 }
-.auth-vault-stage.is-lit .auth-handle-pip {
-  background: var(--door-accent);
-  box-shadow: 0 0 10px var(--door-accent);
+.auth-vault-stage.is-admin .auth-stage-vignette {
+  background:
+    radial-gradient(ellipse 68% 72% at 50% 48%, transparent 38%, rgba(5, 4, 3, 0.68) 100%),
+    linear-gradient(180deg, rgba(6, 5, 4, 0.46) 0%, transparent 16%, transparent 86%, rgba(6, 5, 4, 0.58) 100%);
 }
 
 /* ==========================================================================
-   Layer 3 · 三段严格中轴对称顶栏（左返回 / 正中品牌 / 右通道切换）
+   Layer 2 · 三段严格中轴对称顶栏（左返回 / 正中品牌 / 右通道切换）
    ========================================================================== */
 .auth-topbar {
   position: fixed;
@@ -380,6 +136,11 @@
   align-items: center;
   padding: 0 clamp(20px, 3.6vw, 48px);
   pointer-events: none;
+  transition: opacity 0.26s ease, transform 0.26s ease;
+}
+.auth-vault-stage.is-entering .auth-topbar {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 .auth-topbar-left,
 .auth-brand-center,
@@ -402,7 +163,8 @@
   border-radius: 50%;
   background: #ffffff;
   padding: 1.5px;
-  box-shadow: 0 0 0 1px rgba(137, 170, 204, 0.35);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--stage-accent) 36%, transparent);
+  transition: box-shadow 0.35s ease;
 }
 .auth-wordmark {
   font-family: var(--font-display);
@@ -412,8 +174,11 @@
   letter-spacing: -0.025em;
   color: #f0f4f8;
 }
+.auth-vault-stage.is-admin .auth-wordmark {
+  color: #f5efe4;
+}
 .auth-wordmark > span {
-  color: var(--door-accent);
+  color: var(--stage-accent);
   transition: color 0.3s ease;
 }
 .auth-brand-divider {
@@ -425,6 +190,10 @@
   font-size: 12.5px;
   letter-spacing: 0.2em;
   color: #a8b7c6;
+  transition: color 0.3s ease;
+}
+.auth-vault-stage.is-admin .auth-brand-cn {
+  color: #b4a690;
 }
 
 .auth-back-link {
@@ -440,6 +209,12 @@
 .auth-back-link:hover {
   color: #f0f5fa;
 }
+.auth-vault-stage.is-admin .auth-back-link {
+  color: #9e9382;
+}
+.auth-vault-stage.is-admin .auth-back-link:hover {
+  color: #f5efe4;
+}
 
 .auth-topbar-right {
   justify-self: end;
@@ -451,8 +226,13 @@
   padding: 3px;
   border: 1px solid rgba(186, 207, 229, 0.14);
   border-radius: 999px;
-  background: rgba(9, 15, 22, 0.72);
-  backdrop-filter: blur(12px);
+  background: rgba(9, 15, 22, 0.68);
+  backdrop-filter: blur(14px);
+  transition: border-color 0.3s ease, background-color 0.3s ease;
+}
+.auth-vault-stage.is-admin .auth-realm-switch {
+  border-color: rgba(201, 168, 117, 0.2);
+  background: rgba(14, 12, 10, 0.74);
 }
 .auth-realm-tab {
   display: inline-flex;
@@ -469,8 +249,14 @@
   cursor: pointer;
   transition: color 0.2s ease, background 0.2s ease;
 }
+.auth-vault-stage.is-admin .auth-realm-tab {
+  color: #998e7d;
+}
 .auth-realm-tab:hover {
   color: #e4ecf4;
+}
+.auth-vault-stage.is-admin .auth-realm-tab:hover {
+  color: #f3e8d6;
 }
 .auth-realm-tab.is-active {
   background: rgba(137, 170, 204, 0.18);
@@ -492,70 +278,144 @@
   opacity: 1;
 }
 
-/* 闭门提示：置于双门拉手正下方安静留白处，不遮挡底部盲压大字标 */
-.auth-closed-cue {
+/* ==========================================================================
+   Layer 4 · 中央开放式轻盈玻璃认证工作面
+   ========================================================================== */
+.auth-chamber {
+  position: relative;
+  z-index: 10;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 84px 20px 56px;
+}
+
+.auth-chamber-content {
+  position: relative;
+  width: min(100%, 400px);
+  animation: auth-surface-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    opacity 0.24s ease,
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.26s ease;
+}
+
+.auth-vault-stage.is-entering .auth-chamber-content {
+  opacity: 0;
+  transform: scale(1.04) translateY(-6px);
+  filter: blur(4px);
+}
+
+@keyframes auth-surface-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.965) translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.auth-panel {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  padding: 28px 30px 24px;
+  border: 1px solid rgba(186, 207, 229, 0.11);
+  border-radius: 16px;
+  background: rgba(7, 13, 21, 0.56);
+  backdrop-filter: blur(18px) saturate(118%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 24px 64px rgba(0, 0, 0, 0.42);
+  transition: border-color 0.35s ease, background-color 0.35s ease;
+}
+
+/* 顶部极细微光边线，替代死板色块顶栏 */
+.auth-panel::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 16%;
+  right: 16%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(164, 198, 232, 0.45) 50%,
+    transparent
+  );
+  pointer-events: none;
+}
+
+.auth-panel-admin {
+  border-color: rgba(201, 168, 117, 0.18);
+  background: rgba(11, 10, 8, 0.64);
+  box-shadow:
+    inset 0 1px 0 rgba(226, 198, 148, 0.08),
+    0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+.auth-panel-admin::before {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(214, 180, 126, 0.52) 50%,
+    transparent
+  );
+}
+
+/* 底部克制空间基线 */
+.auth-stage-foot {
   position: fixed;
-  top: calc(50% + clamp(96px, 14vh, 130px));
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 25;
+  left: 0;
+  right: 0;
+  bottom: 20px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 0 24px;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.25s ease;
 }
-.auth-closed-cue-btn {
-  padding: 7px 16px;
-  border: 1px solid rgba(186, 207, 229, 0.16);
-  border-radius: 999px;
-  background: rgba(8, 13, 20, 0.76);
-  backdrop-filter: blur(10px);
-  color: #aebdce;
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  cursor: pointer;
-  transition: color 0.2s ease, border-color 0.2s ease;
+.auth-vault-stage.is-entering .auth-stage-foot {
+  opacity: 0;
 }
-.auth-closed-cue-btn:hover {
-  color: #ffffff;
-  border-color: color-mix(in srgb, var(--door-accent) 45%, transparent);
+.auth-stage-foot-line {
+  width: clamp(24px, 5vw, 56px);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--stage-accent) 26%, transparent),
+    transparent
+  );
+}
+.auth-stage-foot-label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: rgba(164, 182, 200, 0.34);
+  transition: color 0.35s ease;
+}
+.auth-vault-stage.is-admin .auth-stage-foot-label {
+  color: rgba(201, 168, 117, 0.38);
 }
 
 /* ==========================================================================
-   门内轻盈认证工作面（无笨重卡片外壳，直接嵌入门洞纵深）
+   表单排版与输入控件（保留完整暗色自动填充修复）
    ========================================================================== */
-.auth-panel {
-  width: 100%;
-  min-width: 0;
-  padding: 24px 26px 20px;
-  border: 1px solid rgba(186, 207, 229, 0.09);
-  border-radius: 14px;
-  background: rgba(8, 14, 22, 0.56);
-  backdrop-filter: blur(14px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-}
-.auth-panel-admin {
-  border-color: rgba(201, 168, 117, 0.16);
-  background: rgba(11, 11, 13, 0.64);
-  box-shadow: inset 0 1px 0 rgba(226, 198, 148, 0.08);
-}
-
 .auth-form-wrap { width: 100%; }
 
 .auth-form-heading {
   margin-bottom: 22px;
   text-align: center;
-}
-.auth-admin-seal {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin: 0 0 10px;
-  padding: 3px 10px;
-  border: 1px solid rgba(201, 168, 117, 0.26);
-  border-radius: 999px;
-  background: rgba(201, 168, 117, 0.08);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  color: #d8bc8e;
 }
 .auth-form-wrap h1 {
   margin: 0;
@@ -583,7 +443,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 13px;
+  gap: 14px;
   border: 0;
   margin: 0;
   padding: 0;
@@ -620,10 +480,10 @@
 .auth-optional { color: #788a9c; font-size: 11px; font-weight: 400; }
 
 .auth-field input {
-  height: 42px;
+  height: 43px;
   width: 100%;
   border: 1px solid rgba(184, 207, 229, 0.14);
-  border-radius: 8px;
+  border-radius: 9px;
   background: rgba(5, 9, 15, 0.72);
   padding: 0 13px;
   color: #f2f5f9;
@@ -694,7 +554,7 @@
 .auth-reveal {
   position: absolute;
   right: 3px;
-  top: 3px;
+  top: 3.5px;
   width: 36px;
   height: 36px;
   display: flex;
@@ -725,7 +585,7 @@
   min-width: 100px;
   padding: 0 12px;
   border: 1px solid rgba(141, 181, 211, 0.28);
-  border-radius: 8px;
+  border-radius: 9px;
   background: #12202d;
   color: #dbe9f5;
   font-size: 12px;
@@ -746,13 +606,13 @@
   align-items: center;
   justify-content: center;
   gap: 9px;
-  min-height: 43px;
+  min-height: 44px;
   padding: 10px 18px;
   margin-top: 6px;
   background: #edf2f7;
   color: #0e141b;
   border: 1px solid #edf2f7;
-  border-radius: 8px;
+  border-radius: 9px;
   font-size: 14px;
   font-weight: 600;
   text-decoration: none;
@@ -823,7 +683,7 @@
 .auth-notice {
   margin-bottom: 14px;
   padding-left: 11px;
-  border-left: 2px solid var(--door-accent);
+  border-left: 2px solid var(--stage-accent);
   font-size: 13px;
   line-height: 1.6;
   color: #c2d6e7;
@@ -930,19 +790,14 @@
   .auth-back-link span {
     display: none;
   }
-  .auth-door-engrave { display: none; }
-  .auth-door-handle {
-    width: 22px;
-    height: 112px;
-  }
-  .auth-door-handle-left { right: 12px; }
-  .auth-door-handle-right { left: 12px; }
   .auth-chamber {
-    padding: 68px 16px 24px;
-    overflow-y: auto;
+    padding: 74px 16px 48px;
   }
   .auth-panel {
-    padding: 22px 18px 18px;
+    padding: 24px 20px 20px;
+  }
+  .auth-stage-foot {
+    bottom: 14px;
   }
 }
 
@@ -955,7 +810,8 @@
   .auth-spinner,
   .auth-submit,
   .auth-submit > svg,
-  .auth-door-handle {
+  .auth-chamber-content,
+  .auth-stage-backdrop {
     animation: none;
     transition: none;
   }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowRight, Eye, EyeOff, LoaderCircle, ShieldCheck } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, LoaderCircle } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuthDoor } from "@/components/AuthDoorStage";
 import { authenticateAdmin, AuthApiError, validateCredentials, type AuthCredentials } from "@/lib/auth";
@@ -61,10 +61,6 @@ export default function AdminLogin() {
     <section className="auth-panel auth-panel-admin" aria-labelledby="admin-login-title">
       <div className="auth-form-wrap">
         <div className="auth-form-heading">
-          <p className="auth-admin-seal">
-            <ShieldCheck size={13} aria-hidden="true" />
-            <span>GOVERNANCE VAULT</span>
-          </p>
           <h1 id="admin-login-title" className="font-editorial">进入管理台</h1>
         </div>
 

@@ -38,6 +38,8 @@ export interface HexagonalVaultProps {
   interactive?: boolean;
   clickPulses?: boolean;
   pulseSpeed?: number;
+  centerRippleKey?: number;
+  centerRippleStrength?: number;
   seed?: number;
   paused?: boolean;
   dpr?: number;
@@ -147,6 +149,10 @@ uniform float uCore;
 uniform vec3 uColorA;
 uniform vec3 uColorB;
 uniform vec3 uBackground;
+uniform vec3 uPrevColorA;
+uniform vec3 uPrevColorB;
+uniform vec3 uPrevBackground;
+uniform vec3 uWave;
 uniform float uInk;
 uniform float uTransparent;
 
@@ -178,6 +184,18 @@ void main() {
     o = h.zw;
     c = (hc.zw + 0.5) * s;
   }
+
+  vec2 cellCenterPx = c.yx * uCell;
+  float cellJitter = (hash(floor(c * 4.0) + 7.13) - 0.5) * 0.42 * uCell;
+  float hexRadialPx = mix(length(p), length(cellCenterPx), 0.68) + cellJitter;
+  float waveFront = uWave.x;
+  float waveStrength = uWave.y;
+  float waveMix = uWave.z > 0.5
+    ? smoothstep(waveFront + uCell * 0.9, waveFront - uCell * 0.9, hexRadialPx)
+    : 1.0;
+  vec3 activeColorA = mix(uPrevColorA, uColorA, waveMix);
+  vec3 activeColorB = mix(uPrevColorB, uColorB, waveMix);
+  vec3 activeBg = mix(uPrevBackground, uBackground, waveMix);
 
   vec2 dirs[3];
   dirs[0] = vec2(1.0, 0.0);
@@ -263,24 +281,42 @@ void main() {
 
   float heat = heatSum / heatWeight;
 
+  float waveLine = 0.0;
+  float waveEdgeGlow = 0.0;
+  float waveWash = 0.0;
+  float waveHot = 0.0;
+  if (waveStrength > 0.001) {
+    float d1 = hexRadialPx - waveFront;
+    float ring = d1 > 0.0
+      ? exp(-(d1 * d1) / (0.45 * uCell * uCell))
+      : exp(d1 / (2.2 * uCell));
+    float env = ring * waveStrength;
+    float wWidth = mix(uLineWidth, uLitWidth * 1.12, clamp(env, 0.0, 1.0));
+    float wCover = 1.0 - smoothstep(wWidth * 0.5 - aa, wWidth * 0.5 + aa, nearest);
+    waveLine = wCover * env * 0.88;
+    waveEdgeGlow = exp(-nearest / (glowRadius * 1.35)) * env * 0.68;
+    waveWash = env * 0.042;
+    waveHot = ring * waveStrength * 0.55;
+  }
+
   float baseLine = 1.0 - smoothstep(uLineWidth * 0.5 - aa, uLineWidth * 0.5 + aa, nearest);
   float sweep = 0.5 + 0.5 * sin(dot(nearestMid / uCell, vec2(0.21, 0.13)) - uTime * 0.35);
   float shimmer = pow(sweep, 8.0) * uShimmer;
 
-  float energy = clamp(lineLit + pulseLine, 0.0, 1.6);
-  float glow = clamp(glowLit + pulseGlow, 0.0, 1.6);
-  float hot = clamp(heat * 0.9 + pulseHeat, 0.0, 1.0);
-  vec3 cool = mix(uColorA, vec3(dot(uColorA, vec3(0.2126, 0.7152, 0.0722))) * 1.6, 0.2);
-  vec3 lineColor = mix(cool, uColorB, smoothstep(0.2, 0.75, hot));
+  float energy = clamp(lineLit + pulseLine + waveLine, 0.0, 1.75);
+  float glow = clamp(glowLit + pulseGlow + waveEdgeGlow, 0.0, 1.75);
+  float hot = clamp(heat * 0.9 + pulseHeat + waveHot, 0.0, 1.0);
+  vec3 cool = mix(activeColorA, vec3(dot(activeColorA, vec3(0.2126, 0.7152, 0.0722))) * 1.6, 0.2);
+  vec3 lineColor = mix(cool, activeColorB, smoothstep(0.2, 0.75, hot));
   float radial = length(p / uResolution.y);
 
   float dither = (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
   float grain = (hash(gl_FragCoord.xy + fract(uTime) * 91.0) - 0.5) * uGrain * 0.05;
 
   if (uInk > 0.5) {
-    vec3 ink = mix(uColorA, uColorB, smoothstep(0.2, 0.9, hot) * 0.6);
+    vec3 ink = mix(activeColorA, activeColorB, smoothstep(0.2, 0.9, hot) * 0.6);
     vec3 neutral = vec3(0.08, 0.08, 0.1);
-    vec3 color = uBackground * (1.0 - uVignette * 0.04 * smoothstep(0.2, 1.1, radial));
+    vec3 color = activeBg * (1.0 - uVignette * 0.04 * smoothstep(0.2, 1.1, radial));
     color = mix(color, neutral, baseLine * uLattice * (0.22 + 0.12 * shimmer));
     color = mix(color, ink, clamp(glow * uGlow * 0.22 + haloLit * uGlow * 0.1, 0.0, 0.45));
     color = mix(color, ink, clamp(min(energy, 1.0) * 1.8, 0.0, 1.0));
@@ -288,13 +324,14 @@ void main() {
     return;
   }
 
-  vec3 latticeColor = mix(vec3(0.62, 0.62, 0.7), uColorA, 0.25);
+  vec3 latticeColor = mix(vec3(0.62, 0.62, 0.7), activeColorA, 0.25);
   vec3 emission = latticeColor * baseLine * uLattice * (0.055 + 0.14 * shimmer);
   float white = smoothstep(0.55, 1.0, hot * min(energy, 1.0));
   vec3 core = mix(lineColor, vec3(1.0), uCore * white);
   emission += core * energy * (1.3 + 1.1 * white);
   emission += lineColor * glow * uGlow * 0.6;
-  emission += mix(lineColor, uColorB, 0.5) * haloLit * uGlow * 0.12;
+  emission += mix(lineColor, activeColorB, 0.5) * haloLit * uGlow * 0.12;
+  emission += activeColorB * waveWash;
 
   if (uTransparent > 0.5) {
     vec3 light = 1.0 - exp(-emission * 1.05);
@@ -303,7 +340,7 @@ void main() {
     return;
   }
 
-  vec3 base = uBackground * (1.0 + uVignette * 0.6 * (1.0 - smoothstep(0.0, 1.1, radial)));
+  vec3 base = activeBg * (1.0 + uVignette * 0.6 * (1.0 - smoothstep(0.0, 1.1, radial)));
   vec3 color = base + emission;
   color = 1.0 - exp(-color * 1.05);
   gl_FragColor = vec4(toSrgb(color) + dither + grain, 1.0);
@@ -399,6 +436,8 @@ interface VaultSettings {
   interactive: boolean;
   clickPulses: boolean;
   pulseSpeed: number;
+  centerRippleKey: number;
+  centerRippleStrength: number;
   seed: number;
   paused: boolean;
   reduced: boolean;
@@ -438,6 +477,11 @@ interface Motion {
   presses: number;
   nextPulse: number;
   pulses: THREE.Vector4[];
+  waveStart: number;
+  waveDuration: number;
+  wavePeak: number;
+  waveMorph: boolean;
+  lastRippleKey: number;
 }
 
 interface FieldRig {
@@ -553,6 +597,10 @@ const createUniforms = () => ({
   uColorA: { value: new THREE.Color() },
   uColorB: { value: new THREE.Color() },
   uBackground: { value: new THREE.Color() },
+  uPrevColorA: { value: new THREE.Color() },
+  uPrevColorB: { value: new THREE.Color() },
+  uPrevBackground: { value: new THREE.Color() },
+  uWave: { value: new THREE.Vector3(0, 0, 0) },
   uInk: { value: 0 },
   uTransparent: { value: 0 },
 });
@@ -564,6 +612,8 @@ const VaultScene = ({ settings, pointerRef, wakeRef }: VaultSceneProps) => {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
   const rigRef = useRef<FieldRig | null>(null);
   const motionRef = useRef<Motion | null>(null);
+  const paletteReadyRef = useRef(false);
+  const pendingMorphRef = useRef(false);
   const uniforms = useMemo(() => createUniforms(), []);
   const colorKey = settings.colors.join("|");
   const { backgroundColor } = settings;
@@ -594,25 +644,41 @@ const VaultScene = ({ settings, pointerRef, wakeRef }: VaultSceneProps) => {
     if (!material) return;
     const values = material.uniforms as unknown as VaultUniforms;
     const palette = colorKey ? colorKey.split("|") : DEFAULT_COLORS;
+    const transparent = isTransparent(backgroundColor);
+
+    if (paletteReadyRef.current && !settings.reduced) {
+      values.uPrevColorA.value.copy(values.uColorA.value);
+      values.uPrevColorB.value.copy(values.uColorB.value);
+      values.uPrevBackground.value.copy(values.uBackground.value);
+      pendingMorphRef.current = true;
+    }
+
     readColor(values.uColorA.value, palette[0] ?? DEFAULT_COLORS[0], DEFAULT_COLORS[0]);
     readColor(
       values.uColorB.value,
       palette[1] ?? palette[0] ?? DEFAULT_COLORS[1],
       DEFAULT_COLORS[1],
     );
-    const transparent = isTransparent(backgroundColor);
     readColor(
       values.uBackground.value,
       transparent ? "#000000" : backgroundColor,
       "#000000",
     );
+
+    if (!paletteReadyRef.current || settings.reduced) {
+      values.uPrevColorA.value.copy(values.uColorA.value);
+      values.uPrevColorB.value.copy(values.uColorB.value);
+      values.uPrevBackground.value.copy(values.uBackground.value);
+      paletteReadyRef.current = true;
+    }
+
     const background = values.uBackground.value;
     const luminance =
       background.r * 0.2126 + background.g * 0.7152 + background.b * 0.0722;
     values.uInk.value = !transparent && luminance > 0.2 ? 1 : 0;
     values.uTransparent.value = transparent ? 1 : 0;
     invalidate();
-  }, [colorKey, backgroundColor, invalidate]);
+  }, [colorKey, backgroundColor, settings.reduced, invalidate]);
 
   useEffect(() => {
     invalidate();
@@ -635,6 +701,7 @@ const VaultScene = ({ settings, pointerRef, wakeRef }: VaultSceneProps) => {
 
     if (!motionRef.current || motionRef.current.seed !== s.seed) {
       const next = random(s.seed + 0.5);
+      const initBoost = !s.reduced && s.centerRippleKey > 0 ? clamp(s.centerRippleStrength, 0.2, 1.5) : 0;
       motionRef.current = {
         time: 0,
         clock: 0,
@@ -666,12 +733,30 @@ const VaultScene = ({ settings, pointerRef, wakeRef }: VaultSceneProps) => {
           { length: MAX_PULSES },
           () => new THREE.Vector4(0, 0, -99, 0),
         ),
+        waveStart: 0,
+        waveDuration: 1.68,
+        wavePeak: initBoost,
+        waveMorph: false,
+        lastRippleKey: s.centerRippleKey,
       };
     }
     const motion = motionRef.current;
 
     if (animate) motion.time += dt * pace;
     if (!s.reduced) motion.clock += dt;
+
+    if (s.centerRippleKey !== motion.lastRippleKey || pendingMorphRef.current) {
+      const morph = pendingMorphRef.current;
+      pendingMorphRef.current = false;
+      motion.lastRippleKey = s.centerRippleKey;
+      if (!s.reduced) {
+        const boost = clamp(s.centerRippleStrength, 0.2, 1.5);
+        motion.waveStart = motion.clock;
+        motion.waveDuration = morph ? 1.52 : 1.38;
+        motion.wavePeak = boost;
+        motion.waveMorph = morph;
+      }
+    }
 
     const tracking = s.interactive && !s.reduced && input.inside;
     const roaming = s.autoplay && !tracking;
@@ -880,6 +965,30 @@ const VaultScene = ({ settings, pointerRef, wakeRef }: VaultSceneProps) => {
       if (motion.pulses[k].w > 0 && motion.clock - motion.pulses[k].z < 7) pulsing = true;
     }
 
+    if (motion.wavePeak > 0) {
+      const elapsed = motion.clock - motion.waveStart;
+      if (elapsed >= 0 && elapsed < motion.waveDuration) {
+        const p = elapsed / motion.waveDuration;
+        const maxR = Math.hypot(width * 0.5, height * 0.5) + cell * 4.5;
+        const eased = 1 - Math.pow(1 - p, 2.05);
+        const rampIn = Math.sin(Math.min(1, p / 0.14) * (Math.PI * 0.5));
+        const strength = motion.wavePeak * rampIn * Math.pow(1 - p, 0.95);
+        values.uWave.value.set(eased * maxR, strength, motion.waveMorph ? 1 : 0);
+        pulsing = true;
+      } else if (elapsed >= motion.waveDuration) {
+        values.uWave.value.set(0, 0, 0);
+        if (motion.waveMorph) {
+          values.uPrevColorA.value.copy(values.uColorA.value);
+          values.uPrevColorB.value.copy(values.uColorB.value);
+          values.uPrevBackground.value.copy(values.uBackground.value);
+          motion.waveMorph = false;
+        }
+        motion.wavePeak = 0;
+      }
+    } else {
+      values.uWave.value.set(0, 0, 0);
+    }
+
     values.uLight.value = rig.light[sink].texture;
     values.uLens.value.set(
       motion.brushX,
@@ -948,6 +1057,8 @@ export const HexagonalVault = ({
   interactive = true,
   clickPulses = true,
   pulseSpeed = 1,
+  centerRippleKey = 0,
+  centerRippleStrength = 1,
   seed = 0,
   paused = false,
   dpr = 2,
@@ -1006,6 +1117,8 @@ export const HexagonalVault = ({
     interactive,
     clickPulses,
     pulseSpeed,
+    centerRippleKey,
+    centerRippleStrength,
     seed,
     paused,
     reduced: reducedMotion,
@@ -1038,6 +1151,8 @@ export const HexagonalVault = ({
     };
     const down = (event: PointerEvent) => {
       locate(event);
+      const targetEl = event.target instanceof Element ? event.target : null;
+      if (targetEl?.closest(".auth-panel, .auth-topbar")) return;
       const state = pointerRef.current;
       state.pressX = state.x;
       state.pressY = state.y;
